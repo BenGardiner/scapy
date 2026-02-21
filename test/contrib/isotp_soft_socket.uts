@@ -954,6 +954,20 @@ with TestSocket(CAN) as isocan_tx, ISOTPSoftSocket(isocan_tx, 0x123, 0x321) as s
 
 assert rx2 is None
 
+= ISOTPSoftSocket select returns control ObjectPipe
+
+from scapy.automaton import ObjectPipe as _ObjectPipe
+
+close_pipe = _ObjectPipe("control_socket")
+close_pipe.send(None)
+
+with TestSocket(CAN) as isocan, ISOTPSoftSocket(isocan, 0x123, 0x321) as sock:
+    result = ISOTPSoftSocket.select([sock, close_pipe], remain=0)
+
+assert close_pipe in result
+
+close_pipe.close()
+
 = ISOTPSoftSocket sr1 timeout with threaded=True
 
 from threading import Thread, Event
