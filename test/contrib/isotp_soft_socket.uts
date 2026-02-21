@@ -967,7 +967,7 @@ with TestSocket(CAN) as isocan_tx, ISOTPSoftSocket(isocan_tx, 0x123, 0x321) as s
     elapsed = time.time() - start
 
 assert rx2 is None
-assert elapsed < 6
+assert elapsed < 5
 
 = ISOTPSoftSocket sr1 timeout with threaded=True and background traffic
 
@@ -994,7 +994,7 @@ with TestSocket(CAN) as isocan_tx, ISOTPSoftSocket(isocan_tx, 0x123, 0x321) as s
     traffic_thread.join(timeout=2)
 
 assert rx2 is None
-assert elapsed < 6
+assert elapsed < 5
 
 = ISOTPSoftSocket sniff
 
