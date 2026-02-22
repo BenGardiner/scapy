@@ -322,6 +322,7 @@ class PythonCANSocket(SuperSocket):
         :returns: an array of sockets that were selected and
             the function to be called next to get the packets (i.g. recv)
         """
+        SocketsPool.multiplex_rx_packets()
         ready_sockets = \
             [s for s in sockets if isinstance(s, PythonCANSocket) and
              len(s.can_iface.rx_queue)]
@@ -333,7 +334,6 @@ class PythonCANSocket(SuperSocket):
             # yield this thread to avoid starvation
             time.sleep(0)
 
-        SocketsPool.multiplex_rx_packets()
         return cast(List[SuperSocket], ready_sockets)
 
     def close(self):
