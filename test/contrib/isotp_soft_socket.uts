@@ -1084,6 +1084,44 @@ with isocan, stim, ISOTPSoftSocket(isocan, 0x641, 0x241) as sock:
 assert len(pkts) == 1, "MF response not received due to background traffic"
 assert pkts[0].data == response_data
 
+= ISOTPSoftSocket MF response with delayed CFs and background traffic
+
+from threading import Thread, Event
+
+response_data = b'\x62\xF1\x90' + b'\x41\x42\x43\x44\x45\x46\x47\x48\x49\x4A\x4B\x4C\x4D\x4E\x4F\x50'
+
+with TestSocket(CAN) as stim, TestSocket(CAN) as isocan, \
+     ISOTPSoftSocket(isocan, 0x641, 0x241) as sock:
+    stim.pair(isocan)
+    stop_traffic = Event()
+    def bg_traffic():
+        bg_frame = CAN(identifier=0x456, data=dhex("01 02 03"))
+        while not stop_traffic.is_set():
+            try:
+                stim.send(bg_frame)
+            except Exception:
+                break
+            time.sleep(0.001)
+    def delayed_response():
+        time.sleep(0.05)
+        sock.impl.rx_tx_poll_rate = 10
+        stim.send(CAN(identifier=0x241, data=dhex("10 13 62 F1 90 41 42 43")))
+        time.sleep(0.01)
+        stim.send(CAN(identifier=0x241, data=dhex("21 44 45 46 47 48 49 4A")))
+        time.sleep(0.01)
+        stim.send(CAN(identifier=0x241, data=dhex("22 4B 4C 4D 4E 4F 50 00")))
+    traffic_thread = Thread(target=bg_traffic, daemon=True)
+    traffic_thread.start()
+    resp_thread = Thread(target=delayed_response, daemon=True)
+    resp_thread.start()
+    pkts = sock.sniff(count=1, timeout=5)
+    stop_traffic.set()
+    traffic_thread.join(timeout=2)
+    resp_thread.join(timeout=2)
+
+assert len(pkts) == 1, "MF response not received with delayed CFs and slow poll rate"
+assert pkts[0].data == response_data
+
 = ISOTPSoftSocket sniff
 
 msg = ISOTP(b'\x11\x22\x33\x11\x22\x33\x11\x22\x33\x11\x22\x33')

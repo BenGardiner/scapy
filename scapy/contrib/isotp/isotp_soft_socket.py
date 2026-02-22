@@ -604,6 +604,10 @@ class ISOTPSocketImplementation:
         if not self.closed and not self.can_socket.closed:
             if self.can_socket.select([self.can_socket], 0):
                 poll_time = 0.0
+            elif self.rx_state == ISOTP_WAIT_DATA or \
+                    self.tx_state == ISOTP_WAIT_FC or \
+                    self.tx_state == ISOTP_WAIT_FIRST_FC:
+                poll_time = 0.0
             else:
                 poll_time = self.rx_tx_poll_rate
             self.rx_handle = TimeoutScheduler.schedule(
