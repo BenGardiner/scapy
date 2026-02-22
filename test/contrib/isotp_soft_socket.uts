@@ -1065,14 +1065,14 @@ ff_frame = CAN(identifier=0x241, data=dhex("10 13 62 F1 90 41 42 43"))
 cf1_frame = CAN(identifier=0x241, data=dhex("21 44 45 46 47 48 49 4A"))
 cf2_frame = CAN(identifier=0x241, data=dhex("22 4B 4C 4D 4E 4F 50 00"))
 
-M = 50000
+bg_count = 50000
 
 for _ in range(100):
     stim.send(bg_frame)
 
 stim.send(ff_frame)
 
-for _ in range(M):
+for _ in range(bg_count):
     stim.send(bg_frame)
 
 stim.send(cf1_frame)
