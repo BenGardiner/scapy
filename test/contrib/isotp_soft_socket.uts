@@ -1050,6 +1050,40 @@ with TestSocket(CAN) as isocan_tx, ISOTPSoftSocket(isocan_tx, 0x123, 0x321) as s
 assert rx2 is None
 assert elapsed < 5
 
+= ISOTPSoftSocket sr1 SF request with MF response threaded and background traffic on slow interface
+
+from threading import Thread, Event
+
+response_data = b'\x62\xF1\x90' + b'\x41\x42\x43\x44\x45\x46\x47\x48\x49\x4A\x4B\x4C\x4D\x4E\x4F\x50'
+
+stim = TestSocket(CAN)
+isocan = TestSocket(CAN)
+stim.pair(isocan)
+
+bg_frame = CAN(identifier=0x456, data=dhex("01 02 03"))
+ff_frame = CAN(identifier=0x241, data=dhex("10 13 62 F1 90 41 42 43"))
+cf1_frame = CAN(identifier=0x241, data=dhex("21 44 45 46 47 48 49 4A"))
+cf2_frame = CAN(identifier=0x241, data=dhex("22 4B 4C 4D 4E 4F 50 00"))
+
+M = 50000
+
+for _ in range(100):
+    stim.send(bg_frame)
+
+stim.send(ff_frame)
+
+for _ in range(M):
+    stim.send(bg_frame)
+
+stim.send(cf1_frame)
+stim.send(cf2_frame)
+
+with isocan, stim, ISOTPSoftSocket(isocan, 0x641, 0x241) as sock:
+    pkts = sock.sniff(count=1, timeout=10)
+
+assert len(pkts) == 1, "MF response not received due to background traffic"
+assert pkts[0].data == response_data
+
 = ISOTPSoftSocket sniff
 
 msg = ISOTP(b'\x11\x22\x33\x11\x22\x33\x11\x22\x33\x11\x22\x33')
