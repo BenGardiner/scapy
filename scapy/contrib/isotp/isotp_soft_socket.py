@@ -595,13 +595,10 @@ class ISOTPSocketImplementation:
     def can_recv(self):
         # type: () -> None
         self.last_rx_call = TimeoutScheduler._time()
-        while (not self.closed and not self.can_socket.closed and
-               self.can_socket.select([self.can_socket], 0)):
+        if self.can_socket.select([self.can_socket], 0):
             pkt = self.can_socket.recv()
             if pkt:
                 self.on_can_recv(pkt)
-            else:
-                break
         if not self.closed and not self.can_socket.closed:
             if self.can_socket.select([self.can_socket], 0):
                 poll_time = 0.0
