@@ -214,8 +214,11 @@ class ISOTPSoftSocket(SuperSocket):
 
         ready_pipes = select_objects(obj_pipes, remain)
 
-        return [x for x in sockets if isinstance(x, ISOTPSoftSocket) and
-                not x.closed and x.impl.rx_queue in ready_pipes]
+        result = [x for x in sockets if isinstance(x, ISOTPSoftSocket) and
+                  not x.closed and x.impl.rx_queue in ready_pipes]
+        result += [x for x in sockets if
+                   isinstance(x, ObjectPipe) and x in ready_pipes]
+        return result
 
 
 class TimeoutScheduler:
