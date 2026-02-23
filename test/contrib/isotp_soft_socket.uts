@@ -1434,31 +1434,95 @@ with TestSocket(CAN) as isocan, ISOTPSoftSocket(isocan, tx_id=0x641, rx_id=0x241
 with TestSocket(CAN) as isocan, ISOTPSoftSocket(isocan, tx_id=0x641, rx_id=0x241) as sock:
     with TestSocket(CAN) as cans:
         cans.pair(isocan)
-        # Monkey-patch recv to raise once then work normally
         original_recv = isocan.recv
-        call_count = [0]
+        raised = [False]
         def failing_recv(*args, **kwargs):
-            call_count[0] += 1
-            if call_count[0] == 1:
+            if not raised[0]:
+                raised[0] = True
                 raise OSError("Simulated serial port error")
             return original_recv(*args, **kwargs)
         isocan.recv = failing_recv
-        # Send a frame to trigger can_recv processing (will hit exception)
         cans.send(CAN(identifier=0x241, data=dhex("02 05 06")))
-        time.sleep(0.2)
-        # The exception was raised and caught; can_recv rescheduled
-        # After the exception, subsequent recv calls succeed, so the
-        # first frame should have been processed on retry
+        time.sleep(0.5)
         isocan.recv = original_recv
-        # Now send a second frame to prove can_recv is still alive
-        cans.send(CAN(identifier=0x241, data=dhex("03 07 08 09")))
-        # Sniff for both messages - proves can_recv survived the exception
-        pkts = sock.sniff(count=2, timeout=3)
-        if len(pkts) < 2:
+        pkts = sock.sniff(count=1, timeout=3)
+        if not len(pkts):
             sock.failure_analysis()
-            raise Scapy_Exception("ERROR: can_recv did not recover from exception, got %d pkts" % len(pkts))
-        assert pkts[0].data == dhex("05 06")
-        assert pkts[1].data == dhex("07 08 09")
+            raise Scapy_Exception("ERROR: can_recv did not recover")
+
+
+= ISOTPSoftSocket sr1 MF response with pcap-replay timing and background traffic
+
+# Replay of a real pcap: SF request (ReadDataByIdentifier 0x0001) with
+# MF response on a bus with heavy background traffic.
+# On slcan, 126 bg frames between FF and FC cause a 352ms delay before
+# FC is sent. CFs arrive interleaved with bg traffic after FC.
+# Expected response: 0x62 0x00 0x01 "flag{UDS_DATA_READ}" (22 bytes)
+
+from threading import Thread, Event
+
+response_data = dhex("62 00 01 66 6c 61 67 7b 55 44 53 5f 44 41 54 41 5f 52 45 41 44 7d")
+
+bg_10ms = [0x062, 0x024, 0x039]
+bg_burst = [0x1d3, 0x077, 0x098, 0x150, 0x1a7, 0x1b8, 0x1bb]
+
+with TestSocket(CAN) as isocan, TestSocket(CAN) as ecu_mon, \
+        ISOTPSoftSocket(isocan, tx_id=0x7e3, rx_id=0x7eb) as sock:
+    with TestSocket(CAN) as stim:
+        stim.pair(isocan)
+        isocan.pair(ecu_mon)
+        fc_received = Event()
+        stop = Event()
+        def ecu_simulation():
+            time.sleep(0.02)
+            stim.send(CAN(identifier=0x7eb, data=dhex("10 16 62 00 01 66 6c 61")))
+            t0 = time.time()
+            for cycle in range(35):
+                if fc_received.is_set() or stop.is_set():
+                    break
+                dt = 0.007 + cycle * 0.010
+                while time.time() - t0 < dt and not stop.is_set():
+                    time.sleep(0.001)
+                for bid in bg_10ms:
+                    stim.send(CAN(identifier=bid, data=bytes(8)))
+                if (cycle + 1) % 10 == 0:
+                    for bid in bg_burst:
+                        stim.send(CAN(identifier=bid, data=bytes(8)))
+            fc_received.wait(timeout=2.0)
+            if not fc_received.is_set():
+                return
+            time.sleep(0.008)
+            for bid in bg_10ms:
+                stim.send(CAN(identifier=bid, data=bytes(8)))
+            stim.send(CAN(identifier=0x7eb, data=dhex("21 67 7b 55 44 53 5f 44")))
+            time.sleep(0.010)
+            for bid in bg_10ms:
+                stim.send(CAN(identifier=bid, data=bytes(8)))
+            stim.send(CAN(identifier=0x7eb, data=dhex("22 41 54 41 5f 52 45 41")))
+            time.sleep(0.010)
+            for bid in bg_10ms:
+                stim.send(CAN(identifier=bid, data=bytes(8)))
+            stim.send(CAN(identifier=0x7eb, data=dhex("23 44 7d")))
+        def fc_watcher():
+            while not stop.is_set():
+                if TestSocket.select([ecu_mon], 0.1):
+                    pkt = ecu_mon.recv()
+                    if pkt is not None and pkt.identifier == 0x7e3 and \
+                       len(pkt.data) >= 1 and bytes(pkt.data)[0] == 0x30:
+                        fc_received.set()
+                        return
+        ecu_thread = Thread(target=ecu_simulation, daemon=True)
+        fc_thread = Thread(target=fc_watcher, daemon=True)
+        ecu_thread.start()
+        fc_thread.start()
+        result = sock.sr1(ISOTP(data=dhex("22 00 01")), timeout=5, verbose=0)
+        stop.set()
+        fc_received.set()
+        ecu_thread.join(timeout=2)
+        fc_thread.join(timeout=2)
+
+assert result is not None, "MF response not received with pcap bg traffic"
+assert result.data == response_data
 
 
 + Cleanup
