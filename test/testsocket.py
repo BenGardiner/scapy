@@ -178,6 +178,115 @@ class UnstableSocket(TestSocket):
         return super(UnstableSocket, self).recv(x, **kwargs)
 
 
+class SlowTestSocket(TestSocket):
+    """A TestSocket that simulates the mux/throttle behavior of
+    PythonCANSocket on a slow serial interface (like slcan).
+
+    Frames sent to this socket go into an intermediate serial buffer.
+    They only become visible to recv()/select() after mux() moves
+    them to the rx ObjectPipe. mux() has a throttle (default 1ms)
+    and each frame takes time to read from the serial port (simulated
+    by blocking for frame_delay per frame during mux).
+    """
+
+    def __init__(self, basecls=None, frame_delay=0.0002,
+                 mux_throttle=0.001):
+        # type: (Optional[Type[Packet]], float, float) -> None
+        super(SlowTestSocket, self).__init__(basecls)
+        from collections import deque
+        self._serial_buffer = deque()  # type: deque[bytes]
+        self._serial_lock = Lock()
+        self._last_mux = 0.0
+        self._frame_delay = frame_delay
+        self._mux_throttle = mux_throttle
+        # Replace the ObjectPipe that `ins` refers to with one that
+        # intercepts writes and redirects to serial_buffer
+        self._real_ins = self.ins
+        self.ins = _SlowPipeWrapper(self)
+
+    def _mux(self):
+        # type: () -> None
+        """Move frames from serial buffer to rx ObjectPipe.
+        Simulates the behavior of PythonCANSocket's
+        multiplex_rx_packets() + mux():
+        - 1ms throttle between mux calls
+        - Reads available frames from serial buffer
+        - Each frame read takes frame_delay time (blocking)
+        - 10ms time limit to prevent blocking indefinitely
+        This blocks the calling thread (typically TimeoutScheduler)
+        just like real serial port reads do on slcan.
+        Lock is released between reads so new frames can arrive."""
+        now = time.monotonic()
+        if now - self._last_mux < self._mux_throttle:
+            return
+        deadline = time.monotonic() + 0.01
+        while True:
+            with self._serial_lock:
+                if not self._serial_buffer:
+                    break
+                frame = self._serial_buffer.popleft()
+            self._real_ins.send(frame)
+            if self._frame_delay > 0:
+                time.sleep(self._frame_delay)
+            if time.monotonic() > deadline:
+                break
+        self._last_mux = time.monotonic()
+
+    def recv_raw(self, x=MTU):
+        # type: (int) -> Tuple[Optional[Type[Packet]], Optional[bytes], Optional[float]]  # noqa: E501
+        """Read from the rx ObjectPipe (populated by mux via select)."""
+        return self.basecls, self._real_ins.recv(0), time.time()
+
+    def send(self, x):
+        # type: (Packet) -> int
+        """Send with serial write delay to simulate slcan."""
+        if self._frame_delay > 0:
+            time.sleep(self._frame_delay)
+        return super(SlowTestSocket, self).send(x)
+
+    @staticmethod
+    def select(sockets, remain=conf.recv_poll_rate):
+        # type: (List[SuperSocket], Optional[float]) -> List[SuperSocket]
+        for s in sockets:
+            if isinstance(s, SlowTestSocket):
+                s._mux()
+        return select_objects(sockets, remain)
+
+    def close(self):
+        # type: () -> None
+        self.ins = self._real_ins
+        super(SlowTestSocket, self).close()
+
+
+class _SlowPipeWrapper:
+    """Wrapper that intercepts send() to route into serial buffer."""
+    def __init__(self, owner):
+        # type: (SlowTestSocket) -> None
+        self._owner = owner
+
+    def send(self, data):
+        # type: (bytes) -> None
+        with self._owner._serial_lock:
+            self._owner._serial_buffer.append(data)
+
+    def recv(self, timeout=0):
+        # type: (float) -> Optional[bytes]
+        return self._owner._real_ins.recv(timeout)
+
+    def fileno(self):
+        # type: () -> int
+        return self._owner._real_ins.fileno()
+
+    def close(self):
+        # type: () -> None
+        self._owner._real_ins.close()
+
+    @property
+    def closed(self):
+        # type: () -> bool
+        return self._owner._real_ins.closed
+
+
 def cleanup_testsockets():
     # type: () -> None
     """

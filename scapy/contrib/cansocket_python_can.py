@@ -61,8 +61,13 @@ class SocketMapper(object):
         """Multiplexer function. Tries to receive from its python-can bus
         object. If a message is received, this message gets forwarded to
         all receive queues of the SocketWrapper objects.
+
+        To avoid blocking indefinitely on busy buses (e.g. slcan with
+        heavy traffic), the loop is limited to prevent starvation of
+        other processing (like ISOTP state machine callbacks).
         """
         msgs = []
+        deadline = time.monotonic() + 0.01
         while True:
             try:
                 msg = self.bus.recv(timeout=0)
@@ -70,6 +75,8 @@ class SocketMapper(object):
                     break
                 else:
                     msgs.append(msg)
+                    if time.monotonic() > deadline:
+                        break
             except Exception as e:
                 warning("[MUX] python-can exception caught: %s" % e)
                 break

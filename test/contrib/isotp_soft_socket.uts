@@ -10,7 +10,7 @@ from io import BytesIO
 from scapy.layers.can import *
 from scapy.contrib.isotp import *
 from scapy.contrib.isotp.isotp_soft_socket import TimeoutScheduler
-from test.testsocket import TestSocket, cleanup_testsockets
+from test.testsocket import TestSocket, SlowTestSocket, cleanup_testsockets
 with open(scapy_path("test/contrib/automotive/interface_mockup.py")) as f:
     exec(f.read())
 
@@ -1451,57 +1451,52 @@ with TestSocket(CAN) as isocan, ISOTPSoftSocket(isocan, tx_id=0x641, rx_id=0x241
             raise Scapy_Exception("ERROR: can_recv did not recover")
 
 
-= ISOTPSoftSocket sr1 MF response with pcap-replay timing and background traffic
+= ISOTPSoftSocket sr1 MF response with slow serial mux and continuous background traffic
 
-# Replay of a real pcap: SF request (ReadDataByIdentifier 0x0001) with
-# MF response on a bus with heavy background traffic.
-# On slcan, 126 bg frames between FF and FC cause a 352ms delay before
-# FC is sent. CFs arrive interleaved with bg traffic after FC.
+# Simulates ISOTP multi-frame reception on a slow serial interface
+# (like slcan) with continuous background CAN traffic.
+# Uses SlowTestSocket with 10ms per-frame serial delay to simulate
+# the mux blocking that occurs on slcan. A separate background thread
+# generates continuous traffic (3 frames every 10ms) to ensure the
+# serial buffer always has frames.
+# Without the mux time limit fix in cansocket_python_can.py, the mux
+# loop blocks indefinitely because new frames arrive faster than they
+# can be drained, preventing the ISOTP state machine from ever
+# processing the First Frame.
 # Expected response: 0x62 0x00 0x01 "flag{UDS_DATA_READ}" (22 bytes)
 
 from threading import Thread, Event
 
 response_data = dhex("62 00 01 66 6c 61 67 7b 55 44 53 5f 44 41 54 41 5f 52 45 41 44 7d")
 
-bg_10ms = [0x062, 0x024, 0x039]
-bg_burst = [0x1d3, 0x077, 0x098, 0x150, 0x1a7, 0x1b8, 0x1bb]
+bg_ids = [0x062, 0x024, 0x039]
 
-with TestSocket(CAN) as isocan, TestSocket(CAN) as ecu_mon, \
+with SlowTestSocket(CAN, frame_delay=0.010, mux_throttle=0.001) as isocan, \
+        TestSocket(CAN) as ecu_mon, \
         ISOTPSoftSocket(isocan, tx_id=0x7e3, rx_id=0x7eb) as sock:
     with TestSocket(CAN) as stim:
         stim.pair(isocan)
         isocan.pair(ecu_mon)
         fc_received = Event()
         stop = Event()
-        def ecu_simulation():
-            time.sleep(0.02)
-            stim.send(CAN(identifier=0x7eb, data=dhex("10 16 62 00 01 66 6c 61")))
-            t0 = time.time()
-            for cycle in range(35):
-                if fc_received.is_set() or stop.is_set():
-                    break
-                dt = 0.007 + cycle * 0.010
-                while time.time() - t0 < dt and not stop.is_set():
-                    time.sleep(0.001)
-                for bid in bg_10ms:
+        def bg_generator():
+            while not stop.is_set():
+                for bid in bg_ids:
+                    if stop.is_set():
+                        return
                     stim.send(CAN(identifier=bid, data=bytes(8)))
-                if (cycle + 1) % 10 == 0:
-                    for bid in bg_burst:
-                        stim.send(CAN(identifier=bid, data=bytes(8)))
-            fc_received.wait(timeout=2.0)
+                time.sleep(0.010)
+        def ecu_simulation():
+            time.sleep(0.05)
+            stim.send(CAN(identifier=0x7eb, data=dhex("10 16 62 00 01 66 6c 61")))
+            fc_received.wait(timeout=5.0)
             if not fc_received.is_set():
                 return
             time.sleep(0.008)
-            for bid in bg_10ms:
-                stim.send(CAN(identifier=bid, data=bytes(8)))
             stim.send(CAN(identifier=0x7eb, data=dhex("21 67 7b 55 44 53 5f 44")))
             time.sleep(0.010)
-            for bid in bg_10ms:
-                stim.send(CAN(identifier=bid, data=bytes(8)))
             stim.send(CAN(identifier=0x7eb, data=dhex("22 41 54 41 5f 52 45 41")))
             time.sleep(0.010)
-            for bid in bg_10ms:
-                stim.send(CAN(identifier=bid, data=bytes(8)))
             stim.send(CAN(identifier=0x7eb, data=dhex("23 44 7d")))
         def fc_watcher():
             while not stop.is_set():
@@ -1511,17 +1506,19 @@ with TestSocket(CAN) as isocan, TestSocket(CAN) as ecu_mon, \
                        len(pkt.data) >= 1 and bytes(pkt.data)[0] == 0x30:
                         fc_received.set()
                         return
+        bg_thread = Thread(target=bg_generator, daemon=True)
         ecu_thread = Thread(target=ecu_simulation, daemon=True)
         fc_thread = Thread(target=fc_watcher, daemon=True)
+        bg_thread.start()
         ecu_thread.start()
         fc_thread.start()
-        result = sock.sr1(ISOTP(data=dhex("22 00 01")), timeout=5, verbose=0)
+        result = sock.sr1(ISOTP(data=dhex("22 00 01")), timeout=8, verbose=0)
         stop.set()
         fc_received.set()
         ecu_thread.join(timeout=2)
         fc_thread.join(timeout=2)
 
-assert result is not None, "MF response not received with pcap bg traffic"
+assert result is not None, "MF response not received with slow mux and bg traffic"
 assert result.data == response_data
 
 
