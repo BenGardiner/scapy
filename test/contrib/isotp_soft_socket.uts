@@ -1435,10 +1435,10 @@ with TestSocket(CAN) as isocan, ISOTPSoftSocket(isocan, tx_id=0x641, rx_id=0x241
     with TestSocket(CAN) as cans:
         cans.pair(isocan)
         original_recv = isocan.recv
-        raised = [False]
+        error_raised = [False]
         def failing_recv(*args, **kwargs):
-            if not raised[0]:
-                raised[0] = True
+            if not error_raised[0]:
+                error_raised[0] = True
                 raise OSError("Simulated serial port error")
             return original_recv(*args, **kwargs)
         isocan.recv = failing_recv
