@@ -265,11 +265,14 @@ class SlowTestSocket(TestSocket):
         can_filters from the raw Bus.
 
         When neither is set, all frames are delivered (no filtering).
+
+        No deadline is used: the loop reads until the serial buffer is
+        empty, matching real PythonCANSocket mux() which reads until
+        bus.recv(timeout=0) returns None.
         """
         now = time.monotonic()
         if now - self._last_mux < self._mux_throttle:
             return
-        deadline = time.monotonic() + 0.01
         while True:
             with self._serial_lock:
                 if not self._serial_buffer:
@@ -294,12 +297,8 @@ class SlowTestSocket(TestSocket):
                 if can_id not in self._can_filters:
                     # Frame read from serial and discarded by mux's
                     # _matches_filters(). Continue reading next frame.
-                    if time.monotonic() > deadline:
-                        break
                     continue
             self._real_ins.send(frame)
-            if time.monotonic() > deadline:
-                break
         self._last_mux = time.monotonic()
 
     def recv_raw(self, x=MTU):
