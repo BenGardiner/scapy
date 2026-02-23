@@ -215,7 +215,6 @@ class SlowTestSocket(TestSocket):
             has no filters and mux() reads all frames.
         """
         super(SlowTestSocket, self).__init__(basecls)
-        import struct
         from collections import deque
         self._serial_buffer = deque()  # type: deque[bytes]
         self._serial_lock = Lock()
@@ -275,6 +274,10 @@ class SlowTestSocket(TestSocket):
                     # after reading one non-matching frame.
                     break
             self._real_ins.send(frame)
+            if self._bus_filters is not None:
+                # With bus_filters, simulate bus.recv(timeout=0) returning
+                # only ONE matching frame per call
+                break
             if time.monotonic() > deadline:
                 break
         self._last_mux = time.monotonic()

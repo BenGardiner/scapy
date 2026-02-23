@@ -14,7 +14,6 @@ import time
 import struct
 import threading
 
-
 from collections import deque
 
 from scapy.config import conf
