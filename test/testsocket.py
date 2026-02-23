@@ -187,56 +187,94 @@ class SlowTestSocket(TestSocket):
     them to the rx ObjectPipe. mux() has a throttle (default 1ms)
     and each frame takes time to read from the serial port (simulated
     by blocking for frame_delay per frame during mux).
+
+    When bus_filters is set (list of CAN identifiers), simulates
+    BusABC.recv(timeout=0) with can_filters on the raw Bus. In this
+    mode, each mux() call reads ONE frame from the serial buffer;
+    if the frame doesn't match any bus_filter, it is consumed (removed
+    from buffer) but NOT delivered, and mux returns immediately. This
+    reproduces the real bug where python-can's BusABC.recv(timeout=0)
+    consumes non-matching frames and returns None (timeout expired),
+    making mux() think the serial buffer is empty.
     """
 
     def __init__(self, basecls=None, frame_delay=0.0002,
-                 mux_throttle=0.001):
-        # type: (Optional[Type[Packet]], float, float) -> None
+                 mux_throttle=0.001, bus_filters=None):
+        # type: (Optional[Type[Packet]], float, float, Optional[List[int]]) -> None
         """
         :param frame_delay: Simulated per-frame serial read time (seconds).
             Default 0.2ms is a fast interface. Use 0.010 (10ms) for
             realistic slcan simulation with continuous background traffic.
         :param mux_throttle: Minimum time between mux calls (default 1ms),
             matching PythonCANSocket's multiplex_rx_packets() throttle.
+        :param bus_filters: Optional list of CAN identifiers accepted by
+            the simulated Bus. When set, simulates the bug where
+            BusABC.recv(timeout=0) with can_filters consumes
+            non-matching frames without returning them. Set to None
+            (default) to simulate the fixed behavior where the raw Bus
+            has no filters and mux() reads all frames.
         """
         super(SlowTestSocket, self).__init__(basecls)
+        import struct
         from collections import deque
         self._serial_buffer = deque()  # type: deque[bytes]
         self._serial_lock = Lock()
         self._last_mux = 0.0
         self._frame_delay = frame_delay
         self._mux_throttle = mux_throttle
+        self._bus_filters = bus_filters
         # Replace the ObjectPipe that `ins` refers to with one that
         # intercepts writes and redirects to serial_buffer
         self._real_ins = self.ins
         self.ins = _SlowPipeWrapper(self)
 
+    @staticmethod
+    def _extract_can_id(frame):
+        # type: (bytes) -> int
+        """Extract CAN identifier from raw CAN frame bytes."""
+        import struct
+        if len(frame) < 4:
+            return -1
+        return struct.unpack('!I', frame[:4])[0] & 0x1FFFFFFF
+
     def _mux(self):
         # type: () -> None
         """Move frames from serial buffer to rx ObjectPipe.
-        Simulates the behavior of PythonCANSocket's
-        multiplex_rx_packets() + mux():
-        - 1ms throttle between mux calls
-        - Reads available frames from serial buffer
-        - Each frame read takes frame_delay time (blocking)
-        - 10ms time limit to prevent blocking indefinitely
-        This blocks the calling thread (typically TimeoutScheduler)
-        just like real serial port reads do on slcan.
-        Lock is released between reads so new frames can arrive."""
+
+        Simulates PythonCANSocket's multiplex_rx_packets() + mux().
+
+        When bus_filters is set, simulates the bug where
+        BusABC.recv(timeout=0) with can_filters on the raw Bus reads
+        ONE frame from serial; if it doesn't match any filter, the
+        frame is consumed but NOT returned (BusABC returns None because
+        timeout=0 expired). mux() sees None and stops, thinking the
+        serial buffer is empty. This means only ~1 frame is consumed
+        per mux() call regardless of how many frames are buffered.
+
+        When bus_filters is None (simulating the fix where the raw Bus
+        has no filters), mux() reads all available frames and delivers
+        them all. Per-socket filtering happens in on_can_recv().
+        """
         now = time.monotonic()
         if now - self._last_mux < self._mux_throttle:
             return
-        # 10ms deadline mirrors the real mux() time limit in
-        # cansocket_python_can.py to accurately simulate blocking behavior
         deadline = time.monotonic() + 0.01
         while True:
             with self._serial_lock:
                 if not self._serial_buffer:
                     break
                 frame = self._serial_buffer.popleft()
-            self._real_ins.send(frame)
             if self._frame_delay > 0:
                 time.sleep(self._frame_delay)
+            # Simulate Bus-level filtering behavior
+            if self._bus_filters is not None:
+                can_id = self._extract_can_id(frame)
+                if can_id not in self._bus_filters:
+                    # Frame consumed from serial but NOT delivered.
+                    # Simulates BusABC.recv(timeout=0) returning None
+                    # after reading one non-matching frame.
+                    break
+            self._real_ins.send(frame)
             if time.monotonic() > deadline:
                 break
         self._last_mux = time.monotonic()

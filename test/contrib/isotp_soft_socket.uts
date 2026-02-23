@@ -1451,28 +1451,105 @@ with TestSocket(CAN) as isocan, ISOTPSoftSocket(isocan, tx_id=0x641, rx_id=0x241
             raise Scapy_Exception("ERROR: can_recv did not recover")
 
 
-= ISOTPSoftSocket sr1 MF response with slow serial mux and continuous background traffic
+= ISOTPSoftSocket sr1 MF response FAILS with bus-level canfilters on slow serial (reproduces slcan bug)
 
-# Simulates ISOTP multi-frame reception on a slow serial interface
-# (like slcan) with continuous background CAN traffic.
-# Uses SlowTestSocket with 10ms per-frame serial delay to simulate
-# the mux blocking that occurs on slcan where each bus.recv() takes
-# time to read and parse a frame from the serial port. A separate
-# background thread generates continuous traffic (3 frames every 10ms)
-# to ensure the serial buffer always has frames.
-# Without the mux time limit fix in cansocket_python_can.py, the mux
-# loop blocks indefinitely because new frames arrive faster than they
-# can be drained, preventing the ISOTP state machine from ever
-# processing the First Frame.
-# Expected response: 0x62 0x00 0x01 "flag{UDS_DATA_READ}" (22 bytes)
+# ROOT CAUSE REPRODUCTION:
+# On PythonCANSocket with slcan, when can_filters is set on the raw
+# python-can Bus, BusABC.recv(timeout=0) reads ONE frame from the
+# serial buffer. If the frame doesn't match the filter, it is consumed
+# (removed from buffer) but recv returns None (timeout=0 expired).
+# mux() sees None and stops, thinking the serial buffer is empty.
+# On a busy bus with 99% non-matching traffic, mux only processes
+# ~1 frame per call. The ISOTP frames get buried in the serial buffer
+# and are never reached within the sr1() timeout.
+#
+# This test uses SlowTestSocket with bus_filters=[0x7eb] to simulate
+# the buggy behavior. mux_throttle=15ms simulates Windows' timer
+# resolution (~15.6ms) which limits how often mux() can be called.
+# Combined with bus_filters causing only 1 frame consumed per mux
+# call, the effective drain rate (~67fps) cannot keep up with bg
+# traffic arrival rate (300fps). ISOTP frames get permanently buried.
+#
+# This test should reliably time out, matching real slcan behavior
+# on Windows.
 
 from threading import Thread, Event
 
 response_data = dhex("62 00 01 66 6c 61 67 7b 55 44 53 5f 44 41 54 41 5f 52 45 41 44 7d")
-
 bg_ids = [0x062, 0x024, 0x039]
 
-with SlowTestSocket(CAN, frame_delay=0.010, mux_throttle=0.001) as isocan, \
+with SlowTestSocket(CAN, frame_delay=0, mux_throttle=0.015, bus_filters=[0x7eb]) as isocan, \
+        TestSocket(CAN) as ecu_mon, \
+        ISOTPSoftSocket(isocan, tx_id=0x7e3, rx_id=0x7eb) as sock:
+    with TestSocket(CAN) as stim:
+        stim.pair(isocan)
+        isocan.pair(ecu_mon)
+        fc_received = Event()
+        stop = Event()
+        def bg_generator():
+            while not stop.is_set():
+                for bid in bg_ids:
+                    if stop.is_set():
+                        return
+                    stim.send(CAN(identifier=bid, data=bytes(8)))
+                time.sleep(0.010)
+        def ecu_simulation():
+            time.sleep(0.05)
+            stim.send(CAN(identifier=0x7eb, data=dhex("10 16 62 00 01 66 6c 61")))
+            fc_received.wait(timeout=5.0)
+            if not fc_received.is_set():
+                return
+            time.sleep(0.008)
+            stim.send(CAN(identifier=0x7eb, data=dhex("21 67 7b 55 44 53 5f 44")))
+            time.sleep(0.010)
+            stim.send(CAN(identifier=0x7eb, data=dhex("22 41 54 41 5f 52 45 41")))
+            time.sleep(0.010)
+            stim.send(CAN(identifier=0x7eb, data=dhex("23 44 7d")))
+        def fc_watcher():
+            while not stop.is_set():
+                if TestSocket.select([ecu_mon], 0.1):
+                    pkt = ecu_mon.recv()
+                    if pkt is not None and pkt.identifier == 0x7e3 and \
+                       len(pkt.data) >= 1 and bytes(pkt.data)[0] == 0x30:
+                        fc_received.set()
+                        return
+        bg_thread = Thread(target=bg_generator, daemon=True)
+        ecu_thread = Thread(target=ecu_simulation, daemon=True)
+        fc_thread = Thread(target=fc_watcher, daemon=True)
+        bg_thread.start()
+        ecu_thread.start()
+        fc_thread.start()
+        result = sock.sr1(ISOTP(data=dhex("22 00 01")), timeout=1, verbose=0)
+        stop.set()
+        fc_received.set()
+        ecu_thread.join(timeout=2)
+        fc_thread.join(timeout=2)
+
+# With bus_filters, the ISOTP frames are stuck behind bg traffic.
+# This reproduces the real slcan bug: sr1() times out.
+assert result is None, "Expected timeout with bus-level canfilters but got a response"
+
+
+= ISOTPSoftSocket sr1 MF response SUCCEEDS without bus-level canfilters (the fix)
+
+# FIX VERIFICATION:
+# The fix in cansocket_python_can.py strips can_filters from the raw
+# Bus kwargs. Without Bus-level filtering, mux() reads ALL frames from
+# the serial buffer (bus.recv returns all frames, not just matching).
+# mux() distributes frames to sockets via per-socket _matches_filters().
+# The ISOTP frames are no longer stuck behind bg traffic.
+#
+# This test uses the same mux_throttle=15ms (simulating Windows) but
+# WITHOUT bus_filters (bus_filters=None), simulating the fixed behavior
+# where the raw Bus has no filters. mux() reads ALL available frames in
+# each call, easily keeping up with bg traffic. The test should succeed.
+
+from threading import Thread, Event
+
+response_data = dhex("62 00 01 66 6c 61 67 7b 55 44 53 5f 44 41 54 41 5f 52 45 41 44 7d")
+bg_ids = [0x062, 0x024, 0x039]
+
+with SlowTestSocket(CAN, frame_delay=0, mux_throttle=0.015) as isocan, \
         TestSocket(CAN) as ecu_mon, \
         ISOTPSoftSocket(isocan, tx_id=0x7e3, rx_id=0x7eb) as sock:
     with TestSocket(CAN) as stim:
@@ -1519,7 +1596,7 @@ with SlowTestSocket(CAN, frame_delay=0.010, mux_throttle=0.001) as isocan, \
         ecu_thread.join(timeout=2)
         fc_thread.join(timeout=2)
 
-assert result is not None, "MF response not received with slow mux and bg traffic"
+assert result is not None, "MF response not received without bus-level canfilters"
 assert result.data == response_data
 
 

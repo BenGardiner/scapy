@@ -14,8 +14,7 @@ import time
 import struct
 import threading
 
-from functools import reduce
-from operator import add
+
 from collections import deque
 
 from scapy.config import conf
@@ -165,17 +164,24 @@ class _SocketsPool(object):
         else:
             k = str(kwargs.get("bustype", "unknown_bustype")) + "_" + \
                 str(kwargs.get("channel", "unknown_channel"))
+        # Strip can_filters from kwargs for the raw Bus object.
+        # Filtering must NOT happen at the Bus level because
+        # BusABC.recv(timeout=0) consumes non-matching frames from
+        # the serial buffer without returning them, then returns None
+        # (timeout expired). This makes mux() think the buffer is
+        # empty after reading just one non-matching frame, starving
+        # the rx_queue on busy serial interfaces like slcan.
+        # Per-socket filtering in mux() via _matches_filters() is
+        # sufficient and does not have this problem.
+        bus_kwargs = {k_: v for k_, v in kwargs.items()
+                      if k_ != 'can_filters'}
         with self.pool_mutex:
             if k in self.pool:
                 t = self.pool[k]
                 t.sockets.append(socket)
-                filters = [s.filters for s in t.sockets
-                           if s.filters is not None]
-                if filters:
-                    t.bus.set_filters(reduce(add, filters))
                 socket.name = k
             else:
-                bus = can_Bus(*args, **kwargs)
+                bus = can_Bus(*args, **bus_kwargs)
                 socket.name = k
                 self.pool[k] = SocketMapper(bus, [socket])
 
