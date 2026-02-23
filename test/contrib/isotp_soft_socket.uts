@@ -1510,15 +1510,14 @@ assert result is None, "Expected timeout with bus-level canfilters but got a res
 #   can_filters: {[0x7eb], None} - per-socket filtering vs. no filtering
 #   adapter:    {limited (slcan-like, frame_delay=0.002), unlimited (candle-like, frame_delay=0)}
 #
-# All tests use retries=0, timeout=1.0. All should PASS with the fix
+# All tests use retry=0, timeout=1.0. All should PASS with the fix
 # (can_filters stripped from raw Bus, per-socket filtering in mux).
 
 = MF response helper setup for cartesian product tests
 
 from threading import Thread, Event
 
-def run_mf_response_test(frame_delay, mux_throttle, filters_kwarg, threaded,
-                         _globals=None):
+def run_mf_response_test(frame_delay, mux_throttle, filters_kwarg, threaded):
     import time as _time
     from threading import Thread as _Thread, Event as _Event
     from scapy.layers.can import CAN as _CAN
