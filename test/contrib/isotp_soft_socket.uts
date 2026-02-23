@@ -1440,17 +1440,6 @@ with TestSocket(CAN) as isocan, ISOTPSoftSocket(isocan, tx_id=0x641, rx_id=0x241
 # On a busy bus with 99% non-matching traffic, mux only processes
 # ~1 frame per call. The ISOTP frames get buried in the serial buffer
 # and are never reached within the sr1() timeout.
-#
-# This test uses SlowTestSocket with bus_filters=[0x7eb] and realistic
-# frame_delay=0.002 (2ms total per-frame read time, accounting for
-# 115200 baud UART transmission plus USB-to-UART transfer latency). mux_throttle=15ms simulates Windows'
-# timer resolution (~15.6ms). Combined with bus_filters causing only
-# 1 frame consumed per mux call, the effective drain rate (~67fps)
-# cannot keep up with bg traffic arrival rate (300fps). ISOTP frames
-# get permanently buried.
-#
-# This test should reliably time out, matching real slcan behavior
-# on Windows.
 
 from threading import Thread, Event
 
@@ -1509,79 +1498,163 @@ with SlowTestSocket(CAN, frame_delay=0.002, mux_throttle=0.015, bus_filters=[0x7
 assert result is None, "Expected timeout with bus-level canfilters but got a response"
 
 
-= ISOTPSoftSocket sr1 MF response SUCCEEDS with can_filters after fix (no bus-level filtering)
-
-# FIX VERIFICATION:
-# The fix in cansocket_python_can.py strips can_filters from the raw
-# Bus kwargs. Without Bus-level filtering, mux() reads ALL frames from
-# the serial buffer (bus.recv returns all frames, not just matching).
-# mux() distributes frames to sockets via per-socket _matches_filters().
-# The ISOTP frames are no longer stuck behind bg traffic.
++ MF response via sr1() cartesian product tests
+# Background traffic from pcap: 3 periodic IDs (0x062, 0x024, 0x039) every
+# 10ms, plus a burst of 9 additional IDs every 100ms.
+# ECU response latency: ~0.6ms after SF request (from pcap frame 385).
+# CF timing after FC: CF1 +8ms, CF2 +10ms, CF3 +10ms (from pcap).
+# Expected ISOTP data: "62 00 01 flag{UDS_DATA_READ}" (22 bytes).
 #
-# This test uses realistic slcan timing: frame_delay=0.002 (2ms per
-# frame at 115200 baud UART over USB) and mux_throttle=15ms (Windows
-# timer resolution). With can_filters=[0x7eb] (not bus_filters), the
-# raw Bus has no filters. mux() reads ALL available frames in each
-# call, discards non-matching ones, and delivers only 0x7eb frames.
-# Without the old mux deadline (which limited reads to 10ms per call),
-# mux drains the entire serial buffer in one call, then returns when
-# bus.recv returns None. The test succeeds because mux efficiently
-# drains the buffer on each invocation.
+# Cartesian product dimensions:
+#   threaded:   {False, True} - sr1() threading mode
+#   can_filters: {[0x7eb], None} - per-socket filtering vs. no filtering
+#   adapter:    {limited (slcan-like, frame_delay=0.002), unlimited (candle-like, frame_delay=0)}
+#
+# All tests use retries=0, timeout=1.0. All should PASS with the fix
+# (can_filters stripped from raw Bus, per-socket filtering in mux).
+
+= MF response helper setup for cartesian product tests
 
 from threading import Thread, Event
 
-response_data = dhex("62 00 01 66 6c 61 67 7b 55 44 53 5f 44 41 54 41 5f 52 45 41 44 7d")
-bg_ids = [0x062, 0x024, 0x039]
+def run_mf_response_test(frame_delay, mux_throttle, filters_kwarg, threaded,
+                         _globals=None):
+    import time as _time
+    from threading import Thread as _Thread, Event as _Event
+    from scapy.layers.can import CAN as _CAN
+    from scapy.contrib.isotp import ISOTP as _ISOTP
+    from scapy.contrib.isotp.isotp_soft_socket import ISOTPSoftSocket as _ISOTPSoftSocket
+    from test.testsocket import TestSocket as _TestSocket, SlowTestSocket as _SlowTestSocket
+    _dhex = bytes.fromhex
+    response_data = _dhex("620001666c61677b5544535f444154415f524541447d")
+    bg_periodic = [0x062, 0x024, 0x039]
+    bg_burst = [0x1d3, 0x024, 0x039, 0x077, 0x098, 0x150, 0x1a7, 0x1b8, 0x1bb]
+    if frame_delay > 0:
+        sock_cls = _SlowTestSocket
+        sock_kwargs = dict(frame_delay=frame_delay, mux_throttle=mux_throttle, **filters_kwarg)
+    else:
+        sock_cls = _TestSocket
+        sock_kwargs = {}
+    with sock_cls(_CAN, **sock_kwargs) as isocan, \
+            _TestSocket(_CAN) as ecu_mon, \
+            _ISOTPSoftSocket(isocan, tx_id=0x7e3, rx_id=0x7eb) as sock:
+        with _TestSocket(_CAN) as stim:
+            stim.pair(isocan)
+            isocan.pair(ecu_mon)
+            fc_received = _Event()
+            stop = _Event()
+            bg_cycle = [0]
+            def bg_generator():
+                while not stop.is_set():
+                    for bid in bg_periodic:
+                        if stop.is_set():
+                            return
+                        stim.send(_CAN(identifier=bid, data=bytes(8)))
+                    bg_cycle[0] += 1
+                    if bg_cycle[0] % 10 == 0:
+                        for bid in bg_burst:
+                            if stop.is_set():
+                                return
+                            stim.send(_CAN(identifier=bid, data=bytes(8)))
+                    _time.sleep(0.010)
+            def ecu_simulation():
+                _time.sleep(0.05)
+                stim.send(_CAN(identifier=0x7eb, data=_dhex("1016620001666c61")))
+                fc_received.wait(timeout=5.0)
+                if not fc_received.is_set():
+                    return
+                _time.sleep(0.008)
+                stim.send(_CAN(identifier=0x7eb, data=_dhex("21677b5544535f44")))
+                _time.sleep(0.010)
+                stim.send(_CAN(identifier=0x7eb, data=_dhex("224154415f524541")))
+                _time.sleep(0.010)
+                stim.send(_CAN(identifier=0x7eb, data=_dhex("23447d")))
+            def fc_watcher():
+                while not stop.is_set():
+                    if _TestSocket.select([ecu_mon], 0.1):
+                        pkt = ecu_mon.recv()
+                        if pkt is not None and pkt.identifier == 0x7e3 and \
+                           len(pkt.data) >= 1 and bytes(pkt.data)[0] == 0x30:
+                            fc_received.set()
+                            return
+            bg_thread = _Thread(target=bg_generator, daemon=True)
+            ecu_thread = _Thread(target=ecu_simulation, daemon=True)
+            fc_thread = _Thread(target=fc_watcher, daemon=True)
+            bg_thread.start()
+            ecu_thread.start()
+            fc_thread.start()
+            result = sock.sr1(_ISOTP(data=_dhex("220001")),
+                              retry=0, timeout=1.0,
+                              threaded=threaded, verbose=0)
+            stop.set()
+            fc_received.set()
+            ecu_thread.join(timeout=2)
+            fc_thread.join(timeout=2)
+    return result, response_data
 
-with SlowTestSocket(CAN, frame_delay=0.002, mux_throttle=0.015, can_filters=[0x7eb]) as isocan, \
-        TestSocket(CAN) as ecu_mon, \
-        ISOTPSoftSocket(isocan, tx_id=0x7e3, rx_id=0x7eb) as sock:
-    with TestSocket(CAN) as stim:
-        stim.pair(isocan)
-        isocan.pair(ecu_mon)
-        fc_received = Event()
-        stop = Event()
-        def bg_generator():
-            while not stop.is_set():
-                for bid in bg_ids:
-                    if stop.is_set():
-                        return
-                    stim.send(CAN(identifier=bid, data=bytes(8)))
-                time.sleep(0.010)
-        def ecu_simulation():
-            time.sleep(0.05)
-            stim.send(CAN(identifier=0x7eb, data=dhex("10 16 62 00 01 66 6c 61")))
-            fc_received.wait(timeout=5.0)
-            if not fc_received.is_set():
-                return
-            time.sleep(0.008)
-            stim.send(CAN(identifier=0x7eb, data=dhex("21 67 7b 55 44 53 5f 44")))
-            time.sleep(0.010)
-            stim.send(CAN(identifier=0x7eb, data=dhex("22 41 54 41 5f 52 45 41")))
-            time.sleep(0.010)
-            stim.send(CAN(identifier=0x7eb, data=dhex("23 44 7d")))
-        def fc_watcher():
-            while not stop.is_set():
-                if TestSocket.select([ecu_mon], 0.1):
-                    pkt = ecu_mon.recv()
-                    if pkt is not None and pkt.identifier == 0x7e3 and \
-                       len(pkt.data) >= 1 and bytes(pkt.data)[0] == 0x30:
-                        fc_received.set()
-                        return
-        bg_thread = Thread(target=bg_generator, daemon=True)
-        ecu_thread = Thread(target=ecu_simulation, daemon=True)
-        fc_thread = Thread(target=fc_watcher, daemon=True)
-        bg_thread.start()
-        ecu_thread.start()
-        fc_thread.start()
-        result = sock.sr1(ISOTP(data=dhex("22 00 01")), timeout=8, verbose=0)
-        stop.set()
-        fc_received.set()
-        ecu_thread.join(timeout=2)
-        fc_thread.join(timeout=2)
+= MF response: candle-like unlimited, no can_filters, threaded=False
 
-assert result is not None, "MF response not received with can_filters after fix"
-assert result.data == response_data
+result, expected = run_mf_response_test(
+    frame_delay=0, mux_throttle=0,
+    filters_kwarg={}, threaded=False)
+assert result is not None, "MF response not received (candle, no filters, threaded=False)"
+assert result.data == expected
+
+= MF response: candle-like unlimited, no can_filters, threaded=True
+
+result, expected = run_mf_response_test(
+    frame_delay=0, mux_throttle=0,
+    filters_kwarg={}, threaded=True)
+assert result is not None, "MF response not received (candle, no filters, threaded=True)"
+assert result.data == expected
+
+= MF response: candle-like unlimited, can_filters=[0x7eb], threaded=False
+
+result, expected = run_mf_response_test(
+    frame_delay=0, mux_throttle=0,
+    filters_kwarg=dict(can_filters=[0x7eb]), threaded=False)
+assert result is not None, "MF response not received (candle, can_filters, threaded=False)"
+assert result.data == expected
+
+= MF response: candle-like unlimited, can_filters=[0x7eb], threaded=True
+
+result, expected = run_mf_response_test(
+    frame_delay=0, mux_throttle=0,
+    filters_kwarg=dict(can_filters=[0x7eb]), threaded=True)
+assert result is not None, "MF response not received (candle, can_filters, threaded=True)"
+assert result.data == expected
+
+= MF response: slcan-like limited, no can_filters, threaded=False
+
+result, expected = run_mf_response_test(
+    frame_delay=0.002, mux_throttle=0.001,
+    filters_kwarg={}, threaded=False)
+assert result is not None, "MF response not received (slcan, no filters, threaded=False)"
+assert result.data == expected
+
+= MF response: slcan-like limited, no can_filters, threaded=True
+
+result, expected = run_mf_response_test(
+    frame_delay=0.002, mux_throttle=0.001,
+    filters_kwarg={}, threaded=True)
+assert result is not None, "MF response not received (slcan, no filters, threaded=True)"
+assert result.data == expected
+
+= MF response: slcan-like limited, can_filters=[0x7eb], threaded=False
+
+result, expected = run_mf_response_test(
+    frame_delay=0.002, mux_throttle=0.001,
+    filters_kwarg=dict(can_filters=[0x7eb]), threaded=False)
+assert result is not None, "MF response not received (slcan, can_filters, threaded=False)"
+assert result.data == expected
+
+= MF response: slcan-like limited, can_filters=[0x7eb], threaded=True
+
+result, expected = run_mf_response_test(
+    frame_delay=0.002, mux_throttle=0.001,
+    filters_kwarg=dict(can_filters=[0x7eb]), threaded=True)
+assert result is not None, "MF response not received (slcan, can_filters, threaded=True)"
+assert result.data == expected
 
 
 + Cleanup
