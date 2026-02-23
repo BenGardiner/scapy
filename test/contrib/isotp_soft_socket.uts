@@ -1456,9 +1456,10 @@ with TestSocket(CAN) as isocan, ISOTPSoftSocket(isocan, tx_id=0x641, rx_id=0x241
 # Simulates ISOTP multi-frame reception on a slow serial interface
 # (like slcan) with continuous background CAN traffic.
 # Uses SlowTestSocket with 10ms per-frame serial delay to simulate
-# the mux blocking that occurs on slcan. A separate background thread
-# generates continuous traffic (3 frames every 10ms) to ensure the
-# serial buffer always has frames.
+# the mux blocking that occurs on slcan where each bus.recv() takes
+# time to read and parse a frame from the serial port. A separate
+# background thread generates continuous traffic (3 frames every 10ms)
+# to ensure the serial buffer always has frames.
 # Without the mux time limit fix in cansocket_python_can.py, the mux
 # loop blocks indefinitely because new frames arrive faster than they
 # can be drained, preventing the ISOTP state machine from ever

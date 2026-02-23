@@ -192,6 +192,13 @@ class SlowTestSocket(TestSocket):
     def __init__(self, basecls=None, frame_delay=0.0002,
                  mux_throttle=0.001):
         # type: (Optional[Type[Packet]], float, float) -> None
+        """
+        :param frame_delay: Simulated per-frame serial read time (seconds).
+            Default 0.2ms is a fast interface. Use 0.010 (10ms) for
+            realistic slcan simulation with continuous background traffic.
+        :param mux_throttle: Minimum time between mux calls (default 1ms),
+            matching PythonCANSocket's multiplex_rx_packets() throttle.
+        """
         super(SlowTestSocket, self).__init__(basecls)
         from collections import deque
         self._serial_buffer = deque()  # type: deque[bytes]
@@ -219,6 +226,8 @@ class SlowTestSocket(TestSocket):
         now = time.monotonic()
         if now - self._last_mux < self._mux_throttle:
             return
+        # 10ms deadline mirrors the real mux() time limit in
+        # cansocket_python_can.py to accurately simulate blocking behavior
         deadline = time.monotonic() + 0.01
         while True:
             with self._serial_lock:
