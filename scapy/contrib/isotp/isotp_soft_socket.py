@@ -595,12 +595,16 @@ class ISOTPSocketImplementation:
     def can_recv(self):
         # type: () -> None
         self.last_rx_call = TimeoutScheduler._time()
-        while self.can_socket.select([self.can_socket], 0):
-            pkt = self.can_socket.recv()
-            if pkt:
-                self.on_can_recv(pkt)
-            else:
-                break
+        try:
+            while self.can_socket.select([self.can_socket], 0):
+                pkt = self.can_socket.recv()
+                if pkt:
+                    self.on_can_recv(pkt)
+                else:
+                    break
+        except Exception:
+            log_isotp.warning("Error in can_recv: %s",
+                              traceback.format_exc())
         if not self.closed and not self.can_socket.closed:
             if self.can_socket.select([self.can_socket], 0):
                 poll_time = 0.0
@@ -1003,11 +1007,15 @@ class ISOTPSocketImplementation:
 
     def _send(self):
         # type: () -> None
-        if self.tx_state == ISOTP_IDLE:
-            if select_objects([self.tx_queue], 0):
-                pkt = self.tx_queue.recv()
-                if pkt:
-                    self.begin_send(pkt)
+        try:
+            if self.tx_state == ISOTP_IDLE:
+                if select_objects([self.tx_queue], 0):
+                    pkt = self.tx_queue.recv()
+                    if pkt:
+                        self.begin_send(pkt)
+        except Exception:
+            log_isotp.warning("Error in _send: %s",
+                              traceback.format_exc())
 
         if not self.closed:
             self.tx_handle = TimeoutScheduler.schedule(

@@ -72,6 +72,7 @@ class SocketMapper(object):
                     msgs.append(msg)
             except Exception as e:
                 warning("[MUX] python-can exception caught: %s" % e)
+                break
 
         for sock in self.sockets:
             with sock.lock:
