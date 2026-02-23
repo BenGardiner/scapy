@@ -1464,8 +1464,8 @@ with TestSocket(CAN) as isocan, ISOTPSoftSocket(isocan, tx_id=0x641, rx_id=0x241
 # and are never reached within the sr1() timeout.
 #
 # This test uses SlowTestSocket with bus_filters=[0x7eb] and realistic
-# frame_delay=0.002 (2ms per frame, matching 115200 baud UART over
-# USB with ~1ms latency timer). mux_throttle=15ms simulates Windows'
+# frame_delay=0.002 (2ms total per-frame read time, accounting for
+# 115200 baud UART transmission plus USB-to-UART transfer latency). mux_throttle=15ms simulates Windows'
 # timer resolution (~15.6ms). Combined with bus_filters causing only
 # 1 frame consumed per mux call, the effective drain rate (~67fps)
 # cannot keep up with bg traffic arrival rate (300fps). ISOTP frames

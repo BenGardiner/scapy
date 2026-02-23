@@ -267,7 +267,7 @@ class SlowTestSocket(TestSocket):
         When neither is set, all frames are delivered (no filtering).
 
         No deadline is used: the loop reads until the serial buffer is
-        empty, matching real PythonCANSocket mux() which reads until
+        empty, matching real SocketMapper.mux() which reads until
         bus.recv(timeout=0) returns None.
         """
         now = time.monotonic()
