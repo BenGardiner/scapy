@@ -596,10 +596,29 @@ class ISOTPSocketImplementation:
         # type: () -> None
         self.last_rx_call = TimeoutScheduler._time()
         try:
-            while self.can_socket.select([self.can_socket], 0):
-                pkt = self.can_socket.recv()
-                if pkt:
-                    self.on_can_recv(pkt)
+            drain_deadline = time.monotonic() + self.cf_timeout
+            while True:
+                if self.closed:
+                    break
+                if self.can_socket.select([self.can_socket], 0):
+                    pkt = self.can_socket.recv()
+                    if pkt:
+                        self.on_can_recv(pkt)
+                    else:
+                        break
+                elif (self.rx_state == ISOTP_WAIT_DATA or
+                      self.tx_state == ISOTP_WAIT_FC or
+                      self.tx_state == ISOTP_WAIT_FIRST_FC) and \
+                     time.monotonic() < drain_deadline:
+                    # Keep polling without rescheduling. On slow serial
+                    # interfaces (slcan), matching frames may be buried
+                    # behind background traffic. The mux reads a few
+                    # frames per call (break-on-match or deadline), so
+                    # we must call it repeatedly to make progress.
+                    # Rescheduling would add 1-15ms gaps (Windows timer
+                    # resolution) during which new bg frames accumulate
+                    # faster than they drain.
+                    continue
                 else:
                     break
         except Exception:

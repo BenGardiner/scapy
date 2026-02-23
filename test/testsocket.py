@@ -205,24 +205,29 @@ class SlowTestSocket(TestSocket):
     """
 
     def __init__(self, basecls=None, frame_delay=0.0002,
-                 mux_throttle=0.001, bus_filters=None,
-                 can_filters=None):
-        # type: (Optional[Type[Packet]], float, float, Optional[List[int]], Optional[List[int]]) -> None
+                 mux_throttle=0.0001, bus_filters=None,
+                 can_filters=None, break_on_match=True):
+        # type: (Optional[Type[Packet]], float, float, Optional[List[int]], Optional[List[int]], bool) -> None
         """
         :param frame_delay: Simulated per-frame serial read time (seconds).
-            Default 0.2ms is a fast interface. Use 0.010 (10ms) for
+            Default 0.2ms is a fast interface. Use 0.002 (2ms) for
             realistic slcan simulation with continuous background traffic.
-        :param mux_throttle: Minimum time between mux calls (default 1ms),
-            matching PythonCANSocket's multiplex_rx_packets() throttle.
+        :param mux_throttle: Minimum time between mux calls (default
+            0.1ms), matching PythonCANSocket's multiplex_rx_packets().
         :param bus_filters: Optional list of CAN identifiers simulating
             can_filters on the raw Bus (the BUG). When set, mux reads
             ONE frame per call; non-matching frames are consumed but not
             delivered. Mutually exclusive with can_filters.
         :param can_filters: Optional list of CAN identifiers simulating
-            per-socket filtering in mux (the FIX). mux reads ALL frames
-            but only delivers matching ones. This is how real
-            PythonCANSocket works after the fix strips can_filters from
-            the raw Bus.
+            per-socket filtering in mux (the FIX). mux reads frames and
+            only delivers matching ones. This is how real PythonCANSocket
+            works after the fix strips can_filters from the raw Bus.
+        :param break_on_match: When True (default), mux returns
+            immediately after delivering the first matching frame
+            (break-on-match). When False, mux reads ALL frames from the
+            serial buffer before returning (old batch behavior). The old
+            batch behavior causes mux to block for seconds on busy serial
+            interfaces, leading to sr1 timeouts and 'not found in pool'.
         """
         super(SlowTestSocket, self).__init__(basecls)
         from collections import deque
@@ -233,6 +238,9 @@ class SlowTestSocket(TestSocket):
         self._mux_throttle = mux_throttle
         self._bus_filters = bus_filters
         self._can_filters = can_filters
+        self._break_on_match = break_on_match
+        self._registered = True
+        self.send_after_close_count = 0
         # Replace the ObjectPipe that `ins` refers to with one that
         # intercepts writes and redirects to serial_buffer
         self._real_ins = self.ins
@@ -258,22 +266,24 @@ class SlowTestSocket(TestSocket):
         if it doesn't match, consumed but NOT returned (BusABC returns
         None because timeout=0 expired). Only ~1 frame per mux() call.
 
-        When can_filters is set (FIX), simulates the fixed behavior:
-        mux() reads ALL available frames but only delivers matching
-        ones to the ObjectPipe. Non-matching frames are consumed and
-        discarded. This is how real mux() works after the fix strips
-        can_filters from the raw Bus.
+        When can_filters is set (FIX) and break_on_match is True,
+        simulates the fixed mux: reads frames one at a time, delivers
+        matching ones immediately, and breaks on the first match. A
+        10ms safety deadline prevents infinite loops when no match is
+        found on a busy bus.
 
-        When neither is set, all frames are delivered (no filtering).
-
-        No deadline is used: the loop reads until the serial buffer is
-        empty, matching real SocketMapper.mux() which reads until
-        bus.recv(timeout=0) returns None.
+        When can_filters is set but break_on_match is False, simulates
+        the OLD batch mux: reads ALL frames from the serial buffer
+        before returning. This blocks for a long time on busy serial
+        interfaces, causing sr1 timeouts and 'not found in pool'.
         """
         now = time.monotonic()
         if now - self._last_mux < self._mux_throttle:
             return
+        deadline = time.monotonic() + 0.010
         while True:
+            if self.closed:
+                break
             with self._serial_lock:
                 if not self._serial_buffer:
                     break
@@ -284,21 +294,22 @@ class SlowTestSocket(TestSocket):
             if self._bus_filters is not None:
                 can_id = self._extract_can_id(frame)
                 if can_id not in self._bus_filters:
-                    # Frame consumed from serial but NOT delivered.
-                    # Simulates BusABC.recv(timeout=0) returning None
-                    # after reading one non-matching frame.
                     break
                 self._real_ins.send(frame)
-                # bus.recv(timeout=0) returns only ONE frame per call
                 break
-            # Simulate per-socket filtering in mux (the FIX)
+            # Simulate per-socket filtering in mux
             if self._can_filters is not None:
                 can_id = self._extract_can_id(frame)
                 if can_id not in self._can_filters:
-                    # Frame read from serial and discarded by mux's
-                    # _matches_filters(). Continue reading next frame.
+                    if self._break_on_match and \
+                       time.monotonic() >= deadline:
+                        break
                     continue
+            # Matching frame (or no filter): deliver
             self._real_ins.send(frame)
+            if self._break_on_match:
+                break
+            # Old batch mode: continue reading all frames
         self._last_mux = time.monotonic()
 
     def recv_raw(self, x=MTU):
@@ -308,10 +319,23 @@ class SlowTestSocket(TestSocket):
 
     def send(self, x):
         # type: (Packet) -> int
-        """Send with serial write delay to simulate slcan."""
+        """Send with serial write delay to simulate slcan.
+        Tracks sends after unregister to detect the 'not found in pool'
+        race condition that occurs on real slcan when mux blocks too long.
+        """
+        if not self._registered:
+            self.send_after_close_count += 1
         if self._frame_delay > 0:
             time.sleep(self._frame_delay)
         return super(SlowTestSocket, self).send(x)
+
+    def unregister(self):
+        # type: () -> None
+        """Simulate SocketsPool.unregister(): mark socket as removed.
+        Any subsequent send() will increment send_after_close_count,
+        simulating the '[SND] Socket not found in pool' warning.
+        """
+        self._registered = False
 
     @staticmethod
     def select(sockets, remain=conf.recv_poll_rate):

@@ -56,34 +56,41 @@ class SocketMapper(object):
 
     def mux(self):
         # type: () -> None
-        """Multiplexer function. Tries to receive from its python-can bus
-        object. If a message is received, this message gets forwarded to
-        all receive queues of the SocketWrapper objects.
+        """Multiplexer function. Reads one frame at a time from the
+        python-can bus and distributes it immediately to matching
+        SocketWrapper rx_queues.
 
-        The loop reads until bus.recv(timeout=0) returns None, meaning
-        the underlying interface buffer is empty. On serial interfaces
-        like slcan, this is bounded by the USB transfer burst size
-        (typically a few frames every 1-16ms). On kernel interfaces
-        like socketcan, the buffer is bounded by the kernel queue size
-        (typically 1024 frames, drained in ~10ms).
+        Returns as soon as a matching frame is found (break-on-match),
+        so the caller (e.g. ISOTP's can_recv) can process it without
+        waiting for the entire serial buffer to drain. This is critical
+        for slow serial interfaces like slcan with heavy background
+        traffic, where draining the entire buffer could take seconds.
+
+        A 10ms safety deadline prevents infinite loops when no matching
+        frames are found on a continuously busy bus.
         """
-        msgs = []
+        deadline = time.monotonic() + 0.010
         while True:
             try:
                 msg = self.bus.recv(timeout=0)
                 if msg is None:
                     break
-                else:
-                    msgs.append(msg)
             except Exception as e:
                 warning("[MUX] python-can exception caught: %s" % e)
                 break
 
-        for sock in self.sockets:
-            with sock.lock:
-                for msg in msgs:
-                    if sock._matches_filters(msg):
+            matched = False
+            for sock in self.sockets:
+                if sock._matches_filters(msg):
+                    with sock.lock:
                         sock.rx_queue.append(msg)
+                    matched = True
+
+            if matched:
+                break
+
+            if time.monotonic() >= deadline:
+                break
 
 
 class _SocketsPool(object):
@@ -133,10 +140,12 @@ class _SocketsPool(object):
         """This calls the mux() function of all SocketMapper
         objects in this SocketPool
         """
-        if time.monotonic() - self.last_call < 0.001:
+        if time.monotonic() - self.last_call < 0.0001:
             # Avoid starvation if multiple threads are doing selects, since
             # this object is singleton and all python-CAN sockets are using
             # the same instance and locking the same locks.
+            # 0.1ms throttle is short enough for ISOTP's can_recv while
+            # loop to call mux() on every iteration without delay.
             return
         with self.pool_mutex:
             for t in self.pool.values():
