@@ -188,31 +188,41 @@ class SlowTestSocket(TestSocket):
     and each frame takes time to read from the serial port (simulated
     by blocking for frame_delay per frame during mux).
 
-    When bus_filters is set (list of CAN identifiers), simulates
-    BusABC.recv(timeout=0) with can_filters on the raw Bus. In this
-    mode, each mux() call reads ONE frame from the serial buffer;
-    if the frame doesn't match any bus_filter, it is consumed (removed
-    from buffer) but NOT delivered, and mux returns immediately. This
-    reproduces the real bug where python-can's BusABC.recv(timeout=0)
-    consumes non-matching frames and returns None (timeout expired),
-    making mux() think the serial buffer is empty.
+    Two filtering modes simulate the before/after fix behavior:
+
+    bus_filters (BUG simulation): Simulates BusABC.recv(timeout=0)
+    with can_filters on the raw Bus. Each mux() call reads ONE frame;
+    if it doesn't match, it is consumed but NOT delivered, and mux
+    returns immediately. This reproduces the real bug where python-can's
+    BusABC.recv(timeout=0) returns None after one non-matching frame.
+
+    can_filters (FIX simulation): Simulates the fixed behavior where
+    the raw Bus has no filters but mux() applies per-socket filtering
+    via _matches_filters(). mux() reads ALL available frames from the
+    serial buffer but only delivers matching frames to the ObjectPipe.
+    Non-matching frames are consumed and discarded, just like the real
+    mux() distributes frames based on each socket's can_filters.
     """
 
     def __init__(self, basecls=None, frame_delay=0.0002,
-                 mux_throttle=0.001, bus_filters=None):
-        # type: (Optional[Type[Packet]], float, float, Optional[List[int]]) -> None
+                 mux_throttle=0.001, bus_filters=None,
+                 can_filters=None):
+        # type: (Optional[Type[Packet]], float, float, Optional[List[int]], Optional[List[int]]) -> None
         """
         :param frame_delay: Simulated per-frame serial read time (seconds).
             Default 0.2ms is a fast interface. Use 0.010 (10ms) for
             realistic slcan simulation with continuous background traffic.
         :param mux_throttle: Minimum time between mux calls (default 1ms),
             matching PythonCANSocket's multiplex_rx_packets() throttle.
-        :param bus_filters: Optional list of CAN identifiers accepted by
-            the simulated Bus. When set, simulates the bug where
-            BusABC.recv(timeout=0) with can_filters consumes
-            non-matching frames without returning them. Set to None
-            (default) to simulate the fixed behavior where the raw Bus
-            has no filters and mux() reads all frames.
+        :param bus_filters: Optional list of CAN identifiers simulating
+            can_filters on the raw Bus (the BUG). When set, mux reads
+            ONE frame per call; non-matching frames are consumed but not
+            delivered. Mutually exclusive with can_filters.
+        :param can_filters: Optional list of CAN identifiers simulating
+            per-socket filtering in mux (the FIX). mux reads ALL frames
+            but only delivers matching ones. This is how real
+            PythonCANSocket works after the fix strips can_filters from
+            the raw Bus.
         """
         super(SlowTestSocket, self).__init__(basecls)
         from collections import deque
@@ -222,6 +232,7 @@ class SlowTestSocket(TestSocket):
         self._frame_delay = frame_delay
         self._mux_throttle = mux_throttle
         self._bus_filters = bus_filters
+        self._can_filters = can_filters
         # Replace the ObjectPipe that `ins` refers to with one that
         # intercepts writes and redirects to serial_buffer
         self._real_ins = self.ins
@@ -242,17 +253,18 @@ class SlowTestSocket(TestSocket):
 
         Simulates PythonCANSocket's multiplex_rx_packets() + mux().
 
-        When bus_filters is set, simulates the bug where
-        BusABC.recv(timeout=0) with can_filters on the raw Bus reads
-        ONE frame from serial; if it doesn't match any filter, the
-        frame is consumed but NOT returned (BusABC returns None because
-        timeout=0 expired). mux() sees None and stops, thinking the
-        serial buffer is empty. This means only ~1 frame is consumed
-        per mux() call regardless of how many frames are buffered.
+        When bus_filters is set (BUG), simulates BusABC.recv(timeout=0)
+        with can_filters on the raw Bus: reads ONE frame from serial;
+        if it doesn't match, consumed but NOT returned (BusABC returns
+        None because timeout=0 expired). Only ~1 frame per mux() call.
 
-        When bus_filters is None (simulating the fix where the raw Bus
-        has no filters), mux() reads all available frames and delivers
-        them all. Per-socket filtering happens in on_can_recv().
+        When can_filters is set (FIX), simulates the fixed behavior:
+        mux() reads ALL available frames but only delivers matching
+        ones to the ObjectPipe. Non-matching frames are consumed and
+        discarded. This is how real mux() works after the fix strips
+        can_filters from the raw Bus.
+
+        When neither is set, all frames are delivered (no filtering).
         """
         now = time.monotonic()
         if now - self._last_mux < self._mux_throttle:
@@ -265,7 +277,7 @@ class SlowTestSocket(TestSocket):
                 frame = self._serial_buffer.popleft()
             if self._frame_delay > 0:
                 time.sleep(self._frame_delay)
-            # Simulate Bus-level filtering behavior
+            # Simulate Bus-level filtering (the BUG)
             if self._bus_filters is not None:
                 can_id = self._extract_can_id(frame)
                 if can_id not in self._bus_filters:
@@ -273,11 +285,19 @@ class SlowTestSocket(TestSocket):
                     # Simulates BusABC.recv(timeout=0) returning None
                     # after reading one non-matching frame.
                     break
-            self._real_ins.send(frame)
-            if self._bus_filters is not None:
-                # With bus_filters, simulate bus.recv(timeout=0) returning
-                # only ONE matching frame per call
+                self._real_ins.send(frame)
+                # bus.recv(timeout=0) returns only ONE frame per call
                 break
+            # Simulate per-socket filtering in mux (the FIX)
+            if self._can_filters is not None:
+                can_id = self._extract_can_id(frame)
+                if can_id not in self._can_filters:
+                    # Frame read from serial and discarded by mux's
+                    # _matches_filters(). Continue reading next frame.
+                    if time.monotonic() > deadline:
+                        break
+                    continue
+            self._real_ins.send(frame)
             if time.monotonic() > deadline:
                 break
         self._last_mux = time.monotonic()
