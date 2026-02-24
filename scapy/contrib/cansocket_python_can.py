@@ -54,6 +54,12 @@ class SocketMapper(object):
         self.bus = bus
         self.sockets = sockets
 
+    # Maximum frames to read per mux() call. Prevents holding
+    # pool_mutex for too long on slow serial interfaces (slcan)
+    # where bus.recv(timeout=0) takes ~2ms per frame and the
+    # serial buffer may contain hundreds of background frames.
+    MAX_FRAMES_PER_MUX = 20
+
     def mux(self):
         # type: () -> None
         """Multiplexer function. Tries to receive from its python-can bus
@@ -61,7 +67,7 @@ class SocketMapper(object):
         all receive queues of the SocketWrapper objects.
         """
         msgs = []
-        while True:
+        for _ in range(self.MAX_FRAMES_PER_MUX):
             try:
                 msg = self.bus.recv(timeout=0)
                 if msg is None:

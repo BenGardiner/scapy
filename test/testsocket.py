@@ -188,37 +188,30 @@ class SlowTestSocket(TestSocket):
     takes time to read from the serial port (simulated by blocking
     for frame_delay per frame during mux).
 
-    Two filtering modes simulate the before/after fix behavior:
+    can_filters: Optional list of CAN identifiers for per-socket
+    filtering in mux. mux reads up to max_mux_frames frames per call
+    and only delivers matching frames, just like the real
+    SocketMapper.mux() distributes frames based on _matches_filters.
 
-    bus_filters (BUG simulation): Simulates BusABC.recv(timeout=0)
-    with can_filters on the raw Bus. Each mux() call reads ONE frame;
-    if it doesn't match, it is consumed but NOT delivered, and mux
-    returns immediately. This reproduces the real bug where python-can's
-    BusABC.recv(timeout=0) returns None after one non-matching frame.
-
-    can_filters (FIX simulation): Simulates the fixed behavior where
-    the raw Bus has no filters but mux() applies per-socket filtering.
-    mux() reads ALL available frames from the serial buffer but only
-    delivers matching frames to the ObjectPipe, just like the real
-    batch mux() distributes frames based on each socket's can_filters.
+    max_mux_frames: Maximum frames read per mux() call. Matches
+    SocketMapper.MAX_FRAMES_PER_MUX in production code. Prevents
+    holding the simulated pool_mutex for too long on slow serial
+    interfaces where bus.recv(timeout=0) takes ~2ms per frame.
     """
 
     def __init__(self, basecls=None, frame_delay=0.0002,
-                 mux_throttle=0.001, bus_filters=None,
-                 can_filters=None):
-        # type: (Optional[Type[Packet]], float, float, Optional[List[int]], Optional[List[int]]) -> None
+                 mux_throttle=0.001, can_filters=None,
+                 max_mux_frames=20):
+        # type: (Optional[Type[Packet]], float, float, Optional[List[int]], int) -> None
         """
         :param frame_delay: Simulated per-frame serial read time (seconds).
         :param mux_throttle: Minimum time between mux calls (default 1ms),
             matching PythonCANSocket's multiplex_rx_packets().
-        :param bus_filters: Optional list of CAN identifiers simulating
-            can_filters on the raw Bus (the BUG). When set, mux reads
-            ONE frame per call; non-matching frames are consumed but not
-            delivered. Mutually exclusive with can_filters.
-        :param can_filters: Optional list of CAN identifiers simulating
-            per-socket filtering in mux (the FIX). mux reads ALL frames
-            and only delivers matching ones. Mutually exclusive with
-            bus_filters.
+        :param can_filters: Optional list of CAN identifiers for
+            per-socket filtering in mux. mux reads frames and only
+            delivers matching ones.
+        :param max_mux_frames: Max frames per mux() call (default 20),
+            matching SocketMapper.MAX_FRAMES_PER_MUX.
         """
         super(SlowTestSocket, self).__init__(basecls)
         from collections import deque
@@ -227,8 +220,8 @@ class SlowTestSocket(TestSocket):
         self._last_mux = 0.0
         self._frame_delay = frame_delay
         self._mux_throttle = mux_throttle
-        self._bus_filters = bus_filters
         self._can_filters = can_filters
+        self._max_mux_frames = max_mux_frames
         self._real_ins = self.ins
         self.ins = _SlowPipeWrapper(self)
 
@@ -246,21 +239,14 @@ class SlowTestSocket(TestSocket):
         """Move frames from serial buffer to rx ObjectPipe.
 
         Simulates PythonCANSocket's multiplex_rx_packets() + mux().
-
-        When bus_filters is set (BUG), simulates BusABC.recv(timeout=0)
-        with can_filters on the raw Bus: reads ONE frame from serial;
-        if it doesn't match, consumed but NOT returned.
-
-        When can_filters is set (FIX), simulates the fixed batch mux:
-        reads ALL frames from the serial buffer, delivers only matching
-        ones. Non-matching frames are consumed and discarded.
+        Reads up to max_mux_frames from the serial buffer, applying
+        per-socket can_filters to deliver only matching frames.
         """
         now = time.monotonic()
         if now - self._last_mux < self._mux_throttle:
             return
-        # Batch read all available frames (matching real mux behavior)
         msgs = []
-        while True:
+        for _ in range(self._max_mux_frames):
             if self.closed:
                 break
             with self._serial_lock:
@@ -269,14 +255,6 @@ class SlowTestSocket(TestSocket):
                 frame = self._serial_buffer.popleft()
             if self._frame_delay > 0:
                 time.sleep(self._frame_delay)
-            # Simulate Bus-level filtering (the BUG):
-            # reads ONE frame, returns None if no match
-            if self._bus_filters is not None:
-                can_id = self._extract_can_id(frame)
-                if can_id in self._bus_filters:
-                    msgs.append(frame)
-                # Either way, only read one frame per mux call
-                break
             msgs.append(frame)
 
         # Distribute: apply per-socket filtering if configured
