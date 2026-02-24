@@ -255,7 +255,7 @@ class SlowTestSocket(TestSocket):
 
         # Phase 1: read_bus — read frames from serial buffer
         msgs = []
-        deadline = (time.monotonic() + self._read_time_limit) \
+        deadline = time.monotonic() + self._read_time_limit \
             if self._read_time_limit > 0 else None
         while True:
             if self.closed:
