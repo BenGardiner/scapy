@@ -58,6 +58,7 @@ class SocketMapper(object):
     # pool_mutex for too long on slow serial interfaces (slcan)
     # where bus.recv(timeout=0) takes ~2ms per frame and the
     # serial buffer may contain hundreds of background frames.
+    # Value of 20 bounds mux duration to ~50ms on slcan (20 * 2.5ms).
     MAX_FRAMES_PER_MUX = 20
 
     def mux(self):
