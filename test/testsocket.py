@@ -203,7 +203,7 @@ class SlowTestSocket(TestSocket):
                  mux_throttle=0.001, can_filters=None,
                  serial_timeout=0.0, read_time_limit=0.0,
                  interface_name="slcan"):
-        # type: (Optional[Type[Packet]], float, float, Optional[List[int]], float, float, str) -> None
+        # type: (Optional[Type[Packet]], float, float, Optional[List[int]], float, float, str) -> None  # noqa: E501
         """
         :param frame_delay: Simulated per-frame serial read time (seconds).
         :param mux_throttle: Minimum time between mux calls (default 1ms).

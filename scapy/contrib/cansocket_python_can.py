@@ -207,7 +207,7 @@ class _SocketsPool(object):
                 # vector, candle) perform efficient hardware/kernel
                 # filtering and should keep their bus-level filters.
                 if kwargs.get('can_filters') and \
-                        'slcan' in k.lower():
+                        k.lower().startswith('slcan'):
                     bus.set_filters(None)
                 socket.name = k
                 self.pool[k] = SocketMapper(bus, [socket])
