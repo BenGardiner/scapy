@@ -1460,7 +1460,7 @@ from threading import Thread, Event
 
 def run_mf_response_test(frame_delay, mux_throttle, filters_kwarg, threaded,
                          prefill_frames=0, serial_timeout=0.0,
-                         read_time_limit=0.0):
+                         read_time_limit=0.0, interface_name="slcan"):
     import time as _time
     from threading import Thread as _Thread, Event as _Event
     from scapy.layers.can import CAN as _CAN
@@ -1476,6 +1476,7 @@ def run_mf_response_test(frame_delay, mux_throttle, filters_kwarg, threaded,
         sock_kwargs = dict(frame_delay=frame_delay, mux_throttle=mux_throttle,
                            serial_timeout=serial_timeout,
                            read_time_limit=read_time_limit,
+                           interface_name=interface_name,
                            **filters_kwarg)
     else:
         sock_cls = _TestSocket
@@ -1548,7 +1549,7 @@ def run_mf_response_test(frame_delay, mux_throttle, filters_kwarg, threaded,
 
 result, expected = run_mf_response_test(
     frame_delay=0, mux_throttle=0,
-    filters_kwarg={}, threaded=False)
+    filters_kwarg={}, threaded=False, interface_name="candle")
 assert result is not None, "MF response not received (candle, no filters, threaded=False)"
 assert result.data == expected
 
@@ -1556,7 +1557,7 @@ assert result.data == expected
 
 result, expected = run_mf_response_test(
     frame_delay=0, mux_throttle=0,
-    filters_kwarg={}, threaded=True)
+    filters_kwarg={}, threaded=True, interface_name="candle")
 assert result is not None, "MF response not received (candle, no filters, threaded=True)"
 assert result.data == expected
 
@@ -1564,7 +1565,8 @@ assert result.data == expected
 
 result, expected = run_mf_response_test(
     frame_delay=0, mux_throttle=0,
-    filters_kwarg=dict(can_filters=[0x7eb]), threaded=False)
+    filters_kwarg=dict(can_filters=[0x7eb]), threaded=False,
+    interface_name="candle")
 assert result is not None, "MF response not received (candle, can_filters, threaded=False)"
 assert result.data == expected
 
@@ -1572,7 +1574,8 @@ assert result.data == expected
 
 result, expected = run_mf_response_test(
     frame_delay=0, mux_throttle=0,
-    filters_kwarg=dict(can_filters=[0x7eb]), threaded=True)
+    filters_kwarg=dict(can_filters=[0x7eb]), threaded=True,
+    interface_name="candle")
 assert result is not None, "MF response not received (candle, can_filters, threaded=True)"
 assert result.data == expected
 

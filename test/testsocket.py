@@ -201,8 +201,9 @@ class SlowTestSocket(TestSocket):
 
     def __init__(self, basecls=None, frame_delay=0.0002,
                  mux_throttle=0.001, can_filters=None,
-                 serial_timeout=0.0, read_time_limit=0.0):
-        # type: (Optional[Type[Packet]], float, float, Optional[List[int]], float, float) -> None
+                 serial_timeout=0.0, read_time_limit=0.0,
+                 interface_name="slcan"):
+        # type: (Optional[Type[Packet]], float, float, Optional[List[int]], float, float, str) -> None
         """
         :param frame_delay: Simulated per-frame serial read time (seconds).
         :param mux_throttle: Minimum time between mux calls (default 1ms).
@@ -213,8 +214,11 @@ class SlowTestSocket(TestSocket):
         :param read_time_limit: Max time per mux read pass (seconds).
             Set to 0.01 to match SocketMapper.READ_BUS_TIME_LIMIT.
             When 0 (default), no time limit is applied.
+        :param interface_name: Simulated interface name (default "slcan").
+            Used in test descriptions to identify the adapter type.
         """
         super(SlowTestSocket, self).__init__(basecls)
+        self.interface_name = interface_name
         from collections import deque
         self._serial_buffer = deque()  # type: deque[bytes]
         self._serial_lock = Lock()

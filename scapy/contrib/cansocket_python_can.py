@@ -193,23 +193,21 @@ class _SocketsPool(object):
                 socket.name = k
             else:
                 bus = can_Bus(*args, **kwargs)
-                # Detect whether the bus performs hardware/kernel CAN
-                # filtering.  Interfaces like socketcan, kvaser, vector
-                # set bus._is_filtered = True after successfully
-                # applying filters in hardware.  Serial interfaces
-                # (slcan) only do software filtering inside
-                # BusABC.recv(): the recv loop reads one frame, finds
-                # it doesn't match, and returns None -- silently
-                # consuming serial bandwidth without returning the
-                # frame to the mux.  This starves the mux on busy
-                # buses.
+                # Serial interfaces like slcan only do software
+                # filtering inside BusABC.recv(): the recv loop reads
+                # one frame, finds it doesn't match, and returns
+                # None -- silently consuming serial bandwidth without
+                # returning the frame to the mux.  This starves the
+                # mux on busy buses.
                 #
-                # When hardware filtering is NOT active, clear the
-                # filters from the bus so that bus.recv() returns ALL
-                # frames.  Per-socket filtering in distribute() via
-                # _matches_filters() then handles delivery.
+                # For slcan, clear the filters from the bus so that
+                # bus.recv() returns ALL frames.  Per-socket filtering
+                # in distribute() via _matches_filters() handles
+                # delivery.  Other interfaces (socketcan, kvaser,
+                # vector, candle) perform efficient hardware/kernel
+                # filtering and should keep their bus-level filters.
                 if kwargs.get('can_filters') and \
-                        not getattr(bus, '_is_filtered', False):
+                        'slcan' in k.lower():
                     bus.set_filters(None)
                 socket.name = k
                 self.pool[k] = SocketMapper(bus, [socket])
