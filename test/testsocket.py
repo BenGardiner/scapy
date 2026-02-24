@@ -184,32 +184,35 @@ class SlowTestSocket(TestSocket):
 
     Frames sent to this socket go into an intermediate serial buffer.
     They only become visible to recv()/select() after mux() moves
-    them to the rx ObjectPipe. mux() has a throttle and each frame
-    takes time to read from the serial port (simulated by blocking
-    for frame_delay per frame during mux).
+    them to the rx ObjectPipe.
+
+    Key parameters model the real slcan timing bottleneck:
+    - frame_delay: per-frame serial read time (~2-3ms on real slcan)
+    - serial_timeout: blocking wait when serial buffer is empty.
+      Real python-can slcan uses serial.Serial(timeout=0.1), so
+      bus.recv(timeout=0) blocks for 100ms when buffer is empty.
+    - read_time_limit: max time spent reading per mux call, matching
+      SocketMapper.READ_BUS_TIME_LIMIT in production code.
 
     can_filters: Optional list of CAN identifiers for per-socket
-    filtering in mux. mux reads all available frames and only
-    delivers matching frames, just like the real SocketMapper
-    distributes frames based on _matches_filters.
-
-    The mux uses snapshot-based reading: it reads only the frames
-    that were in the serial buffer when the call started, not new
-    frames arriving during the call. This models real slcan behavior
-    where bus.recv(timeout=0) reads from the OS serial buffer snapshot
-    and returns None between USB transfer batches.
+    filtering.  When set, mux reads all frames but only delivers
+    matching ones, like SocketMapper.distribute() + _matches_filters.
     """
 
     def __init__(self, basecls=None, frame_delay=0.0002,
-                 mux_throttle=0.001, can_filters=None):
-        # type: (Optional[Type[Packet]], float, float, Optional[List[int]]) -> None
+                 mux_throttle=0.001, can_filters=None,
+                 serial_timeout=0.0, read_time_limit=0.0):
+        # type: (Optional[Type[Packet]], float, float, Optional[List[int]], float, float) -> None
         """
         :param frame_delay: Simulated per-frame serial read time (seconds).
-        :param mux_throttle: Minimum time between mux calls (default 1ms),
-            matching PythonCANSocket's multiplex_rx_packets().
-        :param can_filters: Optional list of CAN identifiers for
-            per-socket filtering in mux. mux reads frames and only
-            delivers matching ones.
+        :param mux_throttle: Minimum time between mux calls (default 1ms).
+        :param can_filters: Optional list of CAN identifiers for filtering.
+        :param serial_timeout: Time to block when serial buffer is empty
+            (models python-can slcan serial.Serial(timeout=0.1)).
+            Set to 0.1 to reproduce real slcan behavior.
+        :param read_time_limit: Max time per mux read pass (seconds).
+            Set to 0.01 to match SocketMapper.READ_BUS_TIME_LIMIT.
+            When 0 (default), no time limit is applied.
         """
         super(SlowTestSocket, self).__init__(basecls)
         from collections import deque
@@ -219,6 +222,8 @@ class SlowTestSocket(TestSocket):
         self._frame_delay = frame_delay
         self._mux_throttle = mux_throttle
         self._can_filters = can_filters
+        self._serial_timeout = serial_timeout
+        self._read_time_limit = read_time_limit
         self._real_ins = self.ins
         self.ins = _SlowPipeWrapper(self)
 
@@ -235,30 +240,43 @@ class SlowTestSocket(TestSocket):
         # type: () -> None
         """Move frames from serial buffer to rx ObjectPipe.
 
-        Simulates PythonCANSocket's multiplex_rx_packets() + mux().
-        Uses snapshot-based reading: reads only the frames present at
-        call start, matching real slcan where bus.recv(timeout=0)
-        returns None between USB transfer batches.
+        Models the real PythonCANSocket read path:
+        1. read_bus(): loop calling bus.recv(timeout=0) — each call
+           takes frame_delay when data is available, or serial_timeout
+           when the buffer is empty (modeling slcan serial timeout).
+        2. distribute(): deliver matching frames to the ObjectPipe.
+
+        With read_time_limit > 0, the read loop stops after that many
+        seconds (matching SocketMapper.READ_BUS_TIME_LIMIT).
         """
         now = time.monotonic()
         if now - self._last_mux < self._mux_throttle:
             return
-        # Snapshot: read only what is available now, not new arrivals
-        with self._serial_lock:
-            n = len(self._serial_buffer)
+
+        # Phase 1: read_bus — read frames from serial buffer
         msgs = []
-        for _ in range(n):
+        deadline = (time.monotonic() + self._read_time_limit) \
+            if self._read_time_limit > 0 else None
+        while True:
             if self.closed:
                 break
             with self._serial_lock:
-                if not self._serial_buffer:
-                    break
-                frame = self._serial_buffer.popleft()
+                if self._serial_buffer:
+                    frame = self._serial_buffer.popleft()
+                else:
+                    frame = None
+            if frame is None:
+                # Empty buffer: model the serial timeout blocking
+                if self._serial_timeout > 0:
+                    time.sleep(self._serial_timeout)
+                break
             if self._frame_delay > 0:
                 time.sleep(self._frame_delay)
             msgs.append(frame)
+            if deadline and time.monotonic() >= deadline:
+                break
 
-        # Distribute: apply per-socket filtering if configured
+        # Phase 2: distribute — apply per-socket filtering
         for frame in msgs:
             if self._can_filters is not None:
                 can_id = self._extract_can_id(frame)

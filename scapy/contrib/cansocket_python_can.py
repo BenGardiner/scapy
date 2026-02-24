@@ -54,21 +54,29 @@ class SocketMapper(object):
         self.bus = bus
         self.sockets = sockets
 
+    # Maximum time (seconds) to spend reading frames in one read_bus()
+    # call.  On serial interfaces (slcan) the final bus.recv(timeout=0)
+    # when the buffer is empty blocks for the serial port's read timeout
+    # (typically 100ms in python-can's slcan driver).  During that block
+    # the TimeoutScheduler thread cannot run any other callbacks.  By
+    # capping total read time, we ensure the scheduler stays responsive
+    # even on slow serial interfaces with heavy background traffic.
+    READ_BUS_TIME_LIMIT = 0.010  # 10 ms
+
     def read_bus(self):
         # type: () -> List[can_Message]
-        """Read all available frames from the bus without any limit.
+        """Read available frames from the bus, up to READ_BUS_TIME_LIMIT.
 
-        On slow serial interfaces (slcan), bus.recv(timeout=0) takes
-        ~2-3ms per frame.  With background traffic at 300-400 fps the
-        serial buffer may contain hundreds of frames.  Reading all of
-        them in one call ensures that ISOTP Consecutive Frames buried
-        behind background traffic are found before cf_timeout fires.
+        On slow serial interfaces (slcan), bus.recv(timeout=0) can
+        block for ~100ms when the serial buffer is empty (python-can's
+        slcan serial timeout).  This method limits total time spent
+        reading so the TimeoutScheduler thread stays responsive.
 
         This method intentionally does NOT hold pool_mutex so that
-        concurrent send() calls are not blocked during the (potentially
-        long) serial I/O.
+        concurrent send() calls are not blocked during the serial I/O.
         """
         msgs = []
+        deadline = time.monotonic() + self.READ_BUS_TIME_LIMIT
         while True:
             try:
                 msg = self.bus.recv(timeout=0)
@@ -76,6 +84,8 @@ class SocketMapper(object):
                     break
                 else:
                     msgs.append(msg)
+                if time.monotonic() >= deadline:
+                    break
             except Exception as e:
                 warning("[MUX] python-can exception caught: %s" % e)
                 break
