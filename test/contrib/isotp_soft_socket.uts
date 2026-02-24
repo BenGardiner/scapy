@@ -1449,7 +1449,8 @@ with TestSocket(CAN) as isocan, ISOTPSoftSocket(isocan, tx_id=0x641, rx_id=0x241
 
 from threading import Thread, Event
 
-def run_mf_response_test(frame_delay, mux_throttle, filters_kwarg, threaded):
+def run_mf_response_test(frame_delay, mux_throttle, filters_kwarg, threaded,
+                         prefill_frames=0):
     import time as _time
     from threading import Thread as _Thread, Event as _Event
     from scapy.layers.can import CAN as _CAN
@@ -1472,6 +1473,13 @@ def run_mf_response_test(frame_delay, mux_throttle, filters_kwarg, threaded):
         with _TestSocket(_CAN) as stim:
             stim.pair(isocan)
             isocan.pair(ecu_mon)
+            # Pre-fill the serial buffer with background frames to
+            # simulate a real slcan adapter that has been connected to
+            # a busy CAN bus.  On real hardware the OS serial buffer
+            # accumulates hundreds of frames before the ISOTP exchange.
+            for _ in range(prefill_frames):
+                bid = bg_periodic[_ % len(bg_periodic)]
+                stim.send(_CAN(identifier=bid, data=bytes(8)))
             fc_received = _Event()
             stop = _Event()
             bg_cycle = [0]
@@ -1491,7 +1499,7 @@ def run_mf_response_test(frame_delay, mux_throttle, filters_kwarg, threaded):
             def ecu_simulation():
                 _time.sleep(0.05)
                 stim.send(_CAN(identifier=0x7eb, data=_dhex("1016620001666c61")))
-                fc_received.wait(timeout=5.0)
+                fc_received.wait(timeout=10.0)
                 if not fc_received.is_set():
                     return
                 _time.sleep(0.008)
@@ -1515,7 +1523,7 @@ def run_mf_response_test(frame_delay, mux_throttle, filters_kwarg, threaded):
             ecu_thread.start()
             fc_thread.start()
             result = sock.sr1(_ISOTP(data=_dhex("220001")),
-                              retry=0, timeout=1.0,
+                              retry=0, timeout=10.0,
                               threaded=threaded, verbose=0)
             stop.set()
             fc_received.set()
@@ -1558,32 +1566,32 @@ assert result.data == expected
 = MF response: slcan-like limited, no can_filters, threaded=False
 
 result, expected = run_mf_response_test(
-    frame_delay=0.002, mux_throttle=0.001,
-    filters_kwarg={}, threaded=False)
+    frame_delay=0.0025, mux_throttle=0.001,
+    filters_kwarg={}, threaded=False, prefill_frames=200)
 assert result is not None, "MF response not received (slcan, no filters, threaded=False)"
 assert result.data == expected
 
 = MF response: slcan-like limited, no can_filters, threaded=True
 
 result, expected = run_mf_response_test(
-    frame_delay=0.002, mux_throttle=0.001,
-    filters_kwarg={}, threaded=True)
+    frame_delay=0.0025, mux_throttle=0.001,
+    filters_kwarg={}, threaded=True, prefill_frames=200)
 assert result is not None, "MF response not received (slcan, no filters, threaded=True)"
 assert result.data == expected
 
 = MF response: slcan-like limited, can_filters=[0x7eb], threaded=False
 
 result, expected = run_mf_response_test(
-    frame_delay=0.002, mux_throttle=0.001,
-    filters_kwarg=dict(can_filters=[0x7eb]), threaded=False)
+    frame_delay=0.0025, mux_throttle=0.001,
+    filters_kwarg=dict(can_filters=[0x7eb]), threaded=False, prefill_frames=200)
 assert result is not None, "MF response not received (slcan, can_filters, threaded=False)"
 assert result.data == expected
 
 = MF response: slcan-like limited, can_filters=[0x7eb], threaded=True
 
 result, expected = run_mf_response_test(
-    frame_delay=0.002, mux_throttle=0.001,
-    filters_kwarg=dict(can_filters=[0x7eb]), threaded=True)
+    frame_delay=0.0025, mux_throttle=0.001,
+    filters_kwarg=dict(can_filters=[0x7eb]), threaded=True, prefill_frames=200)
 assert result is not None, "MF response not received (slcan, can_filters, threaded=True)"
 assert result.data == expected
 

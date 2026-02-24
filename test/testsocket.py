@@ -189,20 +189,20 @@ class SlowTestSocket(TestSocket):
     for frame_delay per frame during mux).
 
     can_filters: Optional list of CAN identifiers for per-socket
-    filtering in mux. mux reads up to max_mux_frames frames per call
-    and only delivers matching frames, just like the real
-    SocketMapper.mux() distributes frames based on _matches_filters.
+    filtering in mux. mux reads all available frames and only
+    delivers matching frames, just like the real SocketMapper
+    distributes frames based on _matches_filters.
 
-    max_mux_frames: Maximum frames read per mux() call. Matches
-    SocketMapper.MAX_FRAMES_PER_MUX in production code. Prevents
-    holding the simulated pool_mutex for too long on slow serial
-    interfaces where bus.recv(timeout=0) takes ~2ms per frame.
+    The mux uses snapshot-based reading: it reads only the frames
+    that were in the serial buffer when the call started, not new
+    frames arriving during the call. This models real slcan behavior
+    where bus.recv(timeout=0) reads from the OS serial buffer snapshot
+    and returns None between USB transfer batches.
     """
 
     def __init__(self, basecls=None, frame_delay=0.0002,
-                 mux_throttle=0.001, can_filters=None,
-                 max_mux_frames=20):
-        # type: (Optional[Type[Packet]], float, float, Optional[List[int]], int) -> None
+                 mux_throttle=0.001, can_filters=None):
+        # type: (Optional[Type[Packet]], float, float, Optional[List[int]]) -> None
         """
         :param frame_delay: Simulated per-frame serial read time (seconds).
         :param mux_throttle: Minimum time between mux calls (default 1ms),
@@ -210,8 +210,6 @@ class SlowTestSocket(TestSocket):
         :param can_filters: Optional list of CAN identifiers for
             per-socket filtering in mux. mux reads frames and only
             delivers matching ones.
-        :param max_mux_frames: Max frames per mux() call (default 20),
-            matching SocketMapper.MAX_FRAMES_PER_MUX.
         """
         super(SlowTestSocket, self).__init__(basecls)
         from collections import deque
@@ -221,7 +219,6 @@ class SlowTestSocket(TestSocket):
         self._frame_delay = frame_delay
         self._mux_throttle = mux_throttle
         self._can_filters = can_filters
-        self._max_mux_frames = max_mux_frames
         self._real_ins = self.ins
         self.ins = _SlowPipeWrapper(self)
 
@@ -239,14 +236,18 @@ class SlowTestSocket(TestSocket):
         """Move frames from serial buffer to rx ObjectPipe.
 
         Simulates PythonCANSocket's multiplex_rx_packets() + mux().
-        Reads up to max_mux_frames from the serial buffer, applying
-        per-socket can_filters to deliver only matching frames.
+        Uses snapshot-based reading: reads only the frames present at
+        call start, matching real slcan where bus.recv(timeout=0)
+        returns None between USB transfer batches.
         """
         now = time.monotonic()
         if now - self._last_mux < self._mux_throttle:
             return
+        # Snapshot: read only what is available now, not new arrivals
+        with self._serial_lock:
+            n = len(self._serial_buffer)
         msgs = []
-        for _ in range(self._max_mux_frames):
+        for _ in range(n):
             if self.closed:
                 break
             with self._serial_lock:

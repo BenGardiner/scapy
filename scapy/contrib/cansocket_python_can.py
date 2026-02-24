@@ -54,21 +54,22 @@ class SocketMapper(object):
         self.bus = bus
         self.sockets = sockets
 
-    # Maximum frames to read per mux() call. Prevents holding
-    # pool_mutex for too long on slow serial interfaces (slcan)
-    # where bus.recv(timeout=0) takes ~2ms per frame and the
-    # serial buffer may contain hundreds of background frames.
-    # Value of 20 bounds mux duration to ~50ms on slcan (20 * 2.5ms).
-    MAX_FRAMES_PER_MUX = 20
+    def read_bus(self):
+        # type: () -> List[can_Message]
+        """Read all available frames from the bus without any limit.
 
-    def mux(self):
-        # type: () -> None
-        """Multiplexer function. Tries to receive from its python-can bus
-        object. If a message is received, this message gets forwarded to
-        all receive queues of the SocketWrapper objects.
+        On slow serial interfaces (slcan), bus.recv(timeout=0) takes
+        ~2-3ms per frame.  With background traffic at 300-400 fps the
+        serial buffer may contain hundreds of frames.  Reading all of
+        them in one call ensures that ISOTP Consecutive Frames buried
+        behind background traffic are found before cf_timeout fires.
+
+        This method intentionally does NOT hold pool_mutex so that
+        concurrent send() calls are not blocked during the (potentially
+        long) serial I/O.
         """
         msgs = []
-        for _ in range(self.MAX_FRAMES_PER_MUX):
+        while True:
             try:
                 msg = self.bus.recv(timeout=0)
                 if msg is None:
@@ -78,7 +79,11 @@ class SocketMapper(object):
             except Exception as e:
                 warning("[MUX] python-can exception caught: %s" % e)
                 break
+        return msgs
 
+    def distribute(self, msgs):
+        # type: (List[can_Message]) -> None
+        """Distribute received messages to all subscribed sockets."""
         for sock in self.sockets:
             with sock.lock:
                 for msg in msgs:
@@ -138,9 +143,17 @@ class _SocketsPool(object):
             # this object is singleton and all python-CAN sockets are using
             # the same instance and locking the same locks.
             return
+        # Snapshot pool entries under the lock, then read from each bus
+        # WITHOUT holding pool_mutex.  On slow serial interfaces (slcan)
+        # bus.recv(timeout=0) can take ~2-3ms per frame; holding the
+        # mutex during those reads would block send() for the entire
+        # duration.
         with self.pool_mutex:
-            for t in self.pool.values():
-                t.mux()
+            mappers = list(self.pool.values())
+        for mapper in mappers:
+            msgs = mapper.read_bus()
+            if msgs:
+                mapper.distribute(msgs)
         self.last_call = time.monotonic()
 
     def register(self, socket, *args, **kwargs):
@@ -163,24 +176,31 @@ class _SocketsPool(object):
         else:
             k = str(kwargs.get("bustype", "unknown_bustype")) + "_" + \
                 str(kwargs.get("channel", "unknown_channel"))
-        # Strip can_filters from kwargs for the raw Bus object.
-        # Filtering must NOT happen at the Bus level because
-        # BusABC.recv(timeout=0) consumes non-matching frames from
-        # the serial buffer without returning them, then returns None
-        # (timeout expired). This makes mux() think the buffer is
-        # empty after reading just one non-matching frame, starving
-        # the rx_queue on busy serial interfaces like slcan.
-        # Per-socket filtering in mux() via _matches_filters() is
-        # sufficient and does not have this problem.
-        bus_kwargs = {k_: v for k_, v in kwargs.items()
-                      if k_ != 'can_filters'}
         with self.pool_mutex:
             if k in self.pool:
                 t = self.pool[k]
                 t.sockets.append(socket)
                 socket.name = k
             else:
-                bus = can_Bus(*args, **bus_kwargs)
+                bus = can_Bus(*args, **kwargs)
+                # Detect whether the bus performs hardware/kernel CAN
+                # filtering.  Interfaces like socketcan, kvaser, vector
+                # set bus._is_filtered = True after successfully
+                # applying filters in hardware.  Serial interfaces
+                # (slcan) only do software filtering inside
+                # BusABC.recv(): the recv loop reads one frame, finds
+                # it doesn't match, and returns None -- silently
+                # consuming serial bandwidth without returning the
+                # frame to the mux.  This starves the mux on busy
+                # buses.
+                #
+                # When hardware filtering is NOT active, clear the
+                # filters from the bus so that bus.recv() returns ALL
+                # frames.  Per-socket filtering in distribute() via
+                # _matches_filters() then handles delivery.
+                if kwargs.get('can_filters') and \
+                        not getattr(bus, '_is_filtered', False):
+                    bus.set_filters(None)
                 socket.name = k
                 self.pool[k] = SocketMapper(bus, [socket])
 

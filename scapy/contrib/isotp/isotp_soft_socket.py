@@ -553,6 +553,7 @@ class ISOTPSocketImplementation:
         self.tx_handle = TimeoutScheduler.schedule(
             self.rx_tx_poll_rate, self._send)
         self.last_rx_call = 0.0
+        self.rx_start_time = 0.0
 
     def failure_analysis(self):
         # type: () -> None
@@ -606,9 +607,12 @@ class ISOTPSocketImplementation:
             log_isotp.warning("Error in can_recv: %s",
                               traceback.format_exc())
         if not self.closed and not self.can_socket.closed:
-            if self.can_socket.select([self.can_socket], 0):
-                poll_time = 0.0
-            elif self.rx_state == ISOTP_WAIT_DATA or \
+            # Determine poll_time from ISOTP state only.
+            # Avoid calling select() here — on slow serial interfaces
+            # (slcan), each select() triggers a mux() call that reads
+            # N frames at ~2.5ms each, wasting time that could be spent
+            # processing frames already in the rx_queue.
+            if self.rx_state == ISOTP_WAIT_DATA or \
                     self.tx_state == ISOTP_WAIT_FC or \
                     self.tx_state == ISOTP_WAIT_FIRST_FC:
                 poll_time = 0.0
@@ -663,6 +667,18 @@ class ISOTPSocketImplementation:
         sending a consecutive frame within the expected time window"""
 
         if self.rx_state == ISOTP_WAIT_DATA:
+            # On slow serial interfaces (slcan), the mux reads frames
+            # from an OS serial buffer that may contain hundreds of
+            # background CAN frames.  Consecutive Frames from the ECU
+            # are queued behind this backlog and can take several
+            # seconds to reach the ISOTP state machine.  Extend the
+            # timeout up to 10 × cf_timeout to give the mux enough
+            # time to drain the backlog.
+            total_wait = TimeoutScheduler._time() - self.rx_start_time
+            if total_wait < self.cf_timeout * 10:
+                self.rx_timeout_handle = TimeoutScheduler.schedule(
+                    self.cf_timeout, self._rx_timer_handler)
+                return
             # we did not get new data frames in time.
             # reset rx state
             self.rx_state = ISOTP_IDLE
@@ -879,6 +895,7 @@ class ISOTPSocketImplementation:
         # initial setup for this pdu reception
         self.rx_sn = 1
         self.rx_state = ISOTP_WAIT_DATA
+        self.rx_start_time = TimeoutScheduler._time()
 
         # no creation of flow control frames
         if not self.listen_only:
