@@ -229,7 +229,7 @@ class SlowTestSocket(TestSocket):
         self._serial_timeout = serial_timeout
         self._read_time_limit = read_time_limit
         self._real_ins = self.ins
-        self.ins = _SlowPipeWrapper(self)
+        self.ins = _SlowPipeWrapper(self)  # type: ignore[assignment]
 
     @staticmethod
     def _extract_can_id(frame):
@@ -238,7 +238,7 @@ class SlowTestSocket(TestSocket):
         import struct
         if len(frame) < 4:
             return -1
-        return struct.unpack('!I', frame[:4])[0] & 0x1FFFFFFF
+        return int(struct.unpack('!I', frame[:4])[0] & 0x1FFFFFFF)
 
     def _mux(self):
         # type: () -> None
@@ -327,7 +327,7 @@ class _SlowPipeWrapper:
             self._owner._serial_buffer.append(data)
 
     def recv(self, timeout=0):
-        # type: (float) -> Optional[bytes]
+        # type: (int) -> Optional[bytes]
         return self._owner._real_ins.recv(timeout)
 
     def fileno(self):
@@ -341,7 +341,7 @@ class _SlowPipeWrapper:
     @property
     def closed(self):
         # type: () -> bool
-        return self._owner._real_ins.closed
+        return bool(self._owner._real_ins.closed)  # type: ignore[attr-defined]
 
 
 def cleanup_testsockets():

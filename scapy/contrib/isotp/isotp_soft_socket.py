@@ -215,7 +215,7 @@ class ISOTPSoftSocket(SuperSocket):
         ready_pipes = select_objects(obj_pipes, remain)
 
         result = [x for x in sockets if isinstance(x, ISOTPSoftSocket) and
-                  not x.closed and x.impl.rx_queue in ready_pipes]
+                  not x.closed and x.impl.rx_queue in ready_pipes]  # type: List[SuperSocket]  # noqa: E501
         result += [x for x in sockets if
                    isinstance(x, ObjectPipe) and x in ready_pipes]
         return result
