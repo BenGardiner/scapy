@@ -53,6 +53,7 @@ class SocketMapper(object):
         """
         self.bus = bus
         self.sockets = sockets
+        self.closing = False
 
     # Maximum time (seconds) to spend reading frames in one read_bus()
     # call.  On serial interfaces (slcan) the final bus.recv(timeout=0)
@@ -75,6 +76,8 @@ class SocketMapper(object):
         This method intentionally does NOT hold pool_mutex so that
         concurrent send() calls are not blocked during the serial I/O.
         """
+        if self.closing:
+            return []
         msgs = []
         deadline = time.monotonic() + self.READ_BUS_TIME_LIMIT
         while True:
@@ -87,7 +90,8 @@ class SocketMapper(object):
                 if time.monotonic() >= deadline:
                     break
             except Exception as e:
-                warning("[MUX] python-can exception caught: %s" % e)
+                if not self.closing:
+                    warning("[MUX] python-can exception caught: %s" % e)
                 break
         return msgs
 
@@ -229,6 +233,7 @@ class _SocketsPool(object):
                 t = self.pool[socket.name]
                 t.sockets.remove(socket)
                 if not t.sockets:
+                    t.closing = True
                     t.bus.shutdown()
                     del self.pool[socket.name]
             except KeyError:
