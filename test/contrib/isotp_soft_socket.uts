@@ -1007,6 +1007,8 @@ with TestSocket(CAN) as isocan_tx, ISOTPSoftSocket(isocan_tx, 0x641, 0x241) as s
 
 assert rx is not None
 assert rx.data == response_data
+TimeoutScheduler.clear()
+time.sleep(TimeoutScheduler.GRACE + 0.05)
 
 = ISOTPSoftSocket sr1 timeout with threaded=True
 
@@ -1022,6 +1024,8 @@ with TestSocket(CAN) as isocan_tx, ISOTPSoftSocket(isocan_tx, 0x123, 0x321) as s
 
 assert rx2 is None
 assert elapsed < 5
+TimeoutScheduler.clear()
+time.sleep(TimeoutScheduler.GRACE + 0.05)
 
 = ISOTPSoftSocket sr1 timeout with threaded=True and background traffic
 
@@ -1049,6 +1053,8 @@ with TestSocket(CAN) as isocan_tx, ISOTPSoftSocket(isocan_tx, 0x123, 0x321) as s
 
 assert rx2 is None
 assert elapsed < 5
+TimeoutScheduler.clear()
+time.sleep(TimeoutScheduler.GRACE + 0.05)
 
 = ISOTPSoftSocket sr1 SF request with MF response threaded and background traffic on slow interface
 
@@ -1083,6 +1089,8 @@ with isocan, stim, ISOTPSoftSocket(isocan, 0x641, 0x241) as sock:
 
 assert len(pkts) == 1, "MF response not received due to background traffic"
 assert pkts[0].data == response_data
+TimeoutScheduler.clear()
+time.sleep(TimeoutScheduler.GRACE + 0.05)
 
 = ISOTPSoftSocket MF response with delayed CFs and background traffic
 
@@ -1121,6 +1129,8 @@ with TestSocket(CAN) as stim, TestSocket(CAN) as isocan, \
 
 assert len(pkts) == 1, "MF response not received with delayed CFs and slow poll rate"
 assert pkts[0].data == response_data
+TimeoutScheduler.clear()
+time.sleep(TimeoutScheduler.GRACE + 0.05)
 
 = ISOTPSoftSocket sniff
 
