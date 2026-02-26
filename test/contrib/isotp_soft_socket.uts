@@ -1549,11 +1549,12 @@ def run_mf_response_test(frame_delay, mux_throttle, filters_kwarg, threaded,
         # that can_recv / _send stop rescheduling themselves.
         sock.close()
         # Clear all scheduled timeouts and wait for the
-        # TimeoutScheduler thread to die (GRACE=0.1s). Without
-        # this, the scheduler thread persists between tests and
-        # produces stray output on Windows.
+        # TimeoutScheduler thread to die.  The thread exits after
+        # GRACE (0.1s) of empty handle list; we add 0.05s margin.
+        # Without this, the scheduler thread persists between tests
+        # and produces stray output on Windows.
         _TimeoutScheduler.clear()
-        _time.sleep(0.15)
+        _time.sleep(_TimeoutScheduler.GRACE + 0.05)
     return result, response_data
 
 = MF response: candle-like unlimited, no can_filters, threaded=False
