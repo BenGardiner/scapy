@@ -660,6 +660,14 @@ class ISOTPSocketImplementation:
             self.tx_handle.cancel()
         except Scapy_Exception:
             pass
+        try:
+            self.rx_queue.close()
+        except (OSError, EOFError):
+            pass
+        try:
+            self.tx_queue.close()
+        except (OSError, EOFError):
+            pass
 
     def _rx_timer_handler(self):
         # type: () -> None
