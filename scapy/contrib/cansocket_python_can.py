@@ -61,7 +61,7 @@ class SocketMapper(object):
     # the TimeoutScheduler thread cannot run any other callbacks.  By
     # capping total read time, we ensure the scheduler stays responsive
     # even on slow serial interfaces with heavy background traffic.
-    READ_BUS_TIME_LIMIT = 0.010  # 10 ms
+    READ_BUS_TIME_LIMIT = 0.020  # 20 ms
 
     def read_bus(self):
         # type: () -> List[can_Message]

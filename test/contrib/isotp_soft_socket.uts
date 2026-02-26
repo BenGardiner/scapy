@@ -1446,7 +1446,7 @@ with TestSocket(CAN) as isocan, ISOTPSoftSocket(isocan, tx_id=0x641, rx_id=0x241
 #   frame_delay=0.0025: ~2.5ms per serial read at 115200 baud
 #   serial_timeout=0.1: python-can slcan Serial(timeout=0.1) blocks 100ms
 #                        when serial buffer is empty
-#   read_time_limit=0.01: SocketMapper.READ_BUS_TIME_LIMIT = 10ms caps
+#   read_time_limit=0.02: SocketMapper.READ_BUS_TIME_LIMIT = 20ms caps
 #                          total read time per mux call
 #   prefill_frames=200: OS serial buffer backlog from busy CAN bus
 #
@@ -1583,7 +1583,7 @@ assert result.data == expected
 
 result, expected = run_mf_response_test(
     frame_delay=0.0025, mux_throttle=0.001, serial_timeout=0.1,
-    read_time_limit=0.01, filters_kwarg={}, threaded=False,
+    read_time_limit=0.02, filters_kwarg={}, threaded=False,
     prefill_frames=200)
 assert result is not None, "MF response not received (slcan, no filters, threaded=False)"
 assert result.data == expected
@@ -1592,7 +1592,7 @@ assert result.data == expected
 
 result, expected = run_mf_response_test(
     frame_delay=0.0025, mux_throttle=0.001, serial_timeout=0.1,
-    read_time_limit=0.01, filters_kwarg={}, threaded=True,
+    read_time_limit=0.02, filters_kwarg={}, threaded=True,
     prefill_frames=200)
 assert result is not None, "MF response not received (slcan, no filters, threaded=True)"
 assert result.data == expected
@@ -1601,7 +1601,7 @@ assert result.data == expected
 
 result, expected = run_mf_response_test(
     frame_delay=0.0025, mux_throttle=0.001, serial_timeout=0.1,
-    read_time_limit=0.01, filters_kwarg=dict(can_filters=[0x7eb]),
+    read_time_limit=0.02, filters_kwarg=dict(can_filters=[0x7eb]),
     threaded=False, prefill_frames=200)
 assert result is not None, "MF response not received (slcan, can_filters, threaded=False)"
 assert result.data == expected
@@ -1610,7 +1610,7 @@ assert result.data == expected
 
 result, expected = run_mf_response_test(
     frame_delay=0.0025, mux_throttle=0.001, serial_timeout=0.1,
-    read_time_limit=0.01, filters_kwarg=dict(can_filters=[0x7eb]),
+    read_time_limit=0.02, filters_kwarg=dict(can_filters=[0x7eb]),
     threaded=True, prefill_frames=200)
 assert result is not None, "MF response not received (slcan, can_filters, threaded=True)"
 assert result.data == expected

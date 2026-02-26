@@ -212,7 +212,7 @@ class SlowTestSocket(TestSocket):
             (models python-can slcan serial.Serial(timeout=0.1)).
             Set to 0.1 to reproduce real slcan behavior.
         :param read_time_limit: Max time per mux read pass (seconds).
-            Set to 0.01 to match SocketMapper.READ_BUS_TIME_LIMIT.
+            Set to 0.02 to match SocketMapper.READ_BUS_TIME_LIMIT.
             When 0 (default), no time limit is applied.
         :param interface_name: Simulated interface name (default "slcan").
             Used in test descriptions to identify the adapter type.
