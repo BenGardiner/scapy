@@ -1466,6 +1466,7 @@ def run_mf_response_test(frame_delay, mux_throttle, filters_kwarg, threaded,
     from scapy.layers.can import CAN as _CAN
     from scapy.contrib.isotp import ISOTP as _ISOTP
     from scapy.contrib.isotp.isotp_soft_socket import ISOTPSoftSocket as _ISOTPSoftSocket
+    from scapy.contrib.isotp.isotp_soft_socket import TimeoutScheduler as _TimeoutScheduler
     from test.testsocket import TestSocket as _TestSocket, SlowTestSocket as _SlowTestSocket
     _dhex = bytes.fromhex
     response_data = _dhex("620001666c61677b5544535f444154415f524541447d")
@@ -1544,6 +1545,15 @@ def run_mf_response_test(frame_delay, mux_throttle, filters_kwarg, threaded,
             bg_thread.join(timeout=2)
             ecu_thread.join(timeout=2)
             fc_thread.join(timeout=2)
+        # Close ISOTPSoftSocket BEFORE clearing TimeoutScheduler so
+        # that can_recv / _send stop rescheduling themselves.
+        sock.close()
+        # Clear all scheduled timeouts and wait for the
+        # TimeoutScheduler thread to die (GRACE=0.1s). Without
+        # this, the scheduler thread persists between tests and
+        # produces stray output on Windows.
+        _TimeoutScheduler.clear()
+        _time.sleep(0.15)
     return result, response_data
 
 = MF response: candle-like unlimited, no can_filters, threaded=False
