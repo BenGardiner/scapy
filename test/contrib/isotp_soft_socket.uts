@@ -1541,6 +1541,7 @@ def run_mf_response_test(frame_delay, mux_throttle, filters_kwarg, threaded,
                               threaded=threaded, verbose=0)
             stop.set()
             fc_received.set()
+            bg_thread.join(timeout=2)
             ecu_thread.join(timeout=2)
             fc_thread.join(timeout=2)
     return result, response_data
