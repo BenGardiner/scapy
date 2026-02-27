@@ -5,6 +5,7 @@
 # Copyright (C) Enrico Pozzobon <enricopozzobon@gmail.com>
 
 import heapq
+
 # scapy.contrib.description = ISO-TP (ISO 15765-2) Soft Socket Library
 # scapy.contrib.status = library
 import logging
@@ -14,6 +15,7 @@ import time
 import traceback
 from bisect import bisect_left
 from threading import Thread, Event, RLock
+
 # Typing imports
 from typing import (
     Optional,
@@ -30,8 +32,17 @@ from typing import (
 from scapy.automaton import ObjectPipe, select_objects
 from scapy.config import conf
 from scapy.consts import LINUX
-from scapy.contrib.isotp.isotp_packet import ISOTP, CAN_MAX_DLEN, N_PCI_SF, \
-    N_PCI_CF, N_PCI_FC, N_PCI_FF, ISOTP_MAX_DLEN, ISOTP_MAX_DLEN_2015, CAN_FD_MAX_DLEN
+from scapy.contrib.isotp.isotp_packet import (
+    ISOTP,
+    CAN_MAX_DLEN,
+    N_PCI_SF,
+    N_PCI_CF,
+    N_PCI_FC,
+    N_PCI_FF,
+    ISOTP_MAX_DLEN,
+    ISOTP_MAX_DLEN_2015,
+    CAN_FD_MAX_DLEN,
+)
 from scapy.error import Scapy_Exception
 from scapy.layers.can import CAN, CANFD
 from scapy.packet import Packet
@@ -115,23 +126,25 @@ class ISOTPSoftSocket(SuperSocket):
     :param fd: enables the CanFD support for this socket
     """  # noqa: E501
 
-    def __init__(self,
-                 can_socket=None,  # type: Optional["CANSocket"]
-                 tx_id=0,  # type: int
-                 rx_id=0,  # type: int
-                 ext_address=None,  # type: Optional[int]
-                 rx_ext_address=None,  # type: Optional[int]
-                 bs=0,  # type: int
-                 stmin=0,  # type: int
-                 padding=False,  # type: bool
-                 listen_only=False,  # type: bool
-                 basecls=ISOTP,  # type: Type[Packet]
-                 fd=False  # type: bool
-                 ):
+    def __init__(
+        self,
+        can_socket=None,  # type: Optional["CANSocket"]
+        tx_id=0,  # type: int
+        rx_id=0,  # type: int
+        ext_address=None,  # type: Optional[int]
+        rx_ext_address=None,  # type: Optional[int]
+        bs=0,  # type: int
+        stmin=0,  # type: int
+        padding=False,  # type: bool
+        listen_only=False,  # type: bool
+        basecls=ISOTP,  # type: Type[Packet]
+        fd=False,  # type: bool
+    ):
         # type: (...) -> None
 
         if LINUX and isinstance(can_socket, str):
             from scapy.contrib.cansocket_native import NativeCANSocket
+
             can_socket = NativeCANSocket(can_socket, fd=fd)
         elif isinstance(can_socket, str):
             raise Scapy_Exception("Provide a CANSocket object instead")
@@ -152,7 +165,7 @@ class ISOTPSoftSocket(SuperSocket):
             bs=bs,
             stmin=stmin,
             listen_only=listen_only,
-            fd=fd
+            fd=fd,
         )
 
         # Cast for compatibility to functions from SuperSocket.
@@ -161,19 +174,20 @@ class ISOTPSoftSocket(SuperSocket):
         self.impl = impl
         self.basecls = basecls
         if basecls is None:
-            log_isotp.warning('Provide a basecls ')
+            log_isotp.warning("Provide a basecls ")
 
     def close(self):
         # type: () -> None
         if not self.closed:
-            self.impl.close()
+            if hasattr(self, "impl"):
+                self.impl.close()
             self.closed = True
 
     def failure_analysis(self):
         # type: () -> None
         self.impl.failure_analysis()
 
-    def recv_raw(self, x=0xffff):
+    def recv_raw(self, x=0xFFFF):
         # type: (int) -> Tuple[Optional[Type[Packet]], Optional[bytes], Optional[float]]  # noqa: E501
         """Receive a complete ISOTP message, blocking until a message is
         received or the specified timeout is reached.
@@ -185,7 +199,7 @@ class ISOTPSoftSocket(SuperSocket):
                 return self.basecls, tup[0], float(tup[1])
         return self.basecls, None, None
 
-    def recv(self, x=0xffff, **kwargs):
+    def recv(self, x=0xFFFF, **kwargs):
         # type: (int, **Any) -> Optional[Packet]
         msg = super(ISOTPSoftSocket, self).recv(x, **kwargs)
         if msg is None:
@@ -207,24 +221,33 @@ class ISOTPSoftSocket(SuperSocket):
         """This function is called during sendrecv() routine to wait for
         sockets to be ready to receive
         """
-        obj_pipes: List[Union[SuperSocket, ObjectPipe[Tuple[bytes, Union[float, EDecimal]]]]] = [   # noqa: E501
-            x.impl.rx_queue for x in sockets if
-            isinstance(x, ISOTPSoftSocket) and not x.closed]
+        obj_pipes: List[
+            Union[SuperSocket, ObjectPipe[Tuple[bytes, Union[float, EDecimal]]]]
+        ] = [  # noqa: E501
+            x.impl.rx_queue
+            for x in sockets
+            if isinstance(x, ISOTPSoftSocket) and not x.closed
+        ]
         obj_pipes += [x for x in sockets if isinstance(x, ObjectPipe) and not x.closed]
 
         ready_pipes = select_objects(obj_pipes, remain)
 
-        result = [x for x in sockets if isinstance(x, ISOTPSoftSocket) and
-                  not x.closed and x.impl.rx_queue in ready_pipes]  # type: List[SuperSocket]  # noqa: E501
-        result += [x for x in sockets if
-                   isinstance(x, ObjectPipe) and x in ready_pipes]
+        result = [
+            x
+            for x in sockets
+            if isinstance(x, ISOTPSoftSocket)
+            and not x.closed
+            and x.impl.rx_queue in ready_pipes
+        ]  # type: List[SuperSocket]  # noqa: E501
+        result += [x for x in sockets if isinstance(x, ObjectPipe) and x in ready_pipes]
         return result
 
 
 class TimeoutScheduler:
     """A timeout scheduler which uses a single thread for all timeouts, unlike
     python's own Timer objects which use a thread each."""
-    GRACE = .1
+
+    GRACE = 0.1
     _mutex = RLock()
     _event = Event()
     _thread = None  # type: Optional[Thread]
@@ -323,13 +346,15 @@ class TimeoutScheduler:
         # Wait until the next timeout,
         # or until event.set() gets called in another thread.
         if to_wait > 0:
-            cls.logger.debug("Thread going to sleep @ %f " +
-                             "for %fs", now, to_wait)
+            cls.logger.debug("Thread going to sleep @ %f " + "for %fs", now, to_wait)
             interrupted = cls._event.wait(to_wait)
             new = cls._time()
-            cls.logger.debug("Thread awake @ %f, slept for" +
-                             " %f, interrupted=%d", new, new - now,
-                             interrupted)
+            cls.logger.debug(
+                "Thread awake @ %f, slept for" + " %f, interrupted=%d",
+                new,
+                new - now,
+                interrupted,
+            )
 
         # Clear the event so that we can wait on it again,
         # Must be done before doing the callbacks to avoid losing a set().
@@ -401,12 +426,14 @@ class TimeoutScheduler:
     class Handle:
         """Handle for a timeout, consisting of a callback and a time when it
         should be executed."""
-        __slots__ = ['_when', '_cb']
 
-        def __init__(self,
-                     when,  # type: float
-                     cb  # type: Optional[Union[Callable[[], None], bool]]
-                     ):
+        __slots__ = ["_when", "_cb"]
+
+        def __init__(
+            self,
+            when,  # type: float
+            cb,  # type: Optional[Union[Callable[[], None], bool]]
+        ):
             # type: (...) -> None
             self._when = when
             self._cb = cb
@@ -416,8 +443,7 @@ class TimeoutScheduler:
             """Cancels this timeout, preventing it from executing its
             callback"""
             if self._cb is None:
-                raise Scapy_Exception(
-                    "cancel() called on previous canceled Handle")
+                raise Scapy_Exception("cancel() called on previous canceled Handle")
             else:
                 with TimeoutScheduler._mutex:
                     if isinstance(self._cb, bool):
@@ -489,18 +515,19 @@ class ISOTPSocketImplementation:
     :param listen_only: Disables send of flow control frames
     """
 
-    def __init__(self,
-                 can_socket,  # type: "CANSocket"
-                 tx_id,  # type: int
-                 rx_id,  # type: int
-                 padding=False,  # type: bool
-                 ext_address=None,  # type: Optional[int]
-                 rx_ext_address=None,  # type: Optional[int]
-                 bs=0,  # type: int
-                 stmin=0,  # type: int
-                 listen_only=False,  # type: bool
-                 fd=False  # type: bool
-                 ):
+    def __init__(
+        self,
+        can_socket,  # type: "CANSocket"
+        tx_id,  # type: int
+        rx_id,  # type: int
+        padding=False,  # type: bool
+        ext_address=None,  # type: Optional[int]
+        rx_ext_address=None,  # type: Optional[int]
+        bs=0,  # type: int
+        stmin=0,  # type: int
+        listen_only=False,  # type: bool
+        fd=False,  # type: bool
+    ):
         # type: (...) -> None
         self.can_socket = can_socket
         self.rx_id = rx_id
@@ -537,7 +564,7 @@ class ISOTPSocketImplementation:
         self.tx_queue = ObjectPipe[bytes]()
         self.txfc_bs = 0
         self.txfc_stmin = 0
-        self.tx_gap = 0.
+        self.tx_gap = 0.0
 
         self.tx_buf = None  # type: Optional[bytes]
         self.tx_sn = 0
@@ -547,12 +574,14 @@ class ISOTPSocketImplementation:
         self.tx_state = ISOTP_IDLE
 
         self.rx_tx_poll_rate = 0.005
-        self.tx_timeout_handle = None  # type: Optional[TimeoutScheduler.Handle]  # noqa: E501
-        self.rx_timeout_handle = None  # type: Optional[TimeoutScheduler.Handle]  # noqa: E501
-        self.rx_handle = TimeoutScheduler.schedule(
-            self.rx_tx_poll_rate, self.can_recv)
-        self.tx_handle = TimeoutScheduler.schedule(
-            self.rx_tx_poll_rate, self._send)
+        self.tx_timeout_handle = (
+            None
+        )  # type: Optional[TimeoutScheduler.Handle]  # noqa: E501
+        self.rx_timeout_handle = (
+            None
+        )  # type: Optional[TimeoutScheduler.Handle]  # noqa: E501
+        self.rx_handle = TimeoutScheduler.schedule(self.rx_tx_poll_rate, self.can_recv)
+        self.tx_handle = TimeoutScheduler.schedule(self.rx_tx_poll_rate, self._send)
         self.last_rx_call = 0.0
         self.rx_start_time = 0.0
 
@@ -587,12 +616,13 @@ class ISOTPSocketImplementation:
         pkt_cls = CANFD if self.fd else CAN
 
         if self.padding:
-            load += b"\xCC" * (_get_padding_size(len(load)) - len(load))
-        if self.tx_id is None or self.tx_id <= 0x7ff:
+            load += b"\xcc" * (_get_padding_size(len(load)) - len(load))
+        if self.tx_id is None or self.tx_id <= 0x7FF:
             self.can_socket.send(pkt_cls(identifier=self.tx_id, data=load))
         else:
-            self.can_socket.send(pkt_cls(identifier=self.tx_id, flags="extended",
-                                         data=load))
+            self.can_socket.send(
+                pkt_cls(identifier=self.tx_id, flags="extended", data=load)
+            )
 
     def can_recv(self):
         # type: () -> None
@@ -606,22 +636,22 @@ class ISOTPSocketImplementation:
                     break
         except Exception:
             if not self.closed:
-                log_isotp.warning("Error in can_recv: %s",
-                                  traceback.format_exc())
+                log_isotp.warning("Error in can_recv: %s", traceback.format_exc())
         if not self.closed and not self.can_socket.closed:
             # Determine poll_time from ISOTP state only.
             # Avoid calling select() here — on slow serial interfaces
             # (slcan), each select() triggers a mux() call that reads
             # N frames at ~2.5ms each, wasting time that could be spent
             # processing frames already in the rx_queue.
-            if self.rx_state == ISOTP_WAIT_DATA or \
-                    self.tx_state == ISOTP_WAIT_FC or \
-                    self.tx_state == ISOTP_WAIT_FIRST_FC:
+            if (
+                self.rx_state == ISOTP_WAIT_DATA
+                or self.tx_state == ISOTP_WAIT_FC
+                or self.tx_state == ISOTP_WAIT_FIRST_FC
+            ):
                 poll_time = 0.0
             else:
                 poll_time = self.rx_tx_poll_rate
-            self.rx_handle = TimeoutScheduler.schedule(
-                poll_time, self.can_recv)
+            self.rx_handle = TimeoutScheduler.schedule(poll_time, self.can_recv)
         else:
             try:
                 self.rx_handle.cancel()
@@ -632,8 +662,10 @@ class ISOTPSocketImplementation:
         # type: (Packet) -> None
         if p.identifier != self.rx_id:
             if not self.filter_warning_emitted and conf.verb >= 2:
-                log_isotp.warning("You should put a filter for identifier=%x on your "
-                                  "CAN socket", self.rx_id)
+                log_isotp.warning(
+                    "You should put a filter for identifier=%x on your " "CAN socket",
+                    self.rx_id,
+                )
                 self.filter_warning_emitted = True
         else:
             self.on_recv(p)
@@ -700,7 +732,8 @@ class ISOTPSocketImplementation:
             total_wait = TimeoutScheduler._time() - self.rx_start_time
             if total_wait < self.cf_timeout * 10:
                 self.rx_timeout_handle = TimeoutScheduler.schedule(
-                    self.cf_timeout, self._rx_timer_handler)
+                    self.cf_timeout, self._rx_timer_handler
+                )
                 return
             # we did not get new data frames in time.
             # reset rx state
@@ -717,8 +750,7 @@ class ISOTPSocketImplementation:
         if self.closed:
             return
 
-        if (self.tx_state == ISOTP_WAIT_FC or
-                self.tx_state == ISOTP_WAIT_FIRST_FC):
+        if self.tx_state == ISOTP_WAIT_FC or self.tx_state == ISOTP_WAIT_FIRST_FC:
             # we did not get any flow control frame in time
             # reset tx state
             self.tx_state = ISOTP_IDLE
@@ -735,7 +767,7 @@ class ISOTPSocketImplementation:
             while 1:
                 load = self.ea_hdr
                 load += struct.pack("B", N_PCI_CF + self.tx_sn)
-                load += self.tx_buf[self.tx_idx:self.tx_idx + max_bytes]
+                load += self.tx_buf[self.tx_idx : self.tx_idx + max_bytes]
                 self.can_send(load)
 
                 self.tx_sn = (self.tx_sn + 1) % 16
@@ -751,7 +783,8 @@ class ISOTPSocketImplementation:
                     # stop and wait for FC
                     self.tx_state = ISOTP_WAIT_FC
                     self.tx_timeout_handle = TimeoutScheduler.schedule(
-                        self.fc_timeout, self._tx_timer_handler)
+                        self.fc_timeout, self._tx_timer_handler
+                    )
                     return
 
                 if self.tx_gap == 0:
@@ -759,7 +792,8 @@ class ISOTPSocketImplementation:
                 else:
                     # stop and wait for tx gap
                     self.tx_timeout_handle = TimeoutScheduler.schedule(
-                        self.tx_gap, self._tx_timer_handler)
+                        self.tx_gap, self._tx_timer_handler
+                    )
                     return
 
     def on_recv(self, cf):
@@ -780,7 +814,7 @@ class ISOTPSocketImplementation:
             if data[0] != self.rx_ext_address:
                 return
 
-        n_pci = data[ae] & 0xf0
+        n_pci = data[ae] & 0xF0
 
         if n_pci == N_PCI_FC:
             self._recv_fc(data[ae:])
@@ -796,8 +830,7 @@ class ISOTPSocketImplementation:
         """Process a received 'Flow Control' frame"""
         log_isotp.debug("Processing FC")
 
-        if (self.tx_state != ISOTP_WAIT_FC and
-                self.tx_state != ISOTP_WAIT_FIRST_FC):
+        if self.tx_state != ISOTP_WAIT_FC and self.tx_state != ISOTP_WAIT_FIRST_FC:
             return
 
         if self.tx_timeout_handle is not None:
@@ -814,32 +847,35 @@ class ISOTPSocketImplementation:
             self.txfc_bs = data[1]
             self.txfc_stmin = data[2]
 
-        if ((self.txfc_stmin > 0x7F) and
-                ((self.txfc_stmin < 0xF1) or (self.txfc_stmin > 0xF9))):
+        if (self.txfc_stmin > 0x7F) and (
+            (self.txfc_stmin < 0xF1) or (self.txfc_stmin > 0xF9)
+        ):
             self.txfc_stmin = 0x7F
 
         if data[2] <= 127:
             self.tx_gap = data[2] / 1000
-        elif 0xf1 <= data[2] <= 0xf9:
-            self.tx_gap = (data[2] & 0x0f) / 10000
+        elif 0xF1 <= data[2] <= 0xF9:
+            self.tx_gap = (data[2] & 0x0F) / 10000
         else:
-            self.tx_gap = 0.
+            self.tx_gap = 0.0
 
         self.tx_state = ISOTP_WAIT_FC
 
-        isotp_fc = data[0] & 0x0f
+        isotp_fc = data[0] & 0x0F
 
         if isotp_fc == ISOTP_FC_CTS:
             self.tx_bs = 0
             self.tx_state = ISOTP_SENDING
             # start cyclic timer for sending CF frame
             self.tx_timeout_handle = TimeoutScheduler.schedule(
-                self.tx_gap, self._tx_timer_handler)
+                self.tx_gap, self._tx_timer_handler
+            )
         elif isotp_fc == ISOTP_FC_WT:
             # start timer to wait for next FC frame
             self.tx_state = ISOTP_WAIT_FC
             self.tx_timeout_handle = TimeoutScheduler.schedule(
-                self.fc_timeout, self._tx_timer_handler)
+                self.fc_timeout, self._tx_timer_handler
+            )
         elif isotp_fc == ISOTP_FC_OVFLW:
             # overflow in receiver side
             self.tx_state = ISOTP_IDLE
@@ -861,11 +897,12 @@ class ISOTPSocketImplementation:
 
         if self.rx_state != ISOTP_IDLE:
             if conf.verb > 2:
-                log_isotp.warning("RX state was reset because "
-                                  "single frame was received")
+                log_isotp.warning(
+                    "RX state was reset because " "single frame was received"
+                )
             self.rx_state = ISOTP_IDLE
 
-        length = data[0] & 0xf
+        length = data[0] & 0xF
         is_fd_frame = self.fd and length == 0 and len(data) >= 2
 
         if is_fd_frame:
@@ -876,9 +913,9 @@ class ISOTPSocketImplementation:
 
         msg = None
         if is_fd_frame:
-            msg = data[2:2 + length]
+            msg = data[2 : 2 + length]
         else:
-            msg = data[1:1 + length]
+            msg = data[1 : 1 + length]
         self.rx_queue.send((msg, ts))
 
     def _recv_ff(self, data, ts):
@@ -900,7 +937,7 @@ class ISOTPSocketImplementation:
         self.rx_ll_dl = len(data)
 
         # get the FF_DL
-        self.rx_len = (data[0] & 0x0f) * 256 + data[1]
+        self.rx_len = (data[0] & 0x0F) * 256 + data[1]
         ff_pci_sz = 2
 
         # Check for FF_DL escape sequence supporting 32 bit PDU length
@@ -933,7 +970,8 @@ class ISOTPSocketImplementation:
         # wait for a CF
         self.rx_bs = 0
         self.rx_timeout_handle = TimeoutScheduler.schedule(
-            self.cf_timeout, self._rx_timer_handler)
+            self.cf_timeout, self._rx_timer_handler
+        )
 
     def _recv_cf(self, data):
         # type: (bytes) -> None
@@ -959,11 +997,12 @@ class ISOTPSocketImplementation:
                     log_isotp.warning("Received a CF with insufficient length")
                 return
 
-        if data[0] & 0x0f != self.rx_sn:
+        if data[0] & 0x0F != self.rx_sn:
             # Wrong sequence number
             if conf.verb > 2:
-                log_isotp.warning("RX state was reset because wrong sequence "
-                                  "number was received")
+                log_isotp.warning(
+                    "RX state was reset because wrong sequence " "number was received"
+                )
             self.rx_state = ISOTP_IDLE
             return
 
@@ -979,7 +1018,7 @@ class ISOTPSocketImplementation:
 
         if self.rx_idx >= self.rx_len:
             # we are done
-            self.rx_buf = self.rx_buf[0:self.rx_len]
+            self.rx_buf = self.rx_buf[0 : self.rx_len]
             self.rx_state = ISOTP_IDLE
             self.rx_queue.send((self.rx_buf, self.rx_ts))
             self.rx_buf = None
@@ -993,15 +1032,15 @@ class ISOTPSocketImplementation:
             if self.rx_bs >= self.rxfc_bs and not self.listen_only:
                 # send our FC frame
                 load = self.ea_hdr
-                load += struct.pack("BBB", N_PCI_FC, self.rxfc_bs,
-                                    self.rxfc_stmin)
+                load += struct.pack("BBB", N_PCI_FC, self.rxfc_bs, self.rxfc_stmin)
                 self.rx_bs = 0
                 self.can_send(load)
 
         # wait for another CF
         log_isotp.debug("Wait for another CF")
         self.rx_timeout_handle = TimeoutScheduler.schedule(
-            self.cf_timeout, self._rx_timer_handler)
+            self.cf_timeout, self._rx_timer_handler
+        )
 
     def begin_send(self, x):
         # type: (bytes) -> None
@@ -1035,7 +1074,7 @@ class ISOTPSocketImplementation:
             data += struct.pack(">HI", 0x1000, length)
         else:
             data += struct.pack(">H", 0x1000 | length)
-        load = x[0:self.max_dlen - len(data)]
+        load = x[0 : self.max_dlen - len(data)]
         data += load
         self.can_send(data)
 
@@ -1046,7 +1085,8 @@ class ISOTPSocketImplementation:
 
         self.tx_state = ISOTP_WAIT_FIRST_FC
         self.tx_timeout_handle = TimeoutScheduler.schedule(
-            self.fc_timeout, self._tx_timer_handler)
+            self.fc_timeout, self._tx_timer_handler
+        )
 
     def _send(self):
         # type: () -> None
@@ -1058,12 +1098,10 @@ class ISOTPSocketImplementation:
                         self.begin_send(pkt)
         except Exception:
             if not self.closed:
-                log_isotp.warning("Error in _send: %s",
-                                  traceback.format_exc())
+                log_isotp.warning("Error in _send: %s", traceback.format_exc())
 
         if not self.closed:
-            self.tx_handle = TimeoutScheduler.schedule(
-                self.rx_tx_poll_rate, self._send)
+            self.tx_handle = TimeoutScheduler.schedule(self.rx_tx_poll_rate, self._send)
         else:
             try:
                 self.tx_handle.cancel()
