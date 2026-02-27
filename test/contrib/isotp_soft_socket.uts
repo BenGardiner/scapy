@@ -999,7 +999,7 @@ with TestSocket(CAN) as isocan_tx, ISOTPSoftSocket(isocan_tx, 0x641, 0x241) as s
         sniffed = sock_rx.sniff(count=1, timeout=5)
         if sniffed:
             sock_rx.send(response_msg)
-    resp_thread = Thread(target=responder)
+    resp_thread = Thread(target=responder, daemon=True)
     resp_thread.start()
     time.sleep(0.1)
     rx = sock_tx.sr1(request, timeout=5, verbose=False, threaded=True)
@@ -1051,7 +1051,7 @@ with TestSocket(CAN) as isocan_tx, ISOTPSoftSocket(isocan_tx, 0x123, 0x321) as s
             except Exception:
                 break
             time.sleep(0.01)
-    traffic_thread = Thread(target=bg_traffic)
+    traffic_thread = Thread(target=bg_traffic, daemon=True)
     traffic_thread.start()
     start = time.time()
     rx2 = sock_tx.sr1(msg, timeout=3, verbose=False, threaded=True)
