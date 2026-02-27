@@ -14,6 +14,8 @@ import time
 import struct
 import threading
 
+from functools import reduce
+from operator import add
 from collections import deque
 
 from scapy.config import conf
@@ -194,6 +196,17 @@ class _SocketsPool(object):
             if k in self.pool:
                 t = self.pool[k]
                 t.sockets.append(socket)
+                # Update bus-level filters to the union of all sockets'
+                # filters.  For non-slcan interfaces (socketcan, kvaser,
+                # vector), this enables efficient hardware/kernel
+                # filtering.  For slcan, the bus filters were already
+                # cleared on creation, so this is a no-op (all sockets
+                # on slcan share the unfiltered bus).
+                if not k.lower().startswith('slcan'):
+                    filters = [s.filters for s in t.sockets
+                               if s.filters is not None]
+                    if filters:
+                        t.bus.set_filters(reduce(add, filters))
                 socket.name = k
             else:
                 bus = can_Bus(*args, **kwargs)
