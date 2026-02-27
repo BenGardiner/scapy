@@ -605,8 +605,9 @@ class ISOTPSocketImplementation:
                 else:
                     break
         except Exception:
-            log_isotp.warning("Error in can_recv: %s",
-                              traceback.format_exc())
+            if not self.closed:
+                log_isotp.warning("Error in can_recv: %s",
+                                  traceback.format_exc())
         if not self.closed and not self.can_socket.closed:
             # Determine poll_time from ISOTP state only.
             # Avoid calling select() here — on slow serial interfaces
@@ -1056,8 +1057,9 @@ class ISOTPSocketImplementation:
                     if pkt:
                         self.begin_send(pkt)
         except Exception:
-            log_isotp.warning("Error in _send: %s",
-                              traceback.format_exc())
+            if not self.closed:
+                log_isotp.warning("Error in _send: %s",
+                                  traceback.format_exc())
 
         if not self.closed:
             self.tx_handle = TimeoutScheduler.schedule(

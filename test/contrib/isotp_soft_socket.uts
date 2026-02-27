@@ -1004,14 +1004,16 @@ with TestSocket(CAN) as isocan_tx, ISOTPSoftSocket(isocan_tx, 0x641, 0x241) as s
     time.sleep(0.1)
     rx = sock_tx.sr1(request, timeout=5, verbose=False, threaded=True)
     resp_thread.join(timeout=5)
+    assert not resp_thread.is_alive(), "resp_thread still alive"
+    # Stop TimeoutScheduler while sockets are still open to avoid
+    # callbacks crashing on closed sockets and writing to stderr.
+    TimeoutScheduler.clear()
+    _ts = TimeoutScheduler._thread
+    if _ts is not None:
+        _ts.join(timeout=5)
 
 assert rx is not None
 assert rx.data == response_data
-assert not resp_thread.is_alive(), "resp_thread still alive"
-TimeoutScheduler.clear()
-_ts = TimeoutScheduler._thread
-if _ts is not None:
-    _ts.join(timeout=2)
 
 = ISOTPSoftSocket sr1 timeout with threaded=True
 
@@ -1024,13 +1026,14 @@ with TestSocket(CAN) as isocan_tx, ISOTPSoftSocket(isocan_tx, 0x123, 0x321) as s
     start = time.time()
     rx2 = sock_tx.sr1(msg, timeout=3, verbose=False, threaded=True)
     elapsed = time.time() - start
+    # Stop TimeoutScheduler while sockets are still open.
+    TimeoutScheduler.clear()
+    _ts = TimeoutScheduler._thread
+    if _ts is not None:
+        _ts.join(timeout=5)
 
 assert rx2 is None
 assert elapsed < 5
-TimeoutScheduler.clear()
-_ts = TimeoutScheduler._thread
-if _ts is not None:
-    _ts.join(timeout=2)
 
 = ISOTPSoftSocket sr1 timeout with threaded=True and background traffic
 
@@ -1055,14 +1058,15 @@ with TestSocket(CAN) as isocan_tx, ISOTPSoftSocket(isocan_tx, 0x123, 0x321) as s
     elapsed = time.time() - start
     stop_traffic.set()
     traffic_thread.join(timeout=5)
+    assert not traffic_thread.is_alive(), "traffic_thread still alive"
+    # Stop TimeoutScheduler while sockets are still open.
+    TimeoutScheduler.clear()
+    _ts = TimeoutScheduler._thread
+    if _ts is not None:
+        _ts.join(timeout=5)
 
 assert rx2 is None
 assert elapsed < 5
-assert not traffic_thread.is_alive(), "traffic_thread still alive"
-TimeoutScheduler.clear()
-_ts = TimeoutScheduler._thread
-if _ts is not None:
-    _ts.join(timeout=2)
 
 = ISOTPSoftSocket sr1 SF request with MF response threaded and background traffic on slow interface
 
@@ -1094,13 +1098,14 @@ stim.send(cf2_frame)
 
 with isocan, stim, ISOTPSoftSocket(isocan, 0x641, 0x241) as sock:
     pkts = sock.sniff(count=1, timeout=10)
+    # Stop TimeoutScheduler while sockets are still open.
+    TimeoutScheduler.clear()
+    _ts = TimeoutScheduler._thread
+    if _ts is not None:
+        _ts.join(timeout=5)
 
 assert len(pkts) == 1, "MF response not received due to background traffic"
 assert pkts[0].data == response_data
-TimeoutScheduler.clear()
-_ts = TimeoutScheduler._thread
-if _ts is not None:
-    _ts.join(timeout=2)
 
 = ISOTPSoftSocket MF response with delayed CFs and background traffic
 
@@ -1136,15 +1141,16 @@ with TestSocket(CAN) as stim, TestSocket(CAN) as isocan, \
     stop_traffic.set()
     traffic_thread.join(timeout=5)
     resp_thread.join(timeout=5)
+    assert not traffic_thread.is_alive(), "traffic_thread still alive"
+    assert not resp_thread.is_alive(), "resp_thread still alive"
+    # Stop TimeoutScheduler while sockets are still open.
+    TimeoutScheduler.clear()
+    _ts = TimeoutScheduler._thread
+    if _ts is not None:
+        _ts.join(timeout=5)
 
 assert len(pkts) == 1, "MF response not received with delayed CFs and slow poll rate"
 assert pkts[0].data == response_data
-assert not traffic_thread.is_alive(), "traffic_thread still alive"
-assert not resp_thread.is_alive(), "resp_thread still alive"
-TimeoutScheduler.clear()
-_ts = TimeoutScheduler._thread
-if _ts is not None:
-    _ts.join(timeout=2)
 
 = ISOTPSoftSocket sniff
 
@@ -1572,16 +1578,13 @@ def run_mf_response_test(frame_delay, mux_throttle, filters_kwarg, threaded,
             assert not bg_thread.is_alive(), "bg_thread still alive"
             assert not ecu_thread.is_alive(), "ecu_thread still alive"
             assert not fc_thread.is_alive(), "fc_thread still alive"
-        # Close ISOTPSoftSocket BEFORE clearing TimeoutScheduler so
-        # that can_recv / _send stop rescheduling themselves.
-        sock.close()
-        # Clear all scheduled timeouts and join the TimeoutScheduler
-        # thread directly.  This is more reliable than sleeping an
-        # arbitrary amount — it waits until the thread actually exits.
-        _TimeoutScheduler.clear()
-        _ts_thread = _TimeoutScheduler._thread
-        if _ts_thread is not None:
-            _ts_thread.join(timeout=2)
+            # Stop TimeoutScheduler while sockets are still open to
+            # avoid callbacks crashing on closed sockets and writing
+            # to stderr (causes fatal error on Python 3.13 Windows).
+            _TimeoutScheduler.clear()
+            _ts_thread = _TimeoutScheduler._thread
+            if _ts_thread is not None:
+                _ts_thread.join(timeout=5)
     return result, response_data
 
 = MF response: candle-like unlimited, no can_filters, threaded=False
@@ -1662,5 +1665,8 @@ assert result.data == expected
 cleanup_testsockets()
 
 TimeoutScheduler.clear()
+_ts = TimeoutScheduler._thread
+if _ts is not None:
+    _ts.join(timeout=5)
 
 log_runtime.removeHandler(handler)
