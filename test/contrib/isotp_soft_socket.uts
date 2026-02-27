@@ -999,14 +999,15 @@ with TestSocket(CAN) as isocan_tx, ISOTPSoftSocket(isocan_tx, 0x641, 0x241) as s
         sniffed = sock_rx.sniff(count=1, timeout=5)
         if sniffed:
             sock_rx.send(response_msg)
-    resp_thread = Thread(target=responder, daemon=True)
+    resp_thread = Thread(target=responder)
     resp_thread.start()
     time.sleep(0.1)
     rx = sock_tx.sr1(request, timeout=5, verbose=False, threaded=True)
-    resp_thread.join(timeout=3)
+    resp_thread.join(timeout=5)
 
 assert rx is not None
 assert rx.data == response_data
+assert not resp_thread.is_alive(), "resp_thread still alive"
 TimeoutScheduler.clear()
 _ts = TimeoutScheduler._thread
 if _ts is not None:
@@ -1047,16 +1048,17 @@ with TestSocket(CAN) as isocan_tx, ISOTPSoftSocket(isocan_tx, 0x123, 0x321) as s
             except Exception:
                 break
             time.sleep(0.01)
-    traffic_thread = Thread(target=bg_traffic, daemon=True)
+    traffic_thread = Thread(target=bg_traffic)
     traffic_thread.start()
     start = time.time()
     rx2 = sock_tx.sr1(msg, timeout=3, verbose=False, threaded=True)
     elapsed = time.time() - start
     stop_traffic.set()
-    traffic_thread.join(timeout=2)
+    traffic_thread.join(timeout=5)
 
 assert rx2 is None
 assert elapsed < 5
+assert not traffic_thread.is_alive(), "traffic_thread still alive"
 TimeoutScheduler.clear()
 _ts = TimeoutScheduler._thread
 if _ts is not None:
@@ -1126,17 +1128,19 @@ with TestSocket(CAN) as stim, TestSocket(CAN) as isocan, \
         stim.send(CAN(identifier=0x241, data=dhex("21 44 45 46 47 48 49 4A")))
         time.sleep(0.01)
         stim.send(CAN(identifier=0x241, data=dhex("22 4B 4C 4D 4E 4F 50 00")))
-    traffic_thread = Thread(target=bg_traffic, daemon=True)
+    traffic_thread = Thread(target=bg_traffic)
     traffic_thread.start()
-    resp_thread = Thread(target=delayed_response, daemon=True)
+    resp_thread = Thread(target=delayed_response)
     resp_thread.start()
     pkts = sock.sniff(count=1, timeout=5)
     stop_traffic.set()
-    traffic_thread.join(timeout=2)
-    resp_thread.join(timeout=2)
+    traffic_thread.join(timeout=5)
+    resp_thread.join(timeout=5)
 
 assert len(pkts) == 1, "MF response not received with delayed CFs and slow poll rate"
 assert pkts[0].data == response_data
+assert not traffic_thread.is_alive(), "traffic_thread still alive"
+assert not resp_thread.is_alive(), "resp_thread still alive"
 TimeoutScheduler.clear()
 _ts = TimeoutScheduler._thread
 if _ts is not None:
@@ -1551,9 +1555,9 @@ def run_mf_response_test(frame_delay, mux_throttle, filters_kwarg, threaded,
                            len(pkt.data) >= 1 and bytes(pkt.data)[0] == 0x30:
                             fc_received.set()
                             return
-            bg_thread = _Thread(target=bg_generator, daemon=True)
-            ecu_thread = _Thread(target=ecu_simulation, daemon=True)
-            fc_thread = _Thread(target=fc_watcher, daemon=True)
+            bg_thread = _Thread(target=bg_generator)
+            ecu_thread = _Thread(target=ecu_simulation)
+            fc_thread = _Thread(target=fc_watcher)
             bg_thread.start()
             ecu_thread.start()
             fc_thread.start()
@@ -1562,9 +1566,12 @@ def run_mf_response_test(frame_delay, mux_throttle, filters_kwarg, threaded,
                               threaded=threaded, verbose=0)
             stop.set()
             fc_received.set()
-            bg_thread.join(timeout=2)
-            ecu_thread.join(timeout=2)
-            fc_thread.join(timeout=2)
+            bg_thread.join(timeout=5)
+            ecu_thread.join(timeout=5)
+            fc_thread.join(timeout=5)
+            assert not bg_thread.is_alive(), "bg_thread still alive"
+            assert not ecu_thread.is_alive(), "ecu_thread still alive"
+            assert not fc_thread.is_alive(), "fc_thread still alive"
         # Close ISOTPSoftSocket BEFORE clearing TimeoutScheduler so
         # that can_recv / _send stop rescheduling themselves.
         sock.close()
