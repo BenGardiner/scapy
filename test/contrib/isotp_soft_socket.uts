@@ -1007,8 +1007,8 @@ with TestSocket(CAN) as isocan_tx, ISOTPSoftSocket(isocan_tx, 0x641, 0x241) as s
     assert not resp_thread.is_alive(), "resp_thread still alive"
     # Stop TimeoutScheduler while sockets are still open to avoid
     # callbacks crashing on closed sockets and writing to stderr.
-    _ts = TimeoutScheduler._thread
     TimeoutScheduler.clear()
+    _ts = TimeoutScheduler._thread
     if _ts is not None:
         _ts.join(timeout=5)
 
@@ -1027,8 +1027,8 @@ with TestSocket(CAN) as isocan_tx, ISOTPSoftSocket(isocan_tx, 0x123, 0x321) as s
     rx2 = sock_tx.sr1(msg, timeout=3, verbose=False, threaded=True)
     elapsed = time.time() - start
     # Stop TimeoutScheduler while sockets are still open.
-    _ts = TimeoutScheduler._thread
     TimeoutScheduler.clear()
+    _ts = TimeoutScheduler._thread
     if _ts is not None:
         _ts.join(timeout=5)
 
@@ -1060,8 +1060,8 @@ with TestSocket(CAN) as isocan_tx, ISOTPSoftSocket(isocan_tx, 0x123, 0x321) as s
     traffic_thread.join(timeout=5)
     assert not traffic_thread.is_alive(), "traffic_thread still alive"
     # Stop TimeoutScheduler while sockets are still open.
-    _ts = TimeoutScheduler._thread
     TimeoutScheduler.clear()
+    _ts = TimeoutScheduler._thread
     if _ts is not None:
         _ts.join(timeout=5)
 
@@ -1083,15 +1083,15 @@ ff_frame = CAN(identifier=0x241, data=dhex("10 13 62 F1 90 41 42 43"))
 cf1_frame = CAN(identifier=0x241, data=dhex("21 44 45 46 47 48 49 4A"))
 cf2_frame = CAN(identifier=0x241, data=dhex("22 4B 4C 4D 4E 4F 50 00"))
 
-bg_count = 2000 # Large number of frames to stress the ISOTPSoftSocket implementation
+bg_count = 50000
 
 for _ in range(100):
-    _ = stim.send(bg_frame)
+    stim.send(bg_frame)
 
 stim.send(ff_frame)
 
 for _ in range(bg_count):
-    _ = stim.send(bg_frame)
+    stim.send(bg_frame)
 
 stim.send(cf1_frame)
 stim.send(cf2_frame)
@@ -1099,8 +1099,8 @@ stim.send(cf2_frame)
 with isocan, stim, ISOTPSoftSocket(isocan, 0x641, 0x241) as sock:
     pkts = sock.sniff(count=1, timeout=10)
     # Stop TimeoutScheduler while sockets are still open.
-    _ts = TimeoutScheduler._thread
     TimeoutScheduler.clear()
+    _ts = TimeoutScheduler._thread
     if _ts is not None:
         _ts.join(timeout=5)
 
@@ -1144,8 +1144,8 @@ with TestSocket(CAN) as stim, TestSocket(CAN) as isocan, \
     assert not traffic_thread.is_alive(), "traffic_thread still alive"
     assert not resp_thread.is_alive(), "resp_thread still alive"
     # Stop TimeoutScheduler while sockets are still open.
-    _ts = TimeoutScheduler._thread
     TimeoutScheduler.clear()
+    _ts = TimeoutScheduler._thread
     if _ts is not None:
         _ts.join(timeout=5)
 
@@ -1581,8 +1581,8 @@ def run_mf_response_test(frame_delay, mux_throttle, filters_kwarg, threaded,
             # Stop TimeoutScheduler while sockets are still open to
             # avoid callbacks crashing on closed sockets and writing
             # to stderr (causes fatal error on Python 3.13 Windows).
-            _ts_thread = _TimeoutScheduler._thread
             _TimeoutScheduler.clear()
+            _ts_thread = _TimeoutScheduler._thread
             if _ts_thread is not None:
                 _ts_thread.join(timeout=5)
     return result, response_data
@@ -1664,8 +1664,8 @@ assert result.data == expected
 
 cleanup_testsockets()
 
-_ts = TimeoutScheduler._thread
 TimeoutScheduler.clear()
+_ts = TimeoutScheduler._thread
 if _ts is not None:
     _ts.join(timeout=5)
 
