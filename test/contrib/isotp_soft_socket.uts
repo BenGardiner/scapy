@@ -1008,7 +1008,9 @@ with TestSocket(CAN) as isocan_tx, ISOTPSoftSocket(isocan_tx, 0x641, 0x241) as s
 assert rx is not None
 assert rx.data == response_data
 TimeoutScheduler.clear()
-time.sleep(TimeoutScheduler.GRACE * 3)
+_ts = TimeoutScheduler._thread
+if _ts is not None:
+    _ts.join(timeout=2)
 
 = ISOTPSoftSocket sr1 timeout with threaded=True
 
@@ -1025,7 +1027,9 @@ with TestSocket(CAN) as isocan_tx, ISOTPSoftSocket(isocan_tx, 0x123, 0x321) as s
 assert rx2 is None
 assert elapsed < 5
 TimeoutScheduler.clear()
-time.sleep(TimeoutScheduler.GRACE * 3)
+_ts = TimeoutScheduler._thread
+if _ts is not None:
+    _ts.join(timeout=2)
 
 = ISOTPSoftSocket sr1 timeout with threaded=True and background traffic
 
@@ -1054,7 +1058,9 @@ with TestSocket(CAN) as isocan_tx, ISOTPSoftSocket(isocan_tx, 0x123, 0x321) as s
 assert rx2 is None
 assert elapsed < 5
 TimeoutScheduler.clear()
-time.sleep(TimeoutScheduler.GRACE * 3)
+_ts = TimeoutScheduler._thread
+if _ts is not None:
+    _ts.join(timeout=2)
 
 = ISOTPSoftSocket sr1 SF request with MF response threaded and background traffic on slow interface
 
@@ -1090,7 +1096,9 @@ with isocan, stim, ISOTPSoftSocket(isocan, 0x641, 0x241) as sock:
 assert len(pkts) == 1, "MF response not received due to background traffic"
 assert pkts[0].data == response_data
 TimeoutScheduler.clear()
-time.sleep(TimeoutScheduler.GRACE * 3)
+_ts = TimeoutScheduler._thread
+if _ts is not None:
+    _ts.join(timeout=2)
 
 = ISOTPSoftSocket MF response with delayed CFs and background traffic
 
@@ -1130,7 +1138,9 @@ with TestSocket(CAN) as stim, TestSocket(CAN) as isocan, \
 assert len(pkts) == 1, "MF response not received with delayed CFs and slow poll rate"
 assert pkts[0].data == response_data
 TimeoutScheduler.clear()
-time.sleep(TimeoutScheduler.GRACE * 3)
+_ts = TimeoutScheduler._thread
+if _ts is not None:
+    _ts.join(timeout=2)
 
 = ISOTPSoftSocket sniff
 
@@ -1558,13 +1568,13 @@ def run_mf_response_test(frame_delay, mux_throttle, filters_kwarg, threaded,
         # Close ISOTPSoftSocket BEFORE clearing TimeoutScheduler so
         # that can_recv / _send stop rescheduling themselves.
         sock.close()
-        # Clear all scheduled timeouts and wait for the
-        # TimeoutScheduler thread to die.  The thread exits after
-        # GRACE (0.1s) of empty handle list, but due to the strict
-        # less-than comparison it needs up to 2*GRACE to terminate.
-        # We wait 3*GRACE to be safe on Windows (15.6ms timer slop).
+        # Clear all scheduled timeouts and join the TimeoutScheduler
+        # thread directly.  This is more reliable than sleeping an
+        # arbitrary amount — it waits until the thread actually exits.
         _TimeoutScheduler.clear()
-        _time.sleep(_TimeoutScheduler.GRACE * 3)
+        _ts_thread = _TimeoutScheduler._thread
+        if _ts_thread is not None:
+            _ts_thread.join(timeout=2)
     return result, response_data
 
 = MF response: candle-like unlimited, no can_filters, threaded=False

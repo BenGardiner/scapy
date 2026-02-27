@@ -660,6 +660,16 @@ class ISOTPSocketImplementation:
             self.tx_handle.cancel()
         except Scapy_Exception:
             pass
+        if self.rx_timeout_handle is not None:
+            try:
+                self.rx_timeout_handle.cancel()
+            except Scapy_Exception:
+                pass
+        if self.tx_timeout_handle is not None:
+            try:
+                self.tx_timeout_handle.cancel()
+            except Scapy_Exception:
+                pass
         try:
             self.rx_queue.close()
         except (OSError, EOFError):
@@ -673,6 +683,9 @@ class ISOTPSocketImplementation:
         # type: () -> None
         """Method called every time the rx_timer times out, due to the peer not
         sending a consecutive frame within the expected time window"""
+
+        if self.closed:
+            return
 
         if self.rx_state == ISOTP_WAIT_DATA:
             # On slow serial interfaces (slcan), the mux reads frames
@@ -698,6 +711,9 @@ class ISOTPSocketImplementation:
         """Method called every time the tx_timer times out, which can happen in
         two situations: either a Flow Control frame was not received in time,
         or the Separation Time Min is expired and a new frame must be sent."""
+
+        if self.closed:
+            return
 
         if (self.tx_state == ISOTP_WAIT_FC or
                 self.tx_state == ISOTP_WAIT_FIRST_FC):
