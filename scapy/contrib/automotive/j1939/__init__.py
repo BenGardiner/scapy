@@ -45,6 +45,7 @@ from scapy.contrib.automotive.j1939.j1939_soft_socket import (
     TP_CM_CTS,
     TP_CM_EndOfMsgACK,
     TP_Conn_Abort,
+    TP_CM_MAX_PACKETS_NO_LIMIT,
     log_j1939,
 )
 
@@ -62,6 +63,7 @@ __all__ = [
     "TP_CM_CTS",
     "TP_CM_EndOfMsgACK",
     "TP_Conn_Abort",
+    "TP_CM_MAX_PACKETS_NO_LIMIT",
     "USE_J1939_KERNEL_MODULE",
     "log_j1939",
 ]

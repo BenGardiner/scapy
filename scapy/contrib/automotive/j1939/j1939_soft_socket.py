@@ -102,6 +102,10 @@ TP_CM_EndOfMsgACK = 0x13  # End of Message Acknowledgment
 TP_CM_BAM = 0x20        # Broadcast Announce Message
 TP_Conn_Abort = 0xFF    # Connection Abort
 
+#: Value for the "max packets per CTS" field in a TP.CM_RTS frame that
+#: indicates no limit on how many TP.DT frames the receiver may request per CTS
+TP_CM_MAX_PACKETS_NO_LIMIT = 0xFF
+
 # Abort reason codes
 TP_ABORT_ALREADY_CONNECTED = 1
 TP_ABORT_NO_RESOURCES = 2
@@ -779,7 +783,6 @@ class J1939SocketImplementation:
 
         total_size = struct.unpack_from("<H", data, 1)[0]
         num_packets = data[3]
-        pgn = struct.unpack_from("<I", data[4:8] + b"\x00")[0] & 0x3FFFF
         # bytes 5-7 hold the PGN (3 bytes, little-endian)
         pgn = data[5] | (data[6] << 8) | (data[7] << 16)
 
@@ -854,9 +857,13 @@ class J1939SocketImplementation:
         self.rx_timeout_handle = TimeoutScheduler.schedule(
             self.tp_dt_timeout, self._rx_timeout_handler)
 
-    def _recv_cts(self, data, sa, da, _ts=None):
+    def _recv_cts(self, data, sa, da, ts=None):
         # type: (bytes, int, int, Optional[float]) -> None
-        """Handle a received TP.CM_CTS frame (as the sender)."""
+        """Handle a received TP.CM_CTS frame (as the sender).
+
+        The ``ts`` parameter is accepted for API consistency with other
+        TP.CM handlers but is not used for CTS processing.
+        """
         log_j1939.debug("Received TP.CM_CTS from SA=0x%02X", sa)
         if self.tx_state not in (J1939_TX_CMDT_WAIT_CTS,):
             return
@@ -1115,7 +1122,7 @@ class J1939SocketImplementation:
             rts_data = (struct.pack("B", TP_CM_RTS) +
                         struct.pack("<H", length) +
                         struct.pack("B", num_packets) +
-                        struct.pack("B", 0xFF) +  # max packets per CTS (0xFF = no limit)
+                        struct.pack("B", TP_CM_MAX_PACKETS_NO_LIMIT) +
                         pgn_bytes)
             self._can_send(self._tp_cm_can_id(da), rts_data)
             self.tx_state = J1939_TX_CMDT_WAIT_CTS
