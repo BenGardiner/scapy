@@ -14,21 +14,27 @@ structured to allow future use of the Linux kernel's native j1939 socket
 support (similar to ISOTPNativeSocket / ISOTPSoftSocket).
 
 The SAE J1939 Transport Layer Protocol supports two modes:
-  - BAM (Broadcast Announce Message) for broadcast multi-packet messages
-    (destination address 0xFF / J1939_GLOBAL_ADDRESS)
-  - CMDT (Connection Mode Data Transfer) for peer-to-peer multi-packet
-    messages with flow control
+
+- BAM (Broadcast Announce Message) for broadcast multi-packet messages
+  (destination address 0xFF / J1939_GLOBAL_ADDRESS)
+- CMDT (Connection Mode Data Transfer) for peer-to-peer multi-packet
+  messages with flow control
+
+Optionally, SAE J1939-81 Network Management (address claiming) is supported
+when the socket is created with a ``name`` (64-bit ECU NAME) parameter.
 
 Reference:
-  SAE J1939-21 Data Link Layer specification
-  Linux kernel j1939 socket documentation:
-    https://www.kernel.org/doc/html/latest/networking/j1939.html
-  The structure and state-machine approach in this file were adapted from the
+
+- SAE J1939-21 Data Link Layer specification
+- SAE J1939-81 Network Management specification
+- Linux kernel j1939 socket documentation:
+  https://www.kernel.org/doc/html/latest/networking/j1939.html
+- The structure and state-machine approach in this file were adapted from the
   Scapy ISOTPSoftSocket implementation:
-    scapy/contrib/isotp/isotp_soft_socket.py
-    Copyright (C) Nils Weiss <nils@we155.de>
-    Copyright (C) Enrico Pozzobon <enricopozzobon@gmail.com>
-    SPDX-License-Identifier: GPL-2.0-only
+  scapy/contrib/isotp/isotp_soft_socket.py
+  Copyright (C) Nils Weiss <nils@we155.de>
+  Copyright (C) Enrico Pozzobon <enricopozzobon@gmail.com>
+  SPDX-License-Identifier: GPL-2.0-only
 """
 
 import heapq
@@ -120,6 +126,34 @@ J1939_TP_PRIORITY = 7
 #: may be queued behind a large backlog of background CAN frames; this
 #: factor gives the mux enough time to drain the backlog.
 TP_DT_TIMEOUT_EXTENSION_FACTOR = 10
+
+# ---------------------------------------------------------------------------
+# J1939-81 Network Management (Address Claiming)
+# ---------------------------------------------------------------------------
+
+#: PGN for Address Claimed / Cannot Claim messages (J1939-81)
+PGN_ADDRESS_CLAIMED = 0xEE00  # 60928
+
+#: PGN for Request messages (J1939-81)
+PGN_REQUEST = 0xEA00  # 59904
+
+#: PDU Format byte for Address Claimed (PGN 0xEE00)
+J1939_PF_ADDRESS_CLAIMED = 0xEE
+
+#: PDU Format byte for Request messages (PGN 0xEA00)
+J1939_PF_REQUEST = 0xEA
+
+#: Null (Cannot Claim) address — used as SA when address claiming fails
+J1939_NULL_ADDRESS = 0xFE
+
+#: Duration (seconds) of the 250 ms address claim window (J1939-81 §4.2)
+J1939_ADDR_CLAIM_TIMEOUT = 0.250
+
+# Address-claim state machine states
+J1939_ADDR_STATE_UNCLAIMED = 0     # address claiming not enabled
+J1939_ADDR_STATE_CLAIMING = 1      # 250 ms window in progress
+J1939_ADDR_STATE_CLAIMED = 2       # address successfully claimed
+J1939_ADDR_STATE_CANNOT_CLAIM = 3  # lost arbitration; SA = 0xFE
 
 # ---------------------------------------------------------------------------
 # State machine states (RX)
@@ -274,6 +308,8 @@ class J1939SoftSocket(SuperSocket):
         bs=0,              # type: int
         listen_only=False, # type: bool
         basecls=J1939,     # type: Type[Packet]
+        name=None,         # type: Optional[int]
+        preferred_address=None,  # type: Optional[int]
     ):
         # type: (...) -> None
         if LINUX and isinstance(can_socket, str):
@@ -298,6 +334,8 @@ class J1939SoftSocket(SuperSocket):
             priority=self.priority,
             bs=bs,
             listen_only=listen_only,
+            name=name,
+            preferred_address=preferred_address,
         )
 
         # Cast for compatibility with SuperSocket
@@ -567,6 +605,8 @@ class J1939SocketImplementation:
         priority=6,        # type: int
         bs=0,              # type: int
         listen_only=False, # type: bool
+        name=None,         # type: Optional[int]
+        preferred_address=None,  # type: Optional[int]
     ):
         # type: (...) -> None
         self.can_socket = can_socket
@@ -635,6 +675,22 @@ class J1939SocketImplementation:
         self.tx_handle = TimeoutScheduler.schedule(
             self.rx_tx_poll_rate, self._send_poll)
 
+        # ------------------------------------------------------------------
+        # J1939-81 Address Claiming
+        # ------------------------------------------------------------------
+        self.name = name  # type: Optional[int]
+        self.preferred_address = (
+            preferred_address if preferred_address is not None else src_addr
+        )
+        self.address_state = J1939_ADDR_STATE_UNCLAIMED
+        self.address_claim_handle = None  # type: Optional[TimeoutScheduler.Handle]
+
+        if self.name is not None:
+            self.address_state = J1939_ADDR_STATE_CLAIMING
+            self._send_address_claimed(self.preferred_address)
+            self.address_claim_handle = TimeoutScheduler.schedule(
+                J1939_ADDR_CLAIM_TIMEOUT, self._address_claim_timer_fired)
+
     # ------------------------------------------------------------------
     # Destructor / close
     # ------------------------------------------------------------------
@@ -647,7 +703,8 @@ class J1939SocketImplementation:
         # type: () -> None
         """Stop background threads and release resources."""
         self.closed = True
-        for handle in (self.rx_timeout_handle, self.tx_timeout_handle):
+        for handle in (self.rx_timeout_handle, self.tx_timeout_handle,
+                       self.address_claim_handle):
             if handle is not None:
                 try:
                     handle.cancel()
@@ -669,6 +726,124 @@ class J1939SocketImplementation:
             self.tx_queue.close()
         except (OSError, EOFError):
             pass
+
+    # ------------------------------------------------------------------
+    # J1939-81 Address Claiming
+    # ------------------------------------------------------------------
+
+    def _send_address_claimed(self, sa):
+        # type: (int) -> None
+        """Send an Address Claimed message (PGN 0xEE00) broadcast with our NAME."""
+        can_id = _j1939_can_id(self.priority, J1939_PF_ADDRESS_CLAIMED,
+                               J1939_GLOBAL_ADDRESS, sa)
+        data = struct.pack("<Q", self.name)  # type: ignore[arg-type]
+        log_j1939.debug("Sending Address Claimed from SA=0x%02X NAME=0x%016X",
+                        sa, self.name)  # type: ignore[arg-type]
+        self._can_send(can_id, data)
+
+    def _send_cannot_claim(self):
+        # type: () -> None
+        """Send a Cannot Claim message (PGN 0xEE00 from SA=0xFE) with our NAME."""
+        can_id = _j1939_can_id(self.priority, J1939_PF_ADDRESS_CLAIMED,
+                               J1939_GLOBAL_ADDRESS, J1939_NULL_ADDRESS)
+        data = struct.pack("<Q", self.name)  # type: ignore[arg-type]
+        log_j1939.warning("Sending Cannot Claim (SA=0xFE) NAME=0x%016X",
+                          self.name)  # type: ignore[arg-type]
+        self._can_send(can_id, data)
+
+    def _address_claim_timer_fired(self):
+        # type: () -> None
+        """Called 250 ms after the initial claim broadcast.
+
+        Transitions from CLAIMING to CLAIMED if no conflicting claim was
+        received during the window.  If the state is no longer CLAIMING
+        (e.g. arbitration was lost), this is a no-op.
+        """
+        if self.closed:
+            return
+        if self.address_state == J1939_ADDR_STATE_CLAIMING:
+            self.address_state = J1939_ADDR_STATE_CLAIMED
+            log_j1939.info("Address 0x%02X claimed successfully", self.preferred_address)
+        self.address_claim_handle = None
+
+    def _on_address_claimed(self, data, sa, da):
+        # type: (bytes, int, int) -> None
+        """Handle an incoming Address Claimed / Cannot Claim frame (PGN 0xEE00).
+
+        Only acts when the sending node's source address matches our
+        preferred address — that is a direct address conflict.
+
+        Arbitration rule (J1939-81 §4.2.3):
+
+        - Lower 64-bit NAME has higher priority (wins).
+        - If we have the lower NAME: re-broadcast our claim to defend it.
+        - If we have the higher NAME: we lose; send a Cannot Claim and
+          enter the CANNOT_CLAIM state.
+        """
+        if self.name is None:
+            return
+        if len(data) < 8:
+            return
+        # SA=0xFE (null address) means the sender already lost arbitration;
+        # no conflict with our address.
+        if sa == J1939_NULL_ADDRESS:
+            return
+        if sa != self.preferred_address:
+            return
+        received_name = struct.unpack("<Q", data[:8])[0]
+        if received_name == self.name:
+            log_j1939.warning(
+                "Address Claimed from SA=0x%02X with identical NAME=0x%016X; "
+                "ignoring (configuration error)", sa, received_name)
+            return
+        if self.name < received_name:
+            # We win — re-broadcast our claim
+            log_j1939.debug(
+                "Address conflict on SA=0x%02X: our NAME=0x%016X < "
+                "theirs=0x%016X, re-broadcasting our claim",
+                sa, self.name, received_name)
+            self._send_address_claimed(self.preferred_address)
+        else:
+            # We lose — enter Cannot Claim state
+            log_j1939.warning(
+                "Address conflict on SA=0x%02X: our NAME=0x%016X > "
+                "theirs=0x%016X, cannot claim address",
+                sa, self.name, received_name)
+            # Cancel the 250 ms timer if still pending
+            if self.address_claim_handle is not None:
+                try:
+                    self.address_claim_handle.cancel()
+                except Scapy_Exception:
+                    pass
+                self.address_claim_handle = None
+            self.address_state = J1939_ADDR_STATE_CANNOT_CLAIM
+            self._send_cannot_claim()
+
+    def _on_request_pgn(self, data, sa, da):
+        # type: (bytes, int, int) -> None
+        """Handle an incoming Request message (PGN 0xEA00).
+
+        If the requested PGN is PGN_ADDRESS_CLAIMED (0xEE00), respond
+        with our Address Claimed broadcast (or Cannot Claim if we have
+        not successfully claimed an address).
+        """
+        if self.name is None:
+            return
+        if len(data) < 3:
+            return
+        requested_pgn = data[0] | (data[1] << 8) | (data[2] << 16)
+        if requested_pgn != PGN_ADDRESS_CLAIMED:
+            return
+        if self.address_state == J1939_ADDR_STATE_CLAIMED:
+            log_j1939.debug(
+                "Request for PGN_ADDRESS_CLAIMED from SA=0x%02X; "
+                "responding with Address Claimed", sa)
+            self._send_address_claimed(self.preferred_address)
+        else:
+            log_j1939.debug(
+                "Request for PGN_ADDRESS_CLAIMED from SA=0x%02X; "
+                "responding with Cannot Claim (state=%d)", sa, self.address_state)
+            self._send_cannot_claim()
 
     # ------------------------------------------------------------------
     # CAN send helpers
@@ -748,6 +923,18 @@ class J1939SocketImplementation:
 
         can_id = p.identifier
         _, pf, ps, sa = _j1939_decode_can_id(can_id)
+
+        # Network management: Address Claimed / Cannot Claim (PGN 0xEE00)
+        if pf == J1939_PF_ADDRESS_CLAIMED and self.name is not None:
+            self._on_address_claimed(bytes(p.data), sa, ps)
+            return
+
+        # Network management: Request (PGN 0xEA00)
+        if pf == J1939_PF_REQUEST and self.name is not None:
+            da = ps  # PDU1: PS = DA
+            if da == self.src_addr or da == J1939_GLOBAL_ADDRESS:
+                self._on_request_pgn(bytes(p.data), sa, da)
+            return
 
         if pf == J1939_TP_CM_PF:
             # TP Connection Management
@@ -1270,7 +1457,15 @@ class J1939SocketImplementation:
 
     def send(self, p):
         # type: (bytes) -> None
-        """Enqueue a raw payload for transmission."""
+        """Enqueue a raw payload for transmission.
+
+        Raises Scapy_Exception if address claiming is enabled but the
+        address has not yet been successfully claimed.
+        """
+        if self.name is not None and self.address_state != J1939_ADDR_STATE_CLAIMED:
+            raise Scapy_Exception(
+                "J1939 address not yet claimed (state=%d); "
+                "cannot send application data" % self.address_state)
         self.tx_queue.send((p, self.pgn, self.dst_addr))
 
     def recv(self, timeout=None):

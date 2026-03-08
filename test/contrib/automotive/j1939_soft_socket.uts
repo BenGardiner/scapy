@@ -9,6 +9,7 @@ import struct
 import time
 from scapy.layers.can import CAN
 from scapy.contrib.automotive.j1939 import J1939, J1939SoftSocket, J1939Socket, J1939SocketImplementation, J1939_GLOBAL_ADDRESS, J1939_TP_MAX_DLEN, J1939_MAX_SF_DLEN, TP_CM_BAM, TP_CM_RTS, TP_CM_CTS, TP_CM_EndOfMsgACK, TP_Conn_Abort, TimeoutScheduler, USE_J1939_KERNEL_MODULE
+from scapy.contrib.automotive.j1939 import PGN_ADDRESS_CLAIMED, PGN_REQUEST, J1939_PF_ADDRESS_CLAIMED, J1939_PF_REQUEST, J1939_NULL_ADDRESS, J1939_ADDR_CLAIM_TIMEOUT, J1939_ADDR_STATE_UNCLAIMED, J1939_ADDR_STATE_CLAIMING, J1939_ADDR_STATE_CLAIMED, J1939_ADDR_STATE_CANNOT_CLAIM
 from scapy.contrib.automotive.j1939.j1939_soft_socket import _j1939_can_id, _j1939_decode_can_id, _pgn_from_can_id, J1939_TP_CM_PF, J1939_TP_DT_PF, J1939_TP_DT_PAYLOAD
 from scapy.error import Scapy_Exception
 from test.testsocket import TestSocket, SlowTestSocket, cleanup_testsockets
@@ -602,6 +603,245 @@ with TestSocket(CAN) as cans:
         pass
     assert s.closed
 
+
++ J1939-81 Address Claiming
+
+= Address claiming constants are correct
+assert PGN_ADDRESS_CLAIMED == 0xEE00, "PGN_ADDRESS_CLAIMED should be 0xEE00"
+assert PGN_REQUEST == 0xEA00, "PGN_REQUEST should be 0xEA00"
+assert J1939_NULL_ADDRESS == 0xFE, "J1939_NULL_ADDRESS should be 0xFE"
+assert J1939_ADDR_STATE_UNCLAIMED == 0
+assert J1939_ADDR_STATE_CLAIMING == 1
+assert J1939_ADDR_STATE_CLAIMED == 2
+assert J1939_ADDR_STATE_CANNOT_CLAIM == 3
+
+= Test 1: 64-bit NAME serialization (pack and unpack)
+for name_val in [0x0000000000000001, 0xFFFFFFFFFFFFFFFF, 0x0102030405060708, 0]:
+    packed = struct.pack("<Q", name_val)
+    assert len(packed) == 8, "NAME must be exactly 8 bytes"
+    unpacked = struct.unpack("<Q", packed)[0]
+    assert unpacked == name_val, "Round-trip failed for NAME=0x{:016X}".format(name_val)
+
+= Test 2: Initial Address Claim Broadcast
+def test_address_claim_initial_broadcast():
+    my_name = 0x0000000000000001
+    my_addr = 0x80
+    with TestSocket(CAN) as can_sock, TestSocket(CAN) as monitor:
+        can_sock.pair(monitor)
+        with J1939SoftSocket(can_sock, src_addr=my_addr, pgn=0xFECA, name=my_name) as s:
+            # Address Claimed frame should be sent synchronously in __init__
+            pkt = monitor.recv()
+            assert pkt is not None, "No Address Claimed frame broadcast on init"
+            assert pkt.flags & 0x4, "Frame must be extended (29-bit) CAN"
+            _, pf, ps, sa = _j1939_decode_can_id(pkt.identifier)
+            assert pf == J1939_PF_ADDRESS_CLAIMED, \
+                "Expected PF=0x{:02X} (Address Claimed), got 0x{:02X}".format(
+                    J1939_PF_ADDRESS_CLAIMED, pf)
+            assert ps == J1939_GLOBAL_ADDRESS, \
+                "Expected DA=0xFF (broadcast), got 0x{:02X}".format(ps)
+            assert sa == my_addr, \
+                "Expected SA=0x{:02X}, got 0x{:02X}".format(my_addr, sa)
+            assert len(pkt.data) == 8, "NAME payload must be 8 bytes"
+            assert struct.unpack("<Q", bytes(pkt.data)[:8])[0] == my_name, \
+                "NAME payload mismatch"
+            assert s.impl.address_state == J1939_ADDR_STATE_CLAIMING, \
+                "Expected CLAIMING state on init"
+
+test_address_claim_initial_broadcast()
+
+= Test 3: 250ms Blocking State
+def test_address_claim_blocking_send():
+    my_name = 0x0000000000000001
+    with TestSocket(CAN) as can_sock:
+        with J1939SoftSocket(can_sock, src_addr=0x80, pgn=0xFECA, name=my_name) as s:
+            assert s.impl.address_state == J1939_ADDR_STATE_CLAIMING, \
+                "Expected CLAIMING state immediately after init"
+            try:
+                s.impl.send(b'\x01\x02\x03')
+                assert False, "Expected Scapy_Exception was not raised"
+            except Scapy_Exception as e:
+                assert "address" in str(e).lower() or "claim" in str(e).lower(), \
+                    "Exception message should mention address or claim: {}".format(e)
+
+test_address_claim_blocking_send()
+
+= Test 4: Winning Arbitration (our NAME is lower — we win)
+def test_address_claim_win_arbitration():
+    my_name = 0x0000000000000001    # lower = higher priority
+    their_name = 0x0000000000000002  # higher = lower priority
+    my_addr = 0x80
+    with TestSocket(CAN) as can_sock, TestSocket(CAN) as monitor:
+        can_sock.pair(monitor)
+        with J1939SoftSocket(can_sock, src_addr=my_addr, pgn=0xFECA, name=my_name) as s:
+            # Consume the initial Address Claimed frame
+            _ = monitor.recv()
+            # Inject a conflicting Address Claimed from another node at
+            # our address with a HIGHER NAME (they lose, we win)
+            conflict_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED,
+                                        J1939_GLOBAL_ADDRESS, my_addr)
+            conflict_frame = CAN(identifier=conflict_id, flags="extended",
+                                 data=struct.pack("<Q", their_name))
+            s.impl.on_can_recv(conflict_frame)
+            # We should re-broadcast our Address Claimed to defend the address
+            pkt = monitor.recv()
+            assert pkt is not None, "Expected re-broadcast of Address Claimed"
+            _, pf, ps, sa = _j1939_decode_can_id(pkt.identifier)
+            assert pf == J1939_PF_ADDRESS_CLAIMED, \
+                "Re-broadcast must be an Address Claimed frame"
+            assert sa == my_addr, "Re-broadcast must use our SA"
+            assert ps == J1939_GLOBAL_ADDRESS, "Re-broadcast must be to global address"
+            # Address state should still be CLAIMING (250ms window not expired)
+            assert s.impl.address_state == J1939_ADDR_STATE_CLAIMING, \
+                "Expected CLAIMING state after winning arbitration"
+
+test_address_claim_win_arbitration()
+
+= Test 5: Losing Arbitration (our NAME is higher — we lose)
+def test_address_claim_lose_arbitration():
+    my_name = 0x0000000000000002    # higher = lower priority
+    their_name = 0x0000000000000001  # lower = higher priority
+    my_addr = 0x80
+    with TestSocket(CAN) as can_sock, TestSocket(CAN) as monitor:
+        can_sock.pair(monitor)
+        with J1939SoftSocket(can_sock, src_addr=my_addr, pgn=0xFECA, name=my_name) as s:
+            # Consume the initial Address Claimed frame
+            _ = monitor.recv()
+            # Inject a conflicting Address Claimed from another node at
+            # our address with a LOWER NAME (they win, we lose)
+            conflict_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED,
+                                        J1939_GLOBAL_ADDRESS, my_addr)
+            conflict_frame = CAN(identifier=conflict_id, flags="extended",
+                                 data=struct.pack("<Q", their_name))
+            s.impl.on_can_recv(conflict_frame)
+            # We lose: should broadcast Cannot Claim from SA=0xFE
+            pkt = monitor.recv()
+            assert pkt is not None, "Expected Cannot Claim message"
+            _, pf, ps, sa = _j1939_decode_can_id(pkt.identifier)
+            assert pf == J1939_PF_ADDRESS_CLAIMED, \
+                "Cannot Claim must use PGN 0xEE00"
+            assert sa == J1939_NULL_ADDRESS, \
+                "Cannot Claim must use SA=0xFE (null address), got SA=0x{:02X}".format(sa)
+            assert ps == J1939_GLOBAL_ADDRESS, \
+                "Cannot Claim must be to global address"
+            assert struct.unpack("<Q", bytes(pkt.data)[:8])[0] == my_name, \
+                "Cannot Claim must carry our NAME"
+            assert s.impl.address_state == J1939_ADDR_STATE_CANNOT_CLAIM, \
+                "Expected CANNOT_CLAIM state after losing arbitration"
+
+test_address_claim_lose_arbitration()
+
+= Test 6: Request Response -- CLAIMED socket responds with Address Claimed
+def test_address_claim_request_response():
+    my_name = 0x0000000000000001
+    my_addr = 0x80
+    with TestSocket(CAN) as can_sock, TestSocket(CAN) as monitor:
+        can_sock.pair(monitor)
+        with J1939SoftSocket(can_sock, src_addr=my_addr, pgn=0xFECA, name=my_name) as s:
+            # Consume the initial Address Claimed frame
+            _ = monitor.recv()
+            # Manually transition to CLAIMED state (skip the 250ms wait)
+            s.impl.address_state = J1939_ADDR_STATE_CLAIMED
+            # Inject a Request for PGN_ADDRESS_CLAIMED broadcast to global address
+            req_pgn_bytes = struct.pack("<I", PGN_ADDRESS_CLAIMED)[:3]
+            req_id = _j1939_can_id(6, J1939_PF_REQUEST,
+                                   J1939_GLOBAL_ADDRESS, 0x20)
+            req_frame = CAN(identifier=req_id, flags="extended",
+                            data=req_pgn_bytes + b'\xFF\xFF\xFF\xFF\xFF')
+            s.impl.on_can_recv(req_frame)
+            # Should respond with an Address Claimed broadcast
+            pkt = monitor.recv()
+            assert pkt is not None, "Expected Address Claimed response to Request"
+            _, pf, ps, sa = _j1939_decode_can_id(pkt.identifier)
+            assert pf == J1939_PF_ADDRESS_CLAIMED, \
+                "Response must be an Address Claimed frame"
+            assert sa == my_addr, "Response must use our claimed SA"
+            assert ps == J1939_GLOBAL_ADDRESS, "Response must be broadcast"
+            assert struct.unpack("<Q", bytes(pkt.data)[:8])[0] == my_name, \
+                "Response must carry our NAME"
+
+test_address_claim_request_response()
+
+= Test: cannot-claim socket responds to Request with Cannot Claim
+def test_address_claim_cannot_claim_request_response():
+    my_name = 0x0000000000000001
+    my_addr = 0x80
+    with TestSocket(CAN) as can_sock, TestSocket(CAN) as monitor:
+        can_sock.pair(monitor)
+        with J1939SoftSocket(can_sock, src_addr=my_addr, pgn=0xFECA, name=my_name) as s:
+            # Consume the initial Address Claimed frame
+            _ = monitor.recv()
+            # Manually force CANNOT_CLAIM state
+            s.impl.address_state = J1939_ADDR_STATE_CANNOT_CLAIM
+            # Inject a Request for PGN_ADDRESS_CLAIMED
+            req_pgn_bytes = struct.pack("<I", PGN_ADDRESS_CLAIMED)[:3]
+            req_id = _j1939_can_id(6, J1939_PF_REQUEST, J1939_GLOBAL_ADDRESS, 0x20)
+            req_frame = CAN(identifier=req_id, flags="extended",
+                            data=req_pgn_bytes + b'\xFF\xFF\xFF\xFF\xFF')
+            s.impl.on_can_recv(req_frame)
+            # Should respond with a Cannot Claim (SA=0xFE)
+            pkt = monitor.recv()
+            assert pkt is not None, "Expected Cannot Claim response to Request"
+            _, pf, ps, sa = _j1939_decode_can_id(pkt.identifier)
+            assert pf == J1939_PF_ADDRESS_CLAIMED
+            assert sa == J1939_NULL_ADDRESS, \
+                "Cannot Claim response must use SA=0xFE, got 0x{:02X}".format(sa)
+
+test_address_claim_cannot_claim_request_response()
+
+= Test: 250ms timer transitions state from CLAIMING to CLAIMED
+def test_address_claim_timer_transition():
+    my_name = 0x0000000000000001
+    my_addr = 0x80
+    with TestSocket(CAN) as can_sock:
+        with J1939SoftSocket(can_sock, src_addr=my_addr, pgn=0xFECA, name=my_name) as s:
+            assert s.impl.address_state == J1939_ADDR_STATE_CLAIMING
+            # Wait for the 250ms claiming window to expire
+            time.sleep(J1939_ADDR_CLAIM_TIMEOUT + 0.1)
+            assert s.impl.address_state == J1939_ADDR_STATE_CLAIMED, \
+                "Expected CLAIMED after 250ms, got state={}".format(
+                    s.impl.address_state)
+
+test_address_claim_timer_transition()
+
+= Test: socket without name has UNCLAIMED state and sends freely
+def test_no_address_claim_unclaimed():
+    with TestSocket(CAN) as can_sock:
+        with J1939SoftSocket(can_sock, src_addr=0x11, pgn=0xFECA) as s:
+            assert s.impl.address_state == J1939_ADDR_STATE_UNCLAIMED, \
+                "Socket without name should be UNCLAIMED"
+            # send() should not raise when name is None
+            s.impl.send(b'\x01\x02\x03\x04\x05\x06\x07\x08')
+
+test_no_address_claim_unclaimed()
+
+= Test: CANNOT_CLAIM socket blocks application sends
+def test_address_claim_cannot_claim_blocks_send():
+    my_name = 0x0000000000000001
+    with TestSocket(CAN) as can_sock:
+        with J1939SoftSocket(can_sock, src_addr=0x80, pgn=0xFECA, name=my_name) as s:
+            s.impl.address_state = J1939_ADDR_STATE_CANNOT_CLAIM
+            try:
+                s.impl.send(b'\x01\x02\x03')
+                assert False, "Expected Scapy_Exception was not raised for CANNOT_CLAIM"
+            except Scapy_Exception:
+                pass
+
+test_address_claim_cannot_claim_blocks_send()
+
+= Test: address claiming ignored when name is not set
+def test_address_claim_ignored_without_name():
+    # Even if address claimed / request frames arrive, they should not crash
+    # and should not alter the address_state (which stays UNCLAIMED)
+    with TestSocket(CAN) as can_sock:
+        with J1939SoftSocket(can_sock, src_addr=0x80, pgn=0) as s:
+            assert s.impl.name is None
+            claim_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x80)
+            claim_frame = CAN(identifier=claim_id, flags="extended",
+                              data=struct.pack("<Q", 0x0000000000000001))
+            s.impl.on_can_recv(claim_frame)
+            assert s.impl.address_state == J1939_ADDR_STATE_UNCLAIMED
+
+test_address_claim_ignored_without_name()
 
 + Cleanup
 
