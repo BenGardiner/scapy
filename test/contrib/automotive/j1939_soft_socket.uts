@@ -11,7 +11,7 @@ from scapy.layers.can import CAN
 from scapy.contrib.automotive.j1939 import J1939, J1939SoftSocket, J1939Socket, J1939SocketImplementation, J1939_GLOBAL_ADDRESS, J1939_TP_MAX_DLEN, J1939_MAX_SF_DLEN, TP_CM_BAM, TP_CM_RTS, TP_CM_CTS, TP_CM_EndOfMsgACK, TP_Conn_Abort, TimeoutScheduler, USE_J1939_KERNEL_MODULE
 from scapy.contrib.automotive.j1939.j1939_soft_socket import _j1939_can_id, _j1939_decode_can_id, _pgn_from_can_id, J1939_TP_CM_PF, J1939_TP_DT_PF, J1939_TP_DT_PAYLOAD
 from scapy.error import Scapy_Exception
-from test.testsocket import TestSocket, cleanup_testsockets
+from test.testsocket import TestSocket, SlowTestSocket, cleanup_testsockets
 
 dhex = bytes.fromhex
 
@@ -183,7 +183,7 @@ def test_bam_rx_sn_error():
 
 test_bam_rx_sn_error()
 
-= BAM receive -- inactivity timeout resets state machine
+= BAM receive -- inactivity timeout resets state machine after 10x extension
 def test_bam_rx_timeout():
     pgn = 0xFECA
     pgn_bytes = struct.pack("<I", pgn)[:3]
@@ -192,7 +192,9 @@ def test_bam_rx_timeout():
     with J1939SoftSocket(TestSocket(CAN), src_addr=0x11, dst_addr=J1939_GLOBAL_ADDRESS, pgn=pgn) as s:
         s.impl.tp_dt_timeout = 0.05
         s.impl.on_can_recv(CAN(identifier=bam_can_id, flags="extended", data=bam_data))
-        time.sleep(0.2)
+        # The timeout extension allows up to 10x tp_dt_timeout before resetting.
+        # Wait long enough for the full extension period to expire (10 * 0.05 + buffer).
+        time.sleep(0.7)
         assert s.impl.rx_state == 0, "Expected IDLE after timeout, got {}".format(s.impl.rx_state)
 
 test_bam_rx_timeout()
@@ -461,9 +463,153 @@ with TestSocket(CAN) as cans:
     assert s.closed
 
 
++ J1939SoftSocket -- slow socket (slcan-like) timing tests
+# These tests verify that J1939SoftSocket correctly reassembles multi-packet
+# BAM messages even when the underlying CAN socket behaves like a slow
+# serial interface (slcan), where:
+#   - Each frame read takes ~2.5ms (serial I/O)
+#   - The TimeoutScheduler thread stalls per read during heavy traffic
+#   - A large backlog of background frames precedes the TP.DT frames
+#
+# Modelled after the SlowTestSocket cartesian product tests in
+#   test/contrib/isotp_soft_socket.uts (from PR #2 in BenGardiner/scapy)
+
+= J1939 BAM receive with background traffic on a fast (candle-like) socket
+def test_j1939_bam_slow_candle():
+    from threading import Thread, Event
+    pgn = 0xFECA
+    pgn_bytes = struct.pack("<I", pgn)[:3]
+    total_size = 9
+    num_packets = 2
+    bam_data = struct.pack("B", TP_CM_BAM) + struct.pack("<H", total_size) + struct.pack("B", num_packets) + b"\xFF" + pgn_bytes
+    bam_can_id = _j1939_can_id(7, J1939_TP_CM_PF, J1939_GLOBAL_ADDRESS, 0x80)
+    dt1_data = b"\x01" + b"\x01\x02\x03\x04\x05\x06\x07"
+    dt2_data = b"\x02" + b"\x08\x09\xFF\xFF\xFF\xFF\xFF"
+    dt_can_id = _j1939_can_id(7, J1939_TP_DT_PF, J1939_GLOBAL_ADDRESS, 0x80)
+    bg_can_id = _j1939_can_id(6, 0xFE, 0xEB, 0x99)  # PGN 0xFEEB -- different from socket listen PGN 0xFECA
+    stop_evt = Event()
+    with TestSocket(CAN) as stim, TestSocket(CAN) as isocan, J1939SoftSocket(isocan, src_addr=0x11, dst_addr=J1939_GLOBAL_ADDRESS, pgn=pgn) as s:
+        stim.pair(isocan)
+        def send_traffic():
+            while not stop_evt.is_set():
+                try:
+                    stim.send(CAN(identifier=bg_can_id, flags="extended", data=b"\xAA" * 8))
+                except Exception:
+                    break
+                time.sleep(0.001)
+        bg_thread = Thread(target=send_traffic)
+        bg_thread.start()
+        time.sleep(0.05)
+        stim.send(CAN(identifier=bam_can_id, flags="extended", data=bam_data))
+        time.sleep(0.01)
+        stim.send(CAN(identifier=dt_can_id, flags="extended", data=dt1_data))
+        time.sleep(0.01)
+        stim.send(CAN(identifier=dt_can_id, flags="extended", data=dt2_data))
+        pkts = s.sniff(count=1, timeout=5)
+        stop_evt.set()
+        bg_thread.join(timeout=3)
+        _ts_t = TimeoutScheduler._thread
+        TimeoutScheduler.clear()
+        if _ts_t is not None:
+            _ts_t.join(timeout=5)
+    assert len(pkts) == 1, "BAM message not received with background traffic"
+    assert pkts[0].data == b"\x01\x02\x03\x04\x05\x06\x07\x08\x09"
+
+test_j1939_bam_slow_candle()
+
+= J1939 BAM receive on slow (slcan-like) socket with prefill and background traffic
+def test_j1939_bam_slow_slcan():
+    from threading import Thread, Event
+    pgn = 0xFECA
+    pgn_bytes = struct.pack("<I", pgn)[:3]
+    total_size = 9
+    num_packets = 2
+    bam_data = struct.pack("B", TP_CM_BAM) + struct.pack("<H", total_size) + struct.pack("B", num_packets) + b"\xFF" + pgn_bytes
+    bam_can_id = _j1939_can_id(7, J1939_TP_CM_PF, J1939_GLOBAL_ADDRESS, 0x80)
+    dt1_data = b"\x01" + b"\x01\x02\x03\x04\x05\x06\x07"
+    dt2_data = b"\x02" + b"\x08\x09\xFF\xFF\xFF\xFF\xFF"
+    dt_can_id = _j1939_can_id(7, J1939_TP_DT_PF, J1939_GLOBAL_ADDRESS, 0x80)
+    bg_can_id = _j1939_can_id(6, 0xFE, 0xEB, 0x99)  # PGN 0xFEEB -- different from socket listen PGN 0xFECA
+    # Use SlowTestSocket to simulate slcan adapter:
+    #   frame_delay=0.0025: ~2.5ms per serial read
+    #   mux_throttle=0.001: 1ms minimum between mux calls
+    #   read_time_limit=0.02: 20ms cap on read loop (like SocketMapper.READ_BUS_TIME_LIMIT)
+    with TestSocket(CAN) as stim, SlowTestSocket(CAN, frame_delay=0.0025, mux_throttle=0.001, read_time_limit=0.02) as slow_can, J1939SoftSocket(slow_can, src_addr=0x11, dst_addr=J1939_GLOBAL_ADDRESS, pgn=pgn) as s:
+        stim.pair(slow_can)
+        # Prefill the serial buffer with 50 background frames to simulate backlog
+        for _ in range(50):
+            stim.send(CAN(identifier=bg_can_id, flags="extended", data=b"\xAA" * 8))
+        stim.send(CAN(identifier=bam_can_id, flags="extended", data=bam_data))
+        for _ in range(50):
+            stim.send(CAN(identifier=bg_can_id, flags="extended", data=b"\xBB" * 8))
+        stim.send(CAN(identifier=dt_can_id, flags="extended", data=dt1_data))
+        stim.send(CAN(identifier=dt_can_id, flags="extended", data=dt2_data))
+        pkts = s.sniff(count=1, timeout=15)
+        _ts_t = TimeoutScheduler._thread
+        TimeoutScheduler.clear()
+        if _ts_t is not None:
+            _ts_t.join(timeout=5)
+    assert len(pkts) == 1, "BAM message not received on slow socket with prefill"
+    assert pkts[0].data == b"\x01\x02\x03\x04\x05\x06\x07\x08\x09"
+
+test_j1939_bam_slow_slcan()
+
+= J1939 BAM receive: delayed TP.DT frames with slow poll rate (exercises timeout extension)
+def test_j1939_bam_slow_poll():
+    from threading import Thread
+    pgn = 0xFECA
+    pgn_bytes = struct.pack("<I", pgn)[:3]
+    total_size = 9
+    num_packets = 2
+    bam_data = struct.pack("B", TP_CM_BAM) + struct.pack("<H", total_size) + struct.pack("B", num_packets) + b"\xFF" + pgn_bytes
+    bam_can_id = _j1939_can_id(7, J1939_TP_CM_PF, J1939_GLOBAL_ADDRESS, 0x80)
+    dt1_data = b"\x01" + b"\x01\x02\x03\x04\x05\x06\x07"
+    dt2_data = b"\x02" + b"\x08\x09\xFF\xFF\xFF\xFF\xFF"
+    dt_can_id = _j1939_can_id(7, J1939_TP_DT_PF, J1939_GLOBAL_ADDRESS, 0x80)
+    with TestSocket(CAN) as stim, TestSocket(CAN) as isocan, J1939SoftSocket(isocan, src_addr=0x11, dst_addr=J1939_GLOBAL_ADDRESS, pgn=pgn) as s:
+        stim.pair(isocan)
+        # Slow down the poll rate to stress the timeout extension logic
+        s.impl.rx_tx_poll_rate = 10
+        def delayed_send():
+            stim.send(CAN(identifier=bam_can_id, flags="extended", data=bam_data))
+            time.sleep(0.8)  # delay within 10x timeout window
+            stim.send(CAN(identifier=dt_can_id, flags="extended", data=dt1_data))
+            time.sleep(0.01)
+            stim.send(CAN(identifier=dt_can_id, flags="extended", data=dt2_data))
+        send_thread = Thread(target=delayed_send)
+        pkts = s.sniff(count=1, timeout=15, started_callback=lambda: send_thread.start())
+        send_thread.join(timeout=5)
+        _ts_t = TimeoutScheduler._thread
+        TimeoutScheduler.clear()
+        if _ts_t is not None:
+            _ts_t.join(timeout=5)
+    assert len(pkts) == 1, "BAM message not received with delayed TP.DT and slow poll"
+    assert pkts[0].data == b"\x01\x02\x03\x04\x05\x06\x07\x08\x09"
+
+test_j1939_bam_slow_poll()
+
+
++ J1939SoftSocket -- close and resource management
+
+= Close J1939SoftSocket
+with TestSocket(CAN) as cans, J1939SoftSocket(cans, src_addr=0x11, dst_addr=J1939_GLOBAL_ADDRESS, pgn=0xFECA) as s:
+    s.close()
+    assert s.closed
+
+= J1939SoftSocket used as context manager
+with TestSocket(CAN) as cans:
+    with J1939SoftSocket(cans, src_addr=0x11, dst_addr=J1939_GLOBAL_ADDRESS, pgn=0xFECA) as s:
+        pass
+    assert s.closed
+
+
 + Cleanup
 
 = Delete test sockets
 cleanup_testsockets()
+_ts = TimeoutScheduler._thread
 TimeoutScheduler.clear()
+if _ts is not None:
+    _ts.join(timeout=5)
+
 log_runtime.removeHandler(handler)

@@ -115,6 +115,12 @@ TP_ABORT_CTS_WHILE_DT = 4
 # Default priority for TP messages (priority 7 is used for TP.CM and TP.DT)
 J1939_TP_PRIORITY = 7
 
+#: Maximum number of tp_dt_timeout intervals to wait before declaring a
+#: TP receive timeout.  On slow serial interfaces (slcan), TP.DT frames
+#: may be queued behind a large backlog of background CAN frames; this
+#: factor gives the mux enough time to drain the backlog.
+TP_DT_TIMEOUT_EXTENSION_FACTOR = 10
+
 # ---------------------------------------------------------------------------
 # State machine states (RX)
 # ---------------------------------------------------------------------------
@@ -384,8 +390,8 @@ class TimeoutScheduler:
             must_interrupt = cls._handles[0] == handle
 
             if cls._thread is None:
-                t = Thread(target=cls._task, name="J1939TimeoutScheduler._task",
-                           daemon=True)
+                t = Thread(target=cls._task, name="J1939TimeoutScheduler._task")
+                t.daemon = True
                 must_interrupt = False
                 cls._thread = t
                 cls._event.clear()
@@ -582,6 +588,7 @@ class J1939SocketImplementation:
         self.rx_buf = b""            # accumulation buffer
         self.rx_sn = 1               # next expected sequence number
         self.rx_ts = 0.0             # type: Union[float, EDecimal]
+        self.rx_start_time = 0.0     # time when current TP transfer started
         self.rx_bs = bs              # configured block size
         self.rx_bs_count = 0         # packets received in current block
         self.rx_next_packet = 1      # next packet number for CMDT CTS
@@ -654,6 +661,14 @@ class J1939SocketImplementation:
             self.tx_handle.cancel()
         except Scapy_Exception:
             pass
+        try:
+            self.rx_queue.close()
+        except (OSError, EOFError):
+            pass
+        try:
+            self.tx_queue.close()
+        except (OSError, EOFError):
+            pass
 
     # ------------------------------------------------------------------
     # CAN send helpers
@@ -695,12 +710,25 @@ class J1939SocketImplementation:
     def can_recv(self):
         # type: () -> None
         """Background CAN receive poll — called periodically by the scheduler."""
-        if self.can_socket.select([self.can_socket], 0):
-            pkt = self.can_socket.recv()
-            if pkt:
-                self.on_can_recv(pkt)
+        try:
+            while self.can_socket.select([self.can_socket], 0):
+                pkt = self.can_socket.recv()
+                if pkt:
+                    self.on_can_recv(pkt)
+                else:
+                    break
+        except Exception:
+            if not self.closed:
+                log_j1939.warning("Error in can_recv: %s",
+                                  traceback.format_exc())
         if not self.closed and not self.can_socket.closed:
-            if self.can_socket.select([self.can_socket], 0):
+            # Determine poll_time from J1939 TP state only.
+            # Avoid calling select() here — on slow serial interfaces
+            # (slcan), each select() triggers a mux() call that reads
+            # N frames at ~2.5ms each, wasting time that could be spent
+            # processing frames already in the rx_queue.
+            if self.rx_state in (J1939_RX_BAM_WAIT_DATA, J1939_RX_CMDT_WAIT_DATA) or \
+                    self.tx_state == J1939_TX_CMDT_WAIT_CTS:
                 poll_time = 0.0
             else:
                 poll_time = self.rx_tx_poll_rate
@@ -807,6 +835,7 @@ class J1939SocketImplementation:
         self.rx_buf = b""
         self.rx_sn = 1
         self.rx_ts = ts
+        self.rx_start_time = TimeoutScheduler._time()
 
         self.rx_timeout_handle = TimeoutScheduler.schedule(
             self.tp_dt_timeout, self._rx_timeout_handler)
@@ -849,6 +878,7 @@ class J1939SocketImplementation:
         self.rx_bs_count = 0
         self.rx_next_packet = 1
         self.rx_ts = ts
+        self.rx_start_time = TimeoutScheduler._time()
 
         if not self.listen_only:
             packets_this_block = self.rx_bs if self.rx_bs > 0 else num_packets
@@ -1016,7 +1046,22 @@ class J1939SocketImplementation:
     def _rx_timeout_handler(self):
         # type: () -> None
         """Called when the TP.DT inactivity timer expires."""
+        if self.closed:
+            return
+
         if self.rx_state in (J1939_RX_BAM_WAIT_DATA, J1939_RX_CMDT_WAIT_DATA):
+            # On slow serial interfaces (slcan), the mux reads frames
+            # from an OS serial buffer that may contain hundreds of
+            # background CAN frames.  TP.DT frames from the sender are
+            # queued behind this backlog and can take several seconds to
+            # reach the J1939 state machine.  Extend the timeout up to
+            # 10 × tp_dt_timeout to give the mux enough time to drain
+            # the backlog.
+            total_wait = TimeoutScheduler._time() - self.rx_start_time
+            if total_wait < self.tp_dt_timeout * TP_DT_TIMEOUT_EXTENSION_FACTOR:
+                self.rx_timeout_handle = TimeoutScheduler.schedule(
+                    self.tp_dt_timeout, self._rx_timeout_handler)
+                return
             log_j1939.warning(
                 "J1939 TP RX timeout (state=%d, received %d bytes of %d)",
                 self.rx_state, len(self.rx_buf), self.rx_total_size)
@@ -1183,6 +1228,9 @@ class J1939SocketImplementation:
     def _tx_timeout_handler(self):
         # type: () -> None
         """Called when a TX-side timeout (waiting for CTS or ACK) expires."""
+        if self.closed:
+            return
+
         if self.tx_state in (J1939_TX_CMDT_WAIT_CTS, J1939_TX_CMDT_WAIT_ACK):
             log_j1939.warning(
                 "J1939 CMDT TX timeout (state=%d) — aborting", self.tx_state)
@@ -1196,12 +1244,17 @@ class J1939SocketImplementation:
     def _send_poll(self):
         # type: () -> None
         """Background TX poll — dequeues pending messages and begins sending."""
-        if self.tx_state == J1939_TX_IDLE:
-            if select_objects([self.tx_queue], 0):
-                item = self.tx_queue.recv()
-                if item:
-                    payload, pgn, da = item
-                    self.begin_send(payload, pgn, da)
+        try:
+            if self.tx_state == J1939_TX_IDLE:
+                if select_objects([self.tx_queue], 0):
+                    item = self.tx_queue.recv()
+                    if item:
+                        payload, pgn, da = item
+                        self.begin_send(payload, pgn, da)
+        except Exception:
+            if not self.closed:
+                log_j1939.warning("Error in _send_poll: %s",
+                                  traceback.format_exc())
         if not self.closed:
             self.tx_handle = TimeoutScheduler.schedule(
                 self.rx_tx_poll_rate, self._send_poll)
