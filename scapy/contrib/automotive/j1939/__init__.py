@@ -60,6 +60,18 @@ from scapy.contrib.automotive.j1939.j1939_soft_socket import (
     log_j1939,
 )
 
+from scapy.contrib.automotive.j1939.j1939_dm import (
+    J1939_DTC,
+    J1939_DM1,
+    J1939_DM13,
+    J1939_DM14,
+    PGN_DM1,
+    PGN_DM13,
+    PGN_DM14,
+    sniff_dm1,
+    send_dm14_request,
+)
+
 __all__ = [
     "J1939",
     "J1939SoftSocket",
@@ -88,6 +100,16 @@ __all__ = [
     "J1939_ADDR_STATE_CANNOT_CLAIM",
     "USE_J1939_KERNEL_MODULE",
     "log_j1939",
+    # Diagnostic Messages (J1939-73)
+    "J1939_DTC",
+    "J1939_DM1",
+    "J1939_DM13",
+    "J1939_DM14",
+    "PGN_DM1",
+    "PGN_DM13",
+    "PGN_DM14",
+    "sniff_dm1",
+    "send_dm14_request",
 ]
 
 USE_J1939_KERNEL_MODULE = False
