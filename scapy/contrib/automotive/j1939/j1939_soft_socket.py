@@ -43,7 +43,6 @@ import socket
 import struct
 import time
 import traceback
-from bisect import bisect_left
 from threading import Thread, Event, RLock
 
 # Typing imports
@@ -267,21 +266,24 @@ class J1939SoftSocket(SuperSocket):
     socket support (CAN_J1939) while being usable on any operating system.
 
     For messages up to 8 bytes, frames are sent directly as CAN frames.
-    For messages 9–1785 bytes, the J1939-21 Transport Protocol is used:
+    For messages 9-1785 bytes, the J1939-21 Transport Protocol is used:
+
     - BAM  (Broadcast Announce Message) when dst_addr == J1939_GLOBAL_ADDRESS
     - CMDT (Connection Mode Data Transfer) for peer-to-peer messages
 
     Example (with NativeCANSocket underneath):
+
         >>> load_contrib('automotive.j1939')
         >>> with J1939Socket("can0", src_addr=0x11, dst_addr=0xFF, pgn=0xFECA) as s:
-        >>>     s.send(J1939(data=b"Hello, World!"))
+        ...     s.send(J1939(data=b"Hello, World!"))
 
     Example (with PythonCANSocket underneath):
+
         >>> conf.contribs['CANSocket'] = {'use-python-can': True}
         >>> load_contrib('automotive.j1939')
         >>> with J1939Socket(CANSocket(bustype='socketcan', channel="can0"),
         ...                  src_addr=0x11, dst_addr=0xFF, pgn=0xFECA) as s:
-        >>>     s.send(J1939(data=b"Hello, World!"))
+        ...     s.send(J1939(data=b"Hello, World!"))
 
     :param can_socket: a CANSocket instance or interface name (Linux only)
     :param src_addr: our J1939 source address (SA)
@@ -291,10 +293,16 @@ class J1939SoftSocket(SuperSocket):
                 also used to filter received messages (0 to accept all)
     :param rx_pgn: override PGN filter for received messages; if None,
                    the ``pgn`` parameter is used
-    :param priority: J1939 message priority (0–7, default 6)
+    :param priority: J1939 message priority (0-7, default 6)
     :param bs: block size for CMDT (0 = send all in one block)
     :param listen_only: if True, never sends TP.CM flow-control frames
     :param basecls: base class of the packets emitted by this socket
+    :param name: optional 64-bit ECU NAME (integer) for J1939-81 address
+                 claiming; if provided the socket broadcasts an Address
+                 Claimed message on startup and blocks ``send()`` until
+                 the address is successfully claimed
+    :param preferred_address: preferred SA (0-247) for address claiming;
+                              if None, the value of ``src_addr`` is used
     """
 
     def __init__(
@@ -579,11 +587,13 @@ class J1939SocketImplementation:
     collected by the GC.
 
     The state machine handles:
-    - Direct (single-frame) messages ≤ 8 bytes
+
+    - Direct (single-frame) messages up to 8 bytes
     - BAM multi-packet messages (broadcast, dst_addr == J1939_GLOBAL_ADDRESS)
     - CMDT multi-packet messages (peer-to-peer, dst_addr != J1939_GLOBAL_ADDRESS)
+    - J1939-81 address claiming (when ``name`` is provided)
 
-    Reference: SAE J1939-21 Data Link Layer specification.
+    Reference: SAE J1939-21 and J1939-81 specifications.
 
     :param can_socket: underlying CANSocket for sending/receiving CAN frames
     :param src_addr: our J1939 source address (SA)
@@ -593,6 +603,9 @@ class J1939SocketImplementation:
     :param priority: CAN frame priority for sent frames (0-7)
     :param bs: CMDT block size (0 = send all in one block)
     :param listen_only: if True, do not send TP.CM flow-control responses
+    :param name: optional 64-bit ECU NAME for J1939-81 address claiming
+    :param preferred_address: preferred SA (0-247) for address claiming;
+                              defaults to ``src_addr`` when None
     """
 
     def __init__(
@@ -617,6 +630,12 @@ class J1939SocketImplementation:
         self.priority = priority
         self.listen_only = listen_only
         self.closed = False
+
+        # J1939-81 address claiming
+        self.name = name  # type: Optional[int]
+        self.preferred_address = (
+            preferred_address if preferred_address is not None else src_addr
+        )
 
         # Receive state machine
         self.rx_state = J1939_RX_IDLE
@@ -646,45 +665,34 @@ class J1939SocketImplementation:
         self.tx_packets_sent = 0     # packets sent in current CTS block
         self.tx_gap = 0.0            # inter-frame gap (seconds)
 
-        # Timeouts (seconds)
+        # Protocol timeout values (seconds)
         self.tp_dt_timeout = 0.750   # T1: timeout waiting for next TP.DT (750 ms)
         self.tp_cm_timeout = 1.250   # T2/T3: timeout waiting for CTS or ACK (1250 ms)
         self.bam_dt_gap = 0.050      # inter-frame gap for BAM TP.DT (50 ms)
 
-        # Handles for scheduled timeouts
-        self.rx_timeout_handle = None  # type: Optional[TimeoutScheduler.Handle]
-        self.tx_timeout_handle = None  # type: Optional[TimeoutScheduler.Handle]
+        # Timer handles (all None-initialised; cancelled in close())
+        self.rx_timeout_handle = None    # type: Optional[TimeoutScheduler.Handle]
+        self.tx_timeout_handle = None    # type: Optional[TimeoutScheduler.Handle]
+        self.address_claim_handle = None  # type: Optional[TimeoutScheduler.Handle]
 
-        # Filter warning flag
+        # Miscellaneous state
         self.filter_warning_emitted = False
+        self.last_rx_sa = 0  # last received source address (used by J1939SoftSocket.recv)
 
-        # Last received source address (used by J1939SoftSocket.recv)
-        self.last_rx_sa = 0
-
-        # Output queues
+        # I/O queues
         self.rx_queue = ObjectPipe[Tuple[bytes, Union[float, EDecimal]]]()
         self.tx_queue = ObjectPipe[Tuple[bytes, int, int]]()
         # tx_queue carries (payload, pgn, dst_addr) tuples
 
-        # Poll rate for background receive/transmit threads
+        # Background polling (5 ms default poll rate)
         self.rx_tx_poll_rate = 0.005
-
-        # Schedule background polling
         self.rx_handle = TimeoutScheduler.schedule(
             self.rx_tx_poll_rate, self.can_recv)
         self.tx_handle = TimeoutScheduler.schedule(
             self.rx_tx_poll_rate, self._send_poll)
 
-        # ------------------------------------------------------------------
-        # J1939-81 Address Claiming
-        # ------------------------------------------------------------------
-        self.name = name  # type: Optional[int]
-        self.preferred_address = (
-            preferred_address if preferred_address is not None else src_addr
-        )
+        # J1939-81 initial address claim broadcast
         self.address_state = J1939_ADDR_STATE_UNCLAIMED
-        self.address_claim_handle = None  # type: Optional[TimeoutScheduler.Handle]
-
         if self.name is not None:
             self.address_state = J1939_ADDR_STATE_CLAIMING
             self._send_address_claimed(self.preferred_address)
@@ -728,27 +736,30 @@ class J1939SocketImplementation:
             pass
 
     # ------------------------------------------------------------------
-    # J1939-81 Address Claiming
+    # J1939-81 Network Management (Address Claiming)
     # ------------------------------------------------------------------
 
     def _send_address_claimed(self, sa):
         # type: (int) -> None
         """Send an Address Claimed message (PGN 0xEE00) broadcast with our NAME."""
+        if self.name is None:
+            return
         can_id = _j1939_can_id(self.priority, J1939_PF_ADDRESS_CLAIMED,
                                J1939_GLOBAL_ADDRESS, sa)
-        data = struct.pack("<Q", self.name)  # type: ignore[arg-type]
+        data = struct.pack("<Q", self.name)
         log_j1939.debug("Sending Address Claimed from SA=0x%02X NAME=0x%016X",
-                        sa, self.name)  # type: ignore[arg-type]
+                        sa, self.name)
         self._can_send(can_id, data)
 
     def _send_cannot_claim(self):
         # type: () -> None
         """Send a Cannot Claim message (PGN 0xEE00 from SA=0xFE) with our NAME."""
+        if self.name is None:
+            return
         can_id = _j1939_can_id(self.priority, J1939_PF_ADDRESS_CLAIMED,
                                J1939_GLOBAL_ADDRESS, J1939_NULL_ADDRESS)
-        data = struct.pack("<Q", self.name)  # type: ignore[arg-type]
-        log_j1939.warning("Sending Cannot Claim (SA=0xFE) NAME=0x%016X",
-                          self.name)  # type: ignore[arg-type]
+        data = struct.pack("<Q", self.name)
+        log_j1939.warning("Sending Cannot Claim (SA=0xFE) NAME=0x%016X", self.name)
         self._can_send(can_id, data)
 
     def _address_claim_timer_fired(self):
@@ -757,35 +768,35 @@ class J1939SocketImplementation:
 
         Transitions from CLAIMING to CLAIMED if no conflicting claim was
         received during the window.  If the state is no longer CLAIMING
-        (e.g. arbitration was lost), this is a no-op.
+        (e.g. arbitration was lost) this is a no-op.
         """
         if self.closed:
             return
         if self.address_state == J1939_ADDR_STATE_CLAIMING:
             self.address_state = J1939_ADDR_STATE_CLAIMED
-            log_j1939.info("Address 0x%02X claimed successfully", self.preferred_address)
+            log_j1939.info("Address 0x%02X claimed successfully",
+                           self.preferred_address)
         self.address_claim_handle = None
 
     def _on_address_claimed(self, data, sa, da):
         # type: (bytes, int, int) -> None
         """Handle an incoming Address Claimed / Cannot Claim frame (PGN 0xEE00).
 
-        Only acts when the sending node's source address matches our
-        preferred address — that is a direct address conflict.
+        Only acts when the sender's source address matches our preferred
+        address — a direct address conflict.
 
-        Arbitration rule (J1939-81 §4.2.3):
+        Arbitration rule (J1939-81):
 
         - Lower 64-bit NAME has higher priority (wins).
-        - If we have the lower NAME: re-broadcast our claim to defend it.
-        - If we have the higher NAME: we lose; send a Cannot Claim and
-          enter the CANNOT_CLAIM state.
+        - If we have the lower NAME: re-broadcast our claim.
+        - If we have the higher NAME: send Cannot Claim and enter
+          CANNOT_CLAIM state.
         """
         if self.name is None:
             return
         if len(data) < 8:
             return
-        # SA=0xFE (null address) means the sender already lost arbitration;
-        # no conflict with our address.
+        # SA=0xFE (null address) means the sender already lost arbitration.
         if sa == J1939_NULL_ADDRESS:
             return
         if sa != self.preferred_address:
@@ -797,19 +808,18 @@ class J1939SocketImplementation:
                 "ignoring (configuration error)", sa, received_name)
             return
         if self.name < received_name:
-            # We win — re-broadcast our claim
+            # We win — re-broadcast our claim.
             log_j1939.debug(
                 "Address conflict on SA=0x%02X: our NAME=0x%016X < "
                 "theirs=0x%016X, re-broadcasting our claim",
                 sa, self.name, received_name)
             self._send_address_claimed(self.preferred_address)
         else:
-            # We lose — enter Cannot Claim state
+            # We lose — enter Cannot Claim state.
             log_j1939.warning(
                 "Address conflict on SA=0x%02X: our NAME=0x%016X > "
                 "theirs=0x%016X, cannot claim address",
                 sa, self.name, received_name)
-            # Cancel the 250 ms timer if still pending
             if self.address_claim_handle is not None:
                 try:
                     self.address_claim_handle.cancel()
@@ -842,7 +852,8 @@ class J1939SocketImplementation:
         else:
             log_j1939.debug(
                 "Request for PGN_ADDRESS_CLAIMED from SA=0x%02X; "
-                "responding with Cannot Claim (state=%d)", sa, self.address_state)
+                "responding with Cannot Claim (state=%d)",
+                sa, self.address_state)
             self._send_cannot_claim()
 
     # ------------------------------------------------------------------
@@ -856,10 +867,12 @@ class J1939SocketImplementation:
 
     def _tp_cm_can_id(self, da):
         # type: (int) -> int
+        """Return the CAN ID for a TP.CM frame addressed to ``da``."""
         return _j1939_can_id(self.priority, J1939_TP_CM_PF, da, self.src_addr)
 
     def _tp_dt_can_id(self, da):
         # type: (int) -> int
+        """Return the CAN ID for a TP.DT frame addressed to ``da``."""
         return _j1939_can_id(self.priority, J1939_TP_DT_PF, da, self.src_addr)
 
     def _pgn_can_id(self, pgn, da, sa):
@@ -879,12 +892,12 @@ class J1939SocketImplementation:
         return ((self.priority & 0x7) << 26) | (dp << 24) | (pf << 16) | (ps << 8) | (sa & 0xFF)
 
     # ------------------------------------------------------------------
-    # Background poll loop
+    # CAN receive dispatch
     # ------------------------------------------------------------------
 
     def can_recv(self):
         # type: () -> None
-        """Background CAN receive poll — called periodically by the scheduler."""
+        """Background CAN receive poll -- called periodically by the scheduler."""
         try:
             while self.can_socket.select([self.can_socket], 0):
                 pkt = self.can_socket.recv()
@@ -970,7 +983,7 @@ class J1939SocketImplementation:
                 self.rx_queue.send((data, p.time))
 
     # ------------------------------------------------------------------
-    # TP.CM handler (receive)
+    # TP receive state machine
     # ------------------------------------------------------------------
 
     def _on_tp_cm(self, data, sa, da, ts):
@@ -1153,10 +1166,6 @@ class J1939SocketImplementation:
         self.rx_state = J1939_RX_IDLE
         self.tx_state = J1939_TX_IDLE
 
-    # ------------------------------------------------------------------
-    # TP.DT handler (receive)
-    # ------------------------------------------------------------------
-
     def _on_tp_dt(self, data, sa, da):
         # type: (bytes, int, int) -> None
         """Process a received TP.DT frame."""
@@ -1194,8 +1203,6 @@ class J1939SocketImplementation:
             self.rx_bs_count += 1
 
         # Check if we have received all packets
-        packet_num = len(self.rx_buf) // J1939_TP_DT_PAYLOAD
-        # The last packet may be a partial block, so also track by sn
         packets_received = sn  # sn is the sequence number of this frame
 
         if packets_received >= self.rx_total_packets:
@@ -1258,7 +1265,7 @@ class J1939SocketImplementation:
             self.rx_state = J1939_RX_IDLE
 
     # ------------------------------------------------------------------
-    # TP.CM send helpers (outgoing flow control)
+    # TP transmit state machine
     # ------------------------------------------------------------------
 
     def _send_cts(self, da, pgn, num_packets, next_packet):
@@ -1289,16 +1296,12 @@ class J1939SocketImplementation:
                 pgn_bytes)
         self._can_send(self._tp_cm_can_id(da), data)
 
-    # ------------------------------------------------------------------
-    # TX state machine
-    # ------------------------------------------------------------------
-
     def begin_send(self, payload, pgn, da):
         # type: (bytes, int, int) -> None
         """Begin sending a J1939 message.
 
-        For messages ≤ 8 bytes, the payload is sent directly.
-        For messages 9–1785 bytes, the J1939-21 TP protocol is used.
+        For messages up to 8 bytes, the payload is sent directly.
+        For messages 9-1785 bytes, the J1939-21 TP protocol is used.
 
         :param payload: raw data bytes to send
         :param pgn: PGN of the message
@@ -1424,13 +1427,9 @@ class J1939SocketImplementation:
             self._send_abort(self.tx_dst_addr, self.tx_pgn, TP_ABORT_TIMEOUT)
             self.tx_state = J1939_TX_IDLE
 
-    # ------------------------------------------------------------------
-    # TX poll loop
-    # ------------------------------------------------------------------
-
     def _send_poll(self):
         # type: () -> None
-        """Background TX poll — dequeues pending messages and begins sending."""
+        """Background TX poll -- dequeues pending messages and begins sending."""
         try:
             if self.tx_state == J1939_TX_IDLE:
                 if select_objects([self.tx_queue], 0):
@@ -1452,7 +1451,7 @@ class J1939SocketImplementation:
                 pass
 
     # ------------------------------------------------------------------
-    # Public send/recv interface (used by J1939SoftSocket via self.ins/outs)
+    # Public send/recv interface
     # ------------------------------------------------------------------
 
     def send(self, p):
