@@ -1,0 +1,375 @@
+% Regression tests for J1939 CA Scanner
+~ automotive_comm
+
++ Configuration
+~ conf
+
+= Imports
+import struct
+from scapy.layers.can import CAN
+from scapy.contrib.automotive.j1939 import (
+    J1939_GLOBAL_ADDRESS, J1939_NULL_ADDRESS,
+)
+from scapy.contrib.automotive.j1939.j1939_soft_socket import (
+    _j1939_can_id, _j1939_decode_can_id,
+    J1939_PF_ADDRESS_CLAIMED, J1939_PF_REQUEST,
+    J1939_TP_CM_PF,
+    PGN_ADDRESS_CLAIMED, PGN_REQUEST,
+    TP_CM_BAM, TP_CM_CTS, TP_Conn_Abort,
+)
+from scapy.contrib.automotive.j1939.j1939_scanner import (
+    j1939_scan,
+    j1939_scan_addr_claim,
+    j1939_scan_ecu_id,
+    j1939_scan_unicast,
+    j1939_scan_rts_probe,
+    PGN_ECU_ID,
+    SCAN_METHODS,
+    _build_request_payload,
+)
+from scapy.error import Scapy_Exception
+from test.testsocket import TestSocket, cleanup_testsockets
+
+= Redirect logging
+import logging
+from scapy.error import log_runtime
+from io import StringIO
+log_stream = StringIO()
+handler = logging.StreamHandler(log_stream)
+log_runtime.addHandler(handler)
+log_j1939_logger = logging.getLogger("scapy.contrib.automotive.j1939")
+log_j1939_logger.addHandler(handler)
+
+
++ Scanner constants
+
+= PGN_ECU_ID is 64965 (0xFDC5)
+assert PGN_ECU_ID == 64965
+assert PGN_ECU_ID == 0xFDC5
+
+= SCAN_METHODS contains all four technique names
+assert set(SCAN_METHODS) == {"addr_claim", "ecu_id", "unicast", "rts_probe"}
+
+= _build_request_payload encodes PGN_ADDRESS_CLAIMED correctly
+# PGN 60928 = 0xEE00: LE 3 bytes = \x00 \xEE \x00
+payload = _build_request_payload(PGN_ADDRESS_CLAIMED)
+assert payload == b'\x00\xee\x00', "Got {}".format(payload.hex())
+
+= _build_request_payload encodes PGN_ECU_ID correctly
+# PGN 64965 = 0xFDC5: LE 3 bytes = \xC5 \xFD \x00
+payload = _build_request_payload(PGN_ECU_ID)
+assert payload == b'\xc5\xfd\x00', "Got {}".format(payload.hex())
+
+
++ Technique 1 – Global Address Claim Request
+
+= addr_claim: sends a broadcast Request for PGN_ADDRESS_CLAIMED
+def test_addr_claim_probe_frame():
+    with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
+        tx_sock.pair(monitor)
+        j1939_scan_addr_claim(tx_sock, listen_time=0.0)
+        pkts = monitor.sniff(count=1, timeout=0.2)
+        assert len(pkts) == 1, "Expected 1 probe frame, got {}".format(len(pkts))
+        probe = pkts[0]
+        _, pf, ps, sa = _j1939_decode_can_id(probe.identifier)
+        assert probe.flags & 0x4, "Expected extended CAN frame"
+        assert pf == J1939_PF_REQUEST, "PF should be 0xEA (Request)"
+        assert ps == J1939_GLOBAL_ADDRESS, "DA should be 0xFF (global)"
+        assert sa == J1939_NULL_ADDRESS, "SA should be 0xFE (null)"
+        assert bytes(probe.data) == _build_request_payload(PGN_ADDRESS_CLAIMED)
+    cleanup_testsockets()
+
+test_addr_claim_probe_frame()
+
+= addr_claim: receives Address Claimed reply and returns SA
+sock = TestSocket(CAN)
+# Inject a fake Address Claimed reply from SA=0x10
+resp_can_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x10)
+sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                        data=b'\x01\x02\x03\x04\x05\x06\x07\x08')))
+found = j1939_scan_addr_claim(sock, listen_time=0.1)
+assert 0x10 in found, "Expected SA=0x10, got: {}".format([hex(k) for k in found])
+cleanup_testsockets()
+
+= addr_claim: multiple replies from different SAs are all captured
+def test_addr_claim_multiple():
+    sock = TestSocket(CAN)
+    for sa_val in [0x10, 0x20, 0x30]:
+        resp_can_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, sa_val)
+        sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                                data=b'\x00' * 8)))
+    found = j1939_scan_addr_claim(sock, listen_time=0.2)
+    assert set(found.keys()) == {0x10, 0x20, 0x30}, \
+        "Expected three SAs, got: {}".format([hex(k) for k in found])
+    cleanup_testsockets()
+
+test_addr_claim_multiple()
+
+= addr_claim: non-extended (11-bit) frames are ignored
+sock = TestSocket(CAN)
+# 11-bit frame has flags=0 (no extended bit)
+non_ext_can_id = 0x040  # some 11-bit id
+sock.ins.send(bytes(CAN(identifier=non_ext_can_id, data=b'\x01\x02\x03')))
+found = j1939_scan_addr_claim(sock, listen_time=0.1)
+assert len(found) == 0, "Should not detect 11-bit CAN frames"
+cleanup_testsockets()
+
+= addr_claim: returns empty dict when no responses
+sock = TestSocket(CAN)
+found = j1939_scan_addr_claim(sock, listen_time=0.05)
+assert found == {}, "Expected empty result"
+cleanup_testsockets()
+
+
++ Technique 2 – Global ECU ID Request
+
+= ecu_id: sends a broadcast Request for PGN_ECU_ID
+def test_ecu_id_probe_frame():
+    with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
+        tx_sock.pair(monitor)
+        j1939_scan_ecu_id(tx_sock, listen_time=0.0)
+        pkts = monitor.sniff(count=1, timeout=0.2)
+        assert len(pkts) == 1
+        probe = pkts[0]
+        _, pf, ps, sa = _j1939_decode_can_id(probe.identifier)
+        assert probe.flags & 0x4, "Expected extended CAN frame"
+        assert pf == J1939_PF_REQUEST, "PF should be Request (0xEA)"
+        assert ps == J1939_GLOBAL_ADDRESS, "DA should be global (0xFF)"
+        assert bytes(probe.data) == _build_request_payload(PGN_ECU_ID)
+    cleanup_testsockets()
+
+test_ecu_id_probe_frame()
+
+= ecu_id: detects BAM announce header for PGN_ECU_ID
+sock = TestSocket(CAN)
+ecu_pgn_le = _build_request_payload(PGN_ECU_ID)
+bam_can_id = _j1939_can_id(6, J1939_TP_CM_PF, J1939_GLOBAL_ADDRESS, 0x20)
+# BAM payload: [ctrl=0x20][size LE2][num_pkts][0xFF][pgn 3 bytes LE]
+bam_payload = bytes([0x20, 0x0A, 0x00, 0x02, 0xFF]) + ecu_pgn_le
+sock.ins.send(bytes(CAN(identifier=bam_can_id, flags="extended",
+                        data=bam_payload)))
+found = j1939_scan_ecu_id(sock, listen_time=0.1)
+assert 0x20 in found, "Expected SA=0x20"
+cleanup_testsockets()
+
+= ecu_id: ignores BAM for a different PGN
+sock = TestSocket(CAN)
+other_pgn_le = _build_request_payload(PGN_ADDRESS_CLAIMED)  # different PGN
+bam_can_id = _j1939_can_id(6, J1939_TP_CM_PF, J1939_GLOBAL_ADDRESS, 0x22)
+bam_payload = bytes([0x20, 0x09, 0x00, 0x02, 0xFF]) + other_pgn_le
+sock.ins.send(bytes(CAN(identifier=bam_can_id, flags="extended",
+                        data=bam_payload)))
+found = j1939_scan_ecu_id(sock, listen_time=0.1)
+assert len(found) == 0, "Should not match BAM for a different PGN"
+cleanup_testsockets()
+
+= ecu_id: ignores non-TP.CM frames
+sock = TestSocket(CAN)
+# Inject an Address Claimed frame (not a TP.CM)
+resp_can_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x25)
+sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                        data=b'\x00' * 8)))
+found = j1939_scan_ecu_id(sock, listen_time=0.1)
+assert len(found) == 0, "ecu_id should ignore non-TP.CM frames"
+cleanup_testsockets()
+
+
++ Technique 3 – Unicast Ping Sweep
+
+= unicast: sends a Request to each DA in scan_range
+def test_unicast_probe_frames():
+    with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
+        tx_sock.pair(monitor)
+        j1939_scan_unicast(tx_sock, scan_range=[0x01, 0x02, 0x03], sniff_time=0.0)
+        pkts = monitor.sniff(count=3, timeout=0.5)
+        assert len(pkts) == 3, "Expected 3 probe frames"
+        das = set()
+        for pkt in pkts:
+            _, pf, ps, sa = _j1939_decode_can_id(pkt.identifier)
+            assert pf == J1939_PF_REQUEST, "PF should be Request"
+            das.add(ps)
+        assert das == {0x01, 0x02, 0x03}, "DA values should match scan_range"
+    cleanup_testsockets()
+
+test_unicast_probe_frames()
+
+= unicast: detects reply from the probed SA
+sock = TestSocket(CAN)
+# Response from SA=0x30 (Address Claimed from that node)
+resp_can_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x30)
+sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                        data=b'\x00' * 8)))
+found = j1939_scan_unicast(sock, scan_range=[0x30], sniff_time=0.1)
+assert 0x30 in found, "Expected SA=0x30 in results"
+cleanup_testsockets()
+
+= unicast: does not report SA that is not in scan_range
+sock = TestSocket(CAN)
+# Inject response from SA=0x55 while we only probe 0x30
+resp_can_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x55)
+sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                        data=b'\x00' * 8)))
+found = j1939_scan_unicast(sock, scan_range=[0x30], sniff_time=0.1)
+assert 0x55 not in found, "SA=0x55 is not in scan_range"
+cleanup_testsockets()
+
+= unicast: payload of probe is Request for PGN_ADDRESS_CLAIMED
+def test_unicast_probe_payload():
+    with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
+        tx_sock.pair(monitor)
+        j1939_scan_unicast(tx_sock, scan_range=[0x42], sniff_time=0.0)
+        pkts = monitor.sniff(count=1, timeout=0.2)
+        assert len(pkts) == 1
+        assert bytes(pkts[0].data) == _build_request_payload(PGN_ADDRESS_CLAIMED)
+    cleanup_testsockets()
+
+test_unicast_probe_payload()
+
+= unicast: returns empty dict when no responses
+sock = TestSocket(CAN)
+found = j1939_scan_unicast(sock, scan_range=[0x10, 0x11], sniff_time=0.02)
+assert found == {}
+cleanup_testsockets()
+
+
++ Technique 4 – TP.CM RTS Probing
+
+= rts_probe: sends a TP.CM_RTS frame to each DA in scan_range
+def test_rts_probe_frames():
+    with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
+        tx_sock.pair(monitor)
+        j1939_scan_rts_probe(tx_sock, scan_range=[0x05, 0x06], sniff_time=0.0)
+        pkts = monitor.sniff(count=2, timeout=0.5)
+        assert len(pkts) == 2, "Expected 2 RTS probe frames"
+        for pkt in pkts:
+            _, pf, _, _ = _j1939_decode_can_id(pkt.identifier)
+            assert pf == J1939_TP_CM_PF, "PF should be TP.CM (0xEC)"
+            assert bytes(pkt.data)[0] == 0x10, "First byte should be TP_CM_RTS (0x10)"
+    cleanup_testsockets()
+
+test_rts_probe_frames()
+
+= rts_probe: detects CTS reply from probed node
+sock = TestSocket(CAN)
+# CTS response from SA=0x40, to SA=0x00 (J1939_NULL_ADDRESS our probe SA)
+cts_can_id = _j1939_can_id(7, J1939_TP_CM_PF, J1939_NULL_ADDRESS, 0x40)
+sock.ins.send(bytes(CAN(identifier=cts_can_id, flags="extended",
+                        data=bytes([TP_CM_CTS, 0x02, 0x01, 0xFF, 0xFF, 0xFF, 0x00, 0x00]))))
+found = j1939_scan_rts_probe(sock, scan_range=[0x40], sniff_time=0.1)
+assert 0x40 in found, "Expected SA=0x40 via CTS reply"
+cleanup_testsockets()
+
+= rts_probe: detects Conn_Abort reply from probed node
+sock = TestSocket(CAN)
+# Conn_Abort response (SA=0x41 sent an abort)
+abort_can_id = _j1939_can_id(7, J1939_TP_CM_PF, J1939_NULL_ADDRESS, 0x41)
+sock.ins.send(bytes(CAN(identifier=abort_can_id, flags="extended",
+                        data=bytes([TP_Conn_Abort, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00]))))
+found = j1939_scan_rts_probe(sock, scan_range=[0x41], sniff_time=0.1)
+assert 0x41 in found, "Expected SA=0x41 via Conn_Abort reply"
+cleanup_testsockets()
+
+= rts_probe: ignores non-TP.CM responses
+sock = TestSocket(CAN)
+# An Address Claimed frame from SA=0x45 should NOT trigger detection
+resp_can_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x45)
+sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                        data=b'\x00' * 8)))
+found = j1939_scan_rts_probe(sock, scan_range=[0x45], sniff_time=0.1)
+assert len(found) == 0, "rts_probe should only respond to TP.CM frames"
+cleanup_testsockets()
+
+= rts_probe: RTS payload has correct format (8 bytes, ctrl=0x10)
+def test_rts_probe_payload_format():
+    with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
+        tx_sock.pair(monitor)
+        j1939_scan_rts_probe(tx_sock, scan_range=[0x50], sniff_time=0.0)
+        pkts = monitor.sniff(count=1, timeout=0.2)
+        assert len(pkts) == 1
+        payload = bytes(pkts[0].data)
+        assert len(payload) == 8, "RTS payload must be 8 bytes"
+        assert payload[0] == 0x10, "Byte 0 must be TP_CM_RTS (0x10)"
+        # Bytes 1-2 LE: message size = 9
+        size = struct.unpack_from("<H", payload, 1)[0]
+        assert size == 9, "Message size should be 9"
+        # Byte 3: total packets = 2
+        assert payload[3] == 2, "Total packets should be 2"
+    cleanup_testsockets()
+
+test_rts_probe_payload_format()
+
+= rts_probe: returns empty dict when no responses
+sock = TestSocket(CAN)
+found = j1939_scan_rts_probe(sock, scan_range=[0x10, 0x11], sniff_time=0.02)
+assert found == {}
+cleanup_testsockets()
+
+
++ Top-level j1939_scan combinator
+
+= j1939_scan: raises ValueError for unknown method name
+def test_scan_invalid_method():
+    sock = TestSocket(CAN)
+    try:
+        j1939_scan(sock, methods=["invalid_method"])
+        assert False, "Expected ValueError"
+    except ValueError as e:
+        assert "invalid_method" in str(e)
+    cleanup_testsockets()
+
+test_scan_invalid_method()
+
+= j1939_scan: merges results from multiple methods; first discoverer wins
+# addr_claim finds SA=0x10 first; unicast also gets a spurious 0x10 response
+sock = TestSocket(CAN)
+# Response for addr_claim (SA=0x10)
+resp_can_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x10)
+sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                        data=b'\x00' * 8)))
+# Run addr_claim + unicast on scan_range limited to [0x10] (fast)
+found = j1939_scan(sock, scan_range=[0x10], methods=["addr_claim", "unicast"],
+                   broadcast_listen_time=0.1, sniff_time=0.02)
+assert 0x10 in found, "SA=0x10 should be found"
+# First method that found it should be addr_claim
+assert found[0x10]["method"] == "addr_claim", \
+    "Expected addr_claim but got {}".format(found[0x10]["method"])
+cleanup_testsockets()
+
+= j1939_scan: result dict has 'method' and 'packet' keys
+sock = TestSocket(CAN)
+resp_can_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x11)
+sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                        data=b'\x00' * 8)))
+found = j1939_scan(sock, methods=["addr_claim"], broadcast_listen_time=0.1)
+assert 0x11 in found
+assert "method" in found[0x11], "Expected 'method' key"
+assert "packet" in found[0x11], "Expected 'packet' key"
+assert found[0x11]["method"] == "addr_claim"
+cleanup_testsockets()
+
+= j1939_scan: stop_event halts scan immediately
+def test_scan_stop_event():
+    from threading import Event
+    ev = Event()
+    ev.set()  # already set -> should return immediately without any probes
+    with TestSocket(CAN) as sock, TestSocket(CAN) as monitor:
+        sock.pair(monitor)
+        found = j1939_scan(sock, methods=["addr_claim", "unicast"],
+                           scan_range=range(0xFE), broadcast_listen_time=0.1,
+                           stop_event=ev)
+        # stop_event was set before any method ran; no probes should have been sent
+        probes = monitor.sniff(count=1, timeout=0.1)
+        assert len(probes) == 0, "No probes should be sent when stop_event is set"
+    cleanup_testsockets()
+
+test_scan_stop_event()
+
+= j1939_scan: single-method call (unicast only)
+sock = TestSocket(CAN)
+resp_can_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x30)
+sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                        data=b'\x00' * 8)))
+found = j1939_scan(sock, methods=["unicast"], scan_range=[0x30], sniff_time=0.1)
+assert 0x30 in found
+assert found[0x30]["method"] == "unicast"
+cleanup_testsockets()
