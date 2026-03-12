@@ -53,6 +53,7 @@ from typing import (
     Iterable,
     List,
     Optional,
+    Set,
     Tuple,
 )
 
@@ -82,6 +83,9 @@ from scapy.contrib.automotive.j1939.j1939_soft_socket import (
 #: PGN for ECU Identification Information (J1939-73 §5.7.5)
 PGN_ECU_ID = 0xFDC5  # 64965
 
+#: Bitmask for the CAN extended-frame flag (29-bit identifier)
+_CAN_EXTENDED_FLAG = 0x4
+
 #: Default priority for request frames sent by the scanner
 _SCAN_PRIORITY = 6
 
@@ -99,14 +103,55 @@ def _build_request_payload(pgn):
 
 
 # ---------------------------------------------------------------------------
+# Passive scan — background noise detection
+# ---------------------------------------------------------------------------
+
+def j1939_scan_passive(
+    sock,                  # type: SuperSocket
+    listen_time=1.0,       # type: float
+    stop_event=None,       # type: Optional[Event]
+):
+    # type: (...) -> Set[int]
+    """Passively listen to the bus and return the set of observed source addresses.
+
+    Listens for *listen_time* seconds without sending any probe frames and
+    records every source address (SA) seen in an extended CAN frame.  The
+    returned set can be passed as the ``noise_ids`` argument to the active
+    scan functions so that already-known CAs are not re-probed or re-reported.
+
+    :param sock: raw CAN socket to listen on
+    :param listen_time: seconds to collect background traffic
+    :param stop_event: optional :class:`threading.Event` to abort early
+    :returns: set of observed source addresses (integers)
+    """
+    seen = set()  # type: Set[int]
+
+    def _rx(pkt):
+        # type: (CAN) -> None
+        if stop_event is not None and stop_event.is_set():
+            return
+        if not (pkt.flags & _CAN_EXTENDED_FLAG):
+            return
+        _, _, _, sa = _j1939_decode_can_id(pkt.identifier)
+        seen.add(sa)
+
+    sock.sniff(prn=_rx, timeout=listen_time, store=False)
+    log_j1939.debug("passive: observed %d SA(s): %s",
+                    len(seen), [hex(s) for s in sorted(seen)])
+    return seen
+
+
+# ---------------------------------------------------------------------------
 # Technique 1 – Global Address Claim Request
 # ---------------------------------------------------------------------------
 
 def j1939_scan_addr_claim(
-    sock,                        # type: SuperSocket
-    src_addr=J1939_NULL_ADDRESS,  # type: int
-    listen_time=1.0,             # type: float
-    stop_event=None,             # type: Optional[Event]
+    sock,                           # type: SuperSocket
+    src_addr=J1939_NULL_ADDRESS,    # type: int
+    listen_time=1.0,                # type: float
+    noise_ids=None,                 # type: Optional[Set[int]]
+    force=False,                    # type: bool
+    stop_event=None,                # type: Optional[Event]
 ):
     # type: (...) -> Dict[int, CAN]
     """Enumerate CAs via a global Request for Address Claimed (PGN 60928).
@@ -117,6 +162,11 @@ def j1939_scan_addr_claim(
     :param sock: raw CAN socket to use for sending / sniffing
     :param src_addr: source address to use in the request (default 0xFE)
     :param listen_time: seconds to collect responses after sending
+    :param noise_ids: set of source addresses already seen on the bus
+                      (from :func:`j1939_scan_passive`).  SAs in this set
+                      are suppressed from the results unless *force* is True.
+    :param force: if True, report all responding SAs even if they appear in
+                  *noise_ids*
     :param stop_event: optional :class:`threading.Event` to abort early
     :returns: dict mapping responder source address (int) to the CAN reply
     """
@@ -133,12 +183,15 @@ def j1939_scan_addr_claim(
 
     def _rx(pkt):
         # type: (CAN) -> None
-        if not (pkt.flags & 0x4):
+        if not (pkt.flags & _CAN_EXTENDED_FLAG):
             return
         if stop_event is not None and stop_event.is_set():
             return
         _, pf, _, sa = _j1939_decode_can_id(pkt.identifier)
         if pf == J1939_PF_ADDRESS_CLAIMED and sa not in found:
+            if not force and noise_ids is not None and sa in noise_ids:
+                log_j1939.debug("addr_claim: suppressing noise SA=0x%02X", sa)
+                return
             log_j1939.debug("addr_claim: response from SA=0x%02X", sa)
             found[sa] = pkt
 
@@ -151,10 +204,12 @@ def j1939_scan_addr_claim(
 # ---------------------------------------------------------------------------
 
 def j1939_scan_ecu_id(
-    sock,                        # type: SuperSocket
-    src_addr=J1939_NULL_ADDRESS,  # type: int
-    listen_time=1.0,             # type: float
-    stop_event=None,             # type: Optional[Event]
+    sock,                           # type: SuperSocket
+    src_addr=J1939_NULL_ADDRESS,    # type: int
+    listen_time=1.0,                # type: float
+    noise_ids=None,                 # type: Optional[Set[int]]
+    force=False,                    # type: bool
+    stop_event=None,                # type: Optional[Event]
 ):
     # type: (...) -> Dict[int, CAN]
     """Enumerate CAs via a global Request for ECU Identification (PGN 64965).
@@ -165,6 +220,9 @@ def j1939_scan_ecu_id(
     :param sock: raw CAN socket to use for sending / sniffing
     :param src_addr: source address to use in the request (default 0xFE)
     :param listen_time: seconds to collect responses after sending
+    :param noise_ids: set of source addresses to suppress from results
+                      (see :func:`j1939_scan_passive`)
+    :param force: if True, report all responding SAs even if in *noise_ids*
     :param stop_event: optional :class:`threading.Event` to abort early
     :returns: dict mapping responder source address (int) to the CAN reply
     """
@@ -181,7 +239,7 @@ def j1939_scan_ecu_id(
 
     def _rx(pkt):
         # type: (CAN) -> None
-        if not (pkt.flags & 0x4):
+        if not (pkt.flags & _CAN_EXTENDED_FLAG):
             return
         if stop_event is not None and stop_event.is_set():
             return
@@ -196,6 +254,9 @@ def j1939_scan_ecu_id(
             return
         # BAM control byte = 0x20, PGN at bytes 5-7 (LE)
         if data[0] == 0x20 and data[5:8] == _ecu_pgn_le and sa not in found:
+            if not force and noise_ids is not None and sa in noise_ids:
+                log_j1939.debug("ecu_id: suppressing noise SA=0x%02X", sa)
+                return
             log_j1939.debug("ecu_id: BAM from SA=0x%02X", sa)
             found[sa] = pkt
 
@@ -212,6 +273,8 @@ def j1939_scan_unicast(
     scan_range=_SCAN_ADDR_RANGE,       # type: Iterable[int]
     src_addr=J1939_NULL_ADDRESS,       # type: int
     sniff_time=0.1,                    # type: float
+    noise_ids=None,                    # type: Optional[Set[int]]
+    force=False,                       # type: bool
     stop_event=None,                   # type: Optional[Event]
 ):
     # type: (...) -> Dict[int, CAN]
@@ -221,10 +284,20 @@ def j1939_scan_unicast(
     Address Claimed (PGN 60928) addressed to *da*.  Any CAN frame whose
     source address equals *da* is counted as a positive response.
 
+    When *noise_ids* is provided (and *force* is False), destination addresses
+    that appear in *noise_ids* are skipped entirely — no probe is sent and no
+    response is recorded for those addresses.  This prevents re-reporting CAs
+    already known from background bus traffic.
+
     :param sock: raw CAN socket to use for sending / sniffing
     :param scan_range: iterable of destination addresses to probe
     :param src_addr: source address to use in requests (default 0xFE)
     :param sniff_time: seconds to wait for a response after each probe
+    :param noise_ids: set of source addresses already known from background
+                      traffic (see :func:`j1939_scan_passive`).  DAs whose
+                      value appears in this set are not probed.
+    :param force: if True, probe all DAs in *scan_range* regardless of
+                  *noise_ids*
     :param stop_event: optional :class:`threading.Event` to abort early
     :returns: dict mapping responder source address (int) to the CAN reply
     """
@@ -233,6 +306,9 @@ def j1939_scan_unicast(
     for da in scan_range:
         if stop_event is not None and stop_event.is_set():
             break
+        if not force and noise_ids is not None and da in noise_ids:
+            log_j1939.debug("unicast: skipping noise DA=0x%02X", da)
+            continue
         can_id = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_REQUEST, da, src_addr)
         payload = _build_request_payload(PGN_ADDRESS_CLAIMED)
         sock.send(CAN(identifier=can_id, flags="extended", data=payload))
@@ -243,7 +319,7 @@ def j1939_scan_unicast(
 
         def _rx(pkt, _da=_da):
             # type: (CAN, int) -> None
-            if not (pkt.flags & 0x4):
+            if not (pkt.flags & _CAN_EXTENDED_FLAG):
                 return
             _, _, _, sa = _j1939_decode_can_id(pkt.identifier)
             if sa == _da and _da not in found:
@@ -264,6 +340,8 @@ def j1939_scan_rts_probe(
     scan_range=_SCAN_ADDR_RANGE,       # type: Iterable[int]
     src_addr=J1939_NULL_ADDRESS,       # type: int
     sniff_time=0.1,                    # type: float
+    noise_ids=None,                    # type: Optional[Set[int]]
+    force=False,                       # type: bool
     stop_event=None,                   # type: Optional[Event]
 ):
     # type: (...) -> Dict[int, CAN]
@@ -278,6 +356,11 @@ def j1939_scan_rts_probe(
     :param scan_range: iterable of destination addresses to probe
     :param src_addr: source address to use in probes (default 0xFE)
     :param sniff_time: seconds to wait for a response after each probe
+    :param noise_ids: set of source addresses already known from background
+                      traffic (see :func:`j1939_scan_passive`).  DAs whose
+                      value appears in this set are not probed.
+    :param force: if True, probe all DAs in *scan_range* regardless of
+                  *noise_ids*
     :param stop_event: optional :class:`threading.Event` to abort early
     :returns: dict mapping responder source address (int) to the CAN reply
 
@@ -289,6 +372,9 @@ def j1939_scan_rts_probe(
     for da in scan_range:
         if stop_event is not None and stop_event.is_set():
             break
+        if not force and noise_ids is not None and da in noise_ids:
+            log_j1939.debug("rts_probe: skipping noise DA=0x%02X", da)
+            continue
         # CAN-ID: priority=7, PF=0xEC (TP.CM), DA=da, SA=src_addr
         can_id = _j1939_can_id(7, J1939_TP_CM_PF, da, src_addr)
         # TP.CM_RTS payload (8 bytes):
@@ -312,7 +398,7 @@ def j1939_scan_rts_probe(
 
         def _rx(pkt, _da=_da):
             # type: (CAN, int) -> None
-            if not (pkt.flags & 0x4):
+            if not (pkt.flags & _CAN_EXTENDED_FLAG):
                 return
             _, pf, _, sa = _j1939_decode_can_id(pkt.identifier)
             if sa != _da or _da in found:
@@ -342,6 +428,9 @@ def j1939_scan(
     src_addr=J1939_NULL_ADDRESS,        # type: int
     sniff_time=0.1,                     # type: float
     broadcast_listen_time=1.0,          # type: float
+    noise_listen_time=1.0,              # type: float
+    noise_ids=None,                     # type: Optional[Set[int]]
+    force=False,                        # type: bool
     stop_event=None,                    # type: Optional[Event]
     verbose=False,                      # type: bool
 ):
@@ -354,6 +443,13 @@ def j1939_scan(
     - ``"method"`` (str): name of the first technique that found this CA
     - ``"packet"`` (CAN): the first CAN response received from this CA
 
+    By default, before running any active probe the function performs a
+    passive bus listen (via :func:`j1939_scan_passive`) for *noise_listen_time*
+    seconds to detect pre-existing source addresses.  Those addresses are then
+    excluded from active probing and from the results.  Pass *force=True* to
+    disable this filtering, or supply an explicit *noise_ids* set to bypass the
+    passive pre-scan.
+
     :param sock: raw CAN socket (e.g. a :class:`~scapy.contrib.cansocket.CANSocket`)
     :param scan_range: DA range for unicast / RTS sweeps (default 0x00–0xFD)
     :param methods: list of method names to run; valid values are
@@ -362,6 +458,14 @@ def j1939_scan(
     :param src_addr: source address used in outgoing probes (default 0xFE)
     :param sniff_time: per-address listen time for unicast / RTS methods
     :param broadcast_listen_time: listen time for broadcast methods
+    :param noise_listen_time: seconds for the passive pre-scan (default 1.0).
+                              Only used when *noise_ids* is None and *force*
+                              is False.
+    :param noise_ids: explicit set of source addresses to exclude from
+                      probing and results.  When provided the passive pre-scan
+                      is skipped.
+    :param force: if True, disable noise filtering entirely (no passive pre-scan,
+                  all addresses are probed and reported)
     :param stop_event: :class:`threading.Event` to abort the scan early
     :param verbose: if True, log discovered CAs to the console
     :returns: dict mapping SA (int) to ``{"method": str, "packet": CAN}``
@@ -380,6 +484,16 @@ def j1939_scan(
             raise ValueError(
                 "Unknown scan method {!r}; valid methods: {}".format(
                     m, SCAN_METHODS))
+
+    # Step 0: passive pre-scan to detect background noise unless disabled.
+    if not force and noise_ids is None:
+        if stop_event is not None and stop_event.is_set():
+            return {}
+        noise_ids = j1939_scan_passive(
+            sock, listen_time=noise_listen_time, stop_event=stop_event)
+        if verbose and noise_ids:
+            log_j1939.info("j1939_scan: %d noise SA(s) detected, will skip: %s",
+                           len(noise_ids), [hex(s) for s in sorted(noise_ids)])
 
     results = {}  # type: Dict[int, Dict[str, object]]
     scan_range_list = list(scan_range)
@@ -400,6 +514,8 @@ def j1939_scan(
             sock,
             src_addr=src_addr,
             listen_time=broadcast_listen_time,
+            noise_ids=noise_ids,
+            force=force,
             stop_event=stop_event,
         ), "addr_claim")
 
@@ -410,6 +526,8 @@ def j1939_scan(
             sock,
             src_addr=src_addr,
             listen_time=broadcast_listen_time,
+            noise_ids=noise_ids,
+            force=force,
             stop_event=stop_event,
         ), "ecu_id")
 
@@ -421,6 +539,8 @@ def j1939_scan(
             scan_range=scan_range_list,
             src_addr=src_addr,
             sniff_time=sniff_time,
+            noise_ids=noise_ids,
+            force=force,
             stop_event=stop_event,
         ), "unicast")
 
@@ -432,6 +552,8 @@ def j1939_scan(
             scan_range=scan_range_list,
             src_addr=src_addr,
             sniff_time=sniff_time,
+            noise_ids=noise_ids,
+            force=force,
             stop_event=stop_event,
         ), "rts_probe")
 
@@ -440,6 +562,7 @@ def j1939_scan(
 
 __all__ = [
     "j1939_scan",
+    "j1939_scan_passive",
     "j1939_scan_addr_claim",
     "j1939_scan_ecu_id",
     "j1939_scan_unicast",

@@ -74,6 +74,7 @@ from scapy.contrib.automotive.j1939.j1939_dm import (
 
 from scapy.contrib.automotive.j1939.j1939_scanner import (
     j1939_scan,
+    j1939_scan_passive,
     j1939_scan_addr_claim,
     j1939_scan_ecu_id,
     j1939_scan_unicast,
@@ -122,6 +123,7 @@ __all__ = [
     "send_dm14_request",
     # CA Scanner (J1939-73)
     "j1939_scan",
+    "j1939_scan_passive",
     "j1939_scan_addr_claim",
     "j1939_scan_ecu_id",
     "j1939_scan_unicast",
