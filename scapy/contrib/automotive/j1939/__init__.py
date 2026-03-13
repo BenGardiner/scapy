@@ -83,6 +83,15 @@ from scapy.contrib.automotive.j1939.j1939_scanner import (
     SCAN_METHODS,
 )
 
+from scapy.contrib.automotive.j1939.j1939_dm_scanner import (
+    DmScanResult,
+    J1939_DM_PGNS,
+    J1939_PF_ACK,
+    PGN_ACK,
+    j1939_scan_dm,
+    j1939_scan_dm_pgn,
+)
+
 __all__ = [
     "J1939",
     "J1939SoftSocket",
@@ -130,6 +139,13 @@ __all__ = [
     "j1939_scan_rts_probe",
     "PGN_ECU_ID",
     "SCAN_METHODS",
+    # DM Scanner (J1939-73)
+    "DmScanResult",
+    "J1939_DM_PGNS",
+    "J1939_PF_ACK",
+    "PGN_ACK",
+    "j1939_scan_dm",
+    "j1939_scan_dm_pgn",
 ]
 
 USE_J1939_KERNEL_MODULE = False

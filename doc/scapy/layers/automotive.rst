@@ -1551,6 +1551,48 @@ Examples::
     pre-scan while keeping noise filtering on (but with an empty initial baseline).
 
 
+J1939 Diagnostic Message (DM) Scanner
+---------------------------------------
+
+The ``j1939_scan_dm`` function probes a single ECU (identified by its
+Destination Address) to discover which SAE J1939-73 Diagnostic Messages it
+supports.  For each PGN in the built-in table the scanner sends a unicast
+Request (PGN 59904) and classifies the reply:
+
+- **Positive response** — the ECU replies with the requested PGN.
+- **NACK** — the ECU replies with an Acknowledgment (PGN 0xE800), control
+  byte 0x01 (Negative Acknowledgment).
+- **Timeout** — the ECU does not reply within *sniff_time* seconds.
+
+Probe a target ECU for all eight standard DMs::
+
+    >>> from scapy.contrib.automotive.j1939.j1939_dm_scanner import (
+    ...     j1939_scan_dm,
+    ... )
+    >>> sock = CANSocket("can0")
+    >>> results = j1939_scan_dm(sock, target_da=0x00)
+    >>> for name, res in sorted(results.items()):
+    ...     status = "supported" if res.supported else res.error
+    ...     print("{} (PGN 0x{:04X}): {}".format(name, res.pgn, status))
+    DM1 (PGN 0xFECA): supported
+    DM2 (PGN 0xFECB): NACK
+    DM3 (PGN 0xFECC): Timeout
+
+Scan only a subset of DMs::
+
+    >>> results = j1939_scan_dm(sock, target_da=0x00, pgns=["DM1", "DM5"])
+
+Probe a single PGN directly::
+
+    >>> from scapy.contrib.automotive.j1939.j1939_dm_scanner import (
+    ...     j1939_scan_dm_pgn, J1939_DM_PGNS,
+    ... )
+    >>> res = j1939_scan_dm_pgn(sock, target_da=0x00,
+    ...                         pgn=J1939_DM_PGNS["DM1"], dm_name="DM1")
+    >>> print(res)
+    <DmScanResult dm=DM1 pgn=0xFECA supported=True error=None>
+
+
 ======================================
 
 AutoSAR SecOC is a security architecture protecting communication between ECUs in a vehicle from cyber-attacks.
