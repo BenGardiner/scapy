@@ -33,6 +33,28 @@ Technique 4 — TP.CM RTS Probing
     TP.CM_RTS frame to each.  Active nodes reply with CTS or Conn_Abort,
     both of which confirm the node is present.
 
+Detection Matrix
+----------------
+
+The following table shows the probe each technique sends and the CAN
+response it expects from an active CA in order to detect it.
+
++------------+-----------------------------------------+------------------------------------------+
+| Technique  | Probe (sent by scanner)                 | Expected response (from ECU)             |
++============+=========================================+==========================================+
+| addr_claim | Broadcast Request (PF=0xEA, DA=0xFF)    | Address Claimed (PF=0xEE, DA=0xFF)       |
+|            | for PGN 60928 (0xEE00)                  | SA=ECU-SA, 8-byte J1939 NAME payload     |
++------------+-----------------------------------------+------------------------------------------+
+| ecu_id     | Broadcast Request (PF=0xEA, DA=0xFF)    | TP.CM BAM (PF=0xEC, DA=0xFF,             |
+|            | for PGN 64965 (0xFDC5)                  | ctrl=0x20) announcing PGN 64965          |
++------------+-----------------------------------------+------------------------------------------+
+| unicast    | Unicast Request (PF=0xEA, DA=ECU-SA)    | Any CAN frame (extended) whose           |
+|            | for PGN 60928, addressed to each DA     | SA equals the probed DA                  |
++------------+-----------------------------------------+------------------------------------------+
+| rts_probe  | TP.CM_RTS (PF=0xEC, DA=ECU-SA)          | TP.CM_CTS (ctrl=0x11) **or**             |
+|            | sent to each DA                         | TP_Conn_Abort (ctrl=0xFF) from probed DA |
++------------+-----------------------------------------+------------------------------------------+
+
 Usage::
 
     >>> load_contrib('automotive.j1939')
@@ -54,7 +76,6 @@ from typing import (
     List,
     Optional,
     Set,
-    Tuple,
 )
 
 from scapy.layers.can import CAN
@@ -68,7 +89,6 @@ from scapy.contrib.automotive.j1939.j1939_soft_socket import (
     TP_CM_CTS,
     TP_Conn_Abort,
     PGN_ADDRESS_CLAIMED,
-    PGN_REQUEST,
     J1939_PF_ADDRESS_CLAIMED,
     J1939_PF_REQUEST,
     _j1939_can_id,
@@ -76,9 +96,7 @@ from scapy.contrib.automotive.j1939.j1939_soft_socket import (
     log_j1939,
 )
 
-# ---------------------------------------------------------------------------
-# Scanner constants
-# ---------------------------------------------------------------------------
+# --- Scanner constants
 
 #: PGN for ECU Identification Information (J1939-73 §5.7.5)
 PGN_ECU_ID = 0xFDC5  # 64965
@@ -98,13 +116,11 @@ SCAN_METHODS = ("addr_claim", "ecu_id", "unicast", "rts_probe")
 
 def _build_request_payload(pgn):
     # type: (int) -> bytes
-    """Encode a PGN as a 3-byte little-endian request payload (PGN_REQUEST)."""
+    """Encode *pgn* as a 3-byte little-endian payload for a J1939 Request (PF=0xEA) frame."""
     return struct.pack("<I", pgn)[:3]
 
 
-# ---------------------------------------------------------------------------
-# Passive scan — background noise detection
-# ---------------------------------------------------------------------------
+# --- Passive scan — background noise detection
 
 def j1939_scan_passive(
     sock,                  # type: SuperSocket
@@ -141,9 +157,7 @@ def j1939_scan_passive(
     return seen
 
 
-# ---------------------------------------------------------------------------
-# Technique 1 – Global Address Claim Request
-# ---------------------------------------------------------------------------
+# --- Technique 1 – Global Address Claim Request
 
 def j1939_scan_addr_claim(
     sock,                           # type: SuperSocket
@@ -199,9 +213,7 @@ def j1939_scan_addr_claim(
     return found
 
 
-# ---------------------------------------------------------------------------
-# Technique 2 – Global ECU ID Request
-# ---------------------------------------------------------------------------
+# --- Technique 2 – Global ECU ID Request
 
 def j1939_scan_ecu_id(
     sock,                           # type: SuperSocket
@@ -232,9 +244,6 @@ def j1939_scan_ecu_id(
     sock.send(CAN(identifier=can_id, flags="extended", data=payload))
     log_j1939.debug("ecu_id: broadcast request sent (CAN-ID=0x%08X)", can_id)
 
-    # The 3-byte LE encoding of PGN 64965 (0xFDC5)
-    _ecu_pgn_le = _build_request_payload(PGN_ECU_ID)
-
     found = {}  # type: Dict[int, CAN]
 
     def _rx(pkt):
@@ -253,7 +262,7 @@ def j1939_scan_ecu_id(
         if len(data) < 8:
             return
         # BAM control byte = 0x20, PGN at bytes 5-7 (LE)
-        if data[0] == 0x20 and data[5:8] == _ecu_pgn_le and sa not in found:
+        if data[0] == 0x20 and data[5:8] == payload and sa not in found:
             if not force and noise_ids is not None and sa in noise_ids:
                 log_j1939.debug("ecu_id: suppressing noise SA=0x%02X", sa)
                 return
@@ -264,9 +273,7 @@ def j1939_scan_ecu_id(
     return found
 
 
-# ---------------------------------------------------------------------------
-# Technique 3 – Unicast Ping Sweep
-# ---------------------------------------------------------------------------
+# --- Technique 3 – Unicast Ping Sweep
 
 def j1939_scan_unicast(
     sock,                              # type: SuperSocket
@@ -331,9 +338,7 @@ def j1939_scan_unicast(
     return found
 
 
-# ---------------------------------------------------------------------------
-# Technique 4 – TP.CM RTS Probing
-# ---------------------------------------------------------------------------
+# --- Technique 4 – TP.CM RTS Probing
 
 def j1939_scan_rts_probe(
     sock,                              # type: SuperSocket
@@ -363,9 +368,6 @@ def j1939_scan_rts_probe(
                   *noise_ids*
     :param stop_event: optional :class:`threading.Event` to abort early
     :returns: dict mapping responder source address (int) to the CAN reply
-
-    Active nodes reply with either TP.CM_CTS (clear to send) or
-    ``TP_Conn_Abort`` (connection abort).  Both responses confirm presence.
     """
     found = {}  # type: Dict[int, CAN]
 
@@ -417,9 +419,7 @@ def j1939_scan_rts_probe(
     return found
 
 
-# ---------------------------------------------------------------------------
-# Top-level combined scanner
-# ---------------------------------------------------------------------------
+# --- Top-level combined scanner
 
 def j1939_scan(
     sock,                               # type: SuperSocket
