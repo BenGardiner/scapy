@@ -67,6 +67,7 @@ Usage::
 """
 
 import struct
+import time
 from threading import Event
 
 # Typing imports
@@ -120,6 +121,59 @@ def _build_request_payload(pgn):
     return struct.pack("<I", pgn)[:3]
 
 
+# --- Pacing helpers
+
+#: Default CAN bitrate for J1939 networks (SAE J1939-11, 250 kbit/s)
+_J1939_DEFAULT_BITRATE = 250000  # bit/s
+
+#: Default maximum fraction of bus bandwidth the scanner may consume (5 %)
+_J1939_DEFAULT_BUSLOAD = 0.05
+
+
+def _can_frame_bits(dlc):
+    # type: (int) -> int
+    """Return the bit count of a CAN extended frame with *dlc* data bytes.
+
+    Uses the fixed-field formula for a 29-bit extended frame (no bit-stuffing
+    overhead):
+
+      SOF(1) + base-ID(11) + SRR(1) + IDE(1) + ext-ID(18) + RTR(1) +
+      r1(1) + r0(1) + DLC(4) + data(dlc×8) + CRC(15) + CRC-del(1) +
+      ACK(1) + ACK-del(1) + EOF(7) + IFS(3) = 67 + dlc×8 bits.
+
+    :param dlc: number of data bytes (0–8)
+    :returns: total frame bit count
+    """
+    return 67 + dlc * 8
+
+
+def _inter_probe_delay(bitrate, busload, tx_dlc, rx_dlc, sniff_time):
+    # type: (int, float, int, int, float) -> float
+    """Compute the extra sleep needed after a probe-response cycle.
+
+    Each probe cycle occupies *tx_dlc*-frame bits (outgoing probe) plus
+    *rx_dlc*-frame bits (expected response).  The scanner's bandwidth budget
+    is ``bitrate × busload`` bits per second.  If the probe-response exchange
+    completes in less time than the budget requires, the caller should sleep for
+    the returned value before transmitting the next probe.
+
+    :param bitrate: CAN bus bitrate in bit/s (e.g. 250000 for 250 kbit/s)
+    :param busload: fraction of bus capacity the scanner may consume
+                    (0 < busload ≤ 1.0)
+    :param tx_dlc: DLC of the outgoing probe frame (0–8)
+    :param rx_dlc: DLC of the expected response frame (0–8)
+    :param sniff_time: seconds already spent waiting for the response
+    :returns: non-negative seconds to sleep before the next probe
+    :raises ValueError: when *busload* is not in (0, 1.0]
+    """
+    if not 0.0 < busload <= 1.0:
+        raise ValueError(
+            "busload must be in (0, 1.0]; got {!r}".format(busload))
+    bits = _can_frame_bits(tx_dlc) + _can_frame_bits(rx_dlc)
+    min_cycle = bits / (bitrate * busload)
+    return max(0.0, min_cycle - sniff_time)
+
+
 # --- Passive scan — background noise detection
 
 def j1939_scan_passive(
@@ -160,12 +214,14 @@ def j1939_scan_passive(
 # --- Technique 1 – Global Address Claim Request
 
 def j1939_scan_addr_claim(
-    sock,                           # type: SuperSocket
-    src_addr=J1939_NULL_ADDRESS,    # type: int
-    listen_time=1.0,                # type: float
-    noise_ids=None,                 # type: Optional[Set[int]]
-    force=False,                    # type: bool
-    stop_event=None,                # type: Optional[Event]
+    sock,                                   # type: SuperSocket
+    src_addr=J1939_NULL_ADDRESS,            # type: int
+    listen_time=1.0,                        # type: float
+    noise_ids=None,                         # type: Optional[Set[int]]
+    force=False,                            # type: bool
+    stop_event=None,                        # type: Optional[Event]
+    bitrate=_J1939_DEFAULT_BITRATE,         # type: int
+    busload=_J1939_DEFAULT_BUSLOAD,         # type: float
 ):
     # type: (...) -> Dict[int, CAN]
     """Enumerate CAs via a global Request for Address Claimed (PGN 60928).
@@ -182,6 +238,11 @@ def j1939_scan_addr_claim(
     :param force: if True, report all responding SAs even if they appear in
                   *noise_ids*
     :param stop_event: optional :class:`threading.Event` to abort early
+    :param bitrate: CAN bus bitrate in bit/s (default 250000).  Accepted for
+                    API uniformity; not used by this broadcast technique.
+    :param busload: maximum scanner bus-load fraction (default 0.05).
+                    Accepted for API uniformity; not used by this broadcast
+                    technique.
     :returns: dict mapping responder source address (int) to the CAN reply
     """
     # Build the request CAN frame:
@@ -216,12 +277,14 @@ def j1939_scan_addr_claim(
 # --- Technique 2 – Global ECU ID Request
 
 def j1939_scan_ecu_id(
-    sock,                           # type: SuperSocket
-    src_addr=J1939_NULL_ADDRESS,    # type: int
-    listen_time=1.0,                # type: float
-    noise_ids=None,                 # type: Optional[Set[int]]
-    force=False,                    # type: bool
-    stop_event=None,                # type: Optional[Event]
+    sock,                                   # type: SuperSocket
+    src_addr=J1939_NULL_ADDRESS,            # type: int
+    listen_time=1.0,                        # type: float
+    noise_ids=None,                         # type: Optional[Set[int]]
+    force=False,                            # type: bool
+    stop_event=None,                        # type: Optional[Event]
+    bitrate=_J1939_DEFAULT_BITRATE,         # type: int
+    busload=_J1939_DEFAULT_BUSLOAD,         # type: float
 ):
     # type: (...) -> Dict[int, CAN]
     """Enumerate CAs via a global Request for ECU Identification (PGN 64965).
@@ -236,6 +299,11 @@ def j1939_scan_ecu_id(
                       (see :func:`j1939_scan_passive`)
     :param force: if True, report all responding SAs even if in *noise_ids*
     :param stop_event: optional :class:`threading.Event` to abort early
+    :param bitrate: CAN bus bitrate in bit/s (default 250000).  Accepted for
+                    API uniformity; not used by this broadcast technique.
+    :param busload: maximum scanner bus-load fraction (default 0.05).
+                    Accepted for API uniformity; not used by this broadcast
+                    technique.
     :returns: dict mapping responder source address (int) to the CAN reply
     """
     can_id = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_REQUEST,
@@ -276,13 +344,15 @@ def j1939_scan_ecu_id(
 # --- Technique 3 – Unicast Ping Sweep
 
 def j1939_scan_unicast(
-    sock,                              # type: SuperSocket
-    scan_range=_SCAN_ADDR_RANGE,       # type: Iterable[int]
-    src_addr=J1939_NULL_ADDRESS,       # type: int
-    sniff_time=0.1,                    # type: float
-    noise_ids=None,                    # type: Optional[Set[int]]
-    force=False,                       # type: bool
-    stop_event=None,                   # type: Optional[Event]
+    sock,                                   # type: SuperSocket
+    scan_range=_SCAN_ADDR_RANGE,            # type: Iterable[int]
+    src_addr=J1939_NULL_ADDRESS,            # type: int
+    sniff_time=0.1,                         # type: float
+    noise_ids=None,                         # type: Optional[Set[int]]
+    force=False,                            # type: bool
+    stop_event=None,                        # type: Optional[Event]
+    bitrate=_J1939_DEFAULT_BITRATE,         # type: int
+    busload=_J1939_DEFAULT_BUSLOAD,         # type: float
 ):
     # type: (...) -> Dict[int, CAN]
     """Enumerate CAs by sending unicast Address Claim Requests to each DA.
@@ -296,6 +366,10 @@ def j1939_scan_unicast(
     response is recorded for those addresses.  This prevents re-reporting CAs
     already known from background bus traffic.
 
+    The inter-probe gap is automatically paced so that the scanner contributes
+    at most *busload* × *bitrate* bits per second to the bus, counting both
+    the outgoing probe frame and the expected response frame.
+
     :param sock: raw CAN socket to use for sending / sniffing
     :param scan_range: iterable of destination addresses to probe
     :param src_addr: source address to use in requests (default 0xFE)
@@ -306,6 +380,9 @@ def j1939_scan_unicast(
     :param force: if True, probe all DAs in *scan_range* regardless of
                   *noise_ids*
     :param stop_event: optional :class:`threading.Event` to abort early
+    :param bitrate: CAN bus bitrate in bit/s (default 250000 for J1939)
+    :param busload: maximum fraction of bus capacity the scanner may consume
+                    (default 0.05 = 5 %)
     :returns: dict mapping responder source address (int) to the CAN reply
     """
     found = {}  # type: Dict[int, CAN]
@@ -335,19 +412,26 @@ def j1939_scan_unicast(
 
         sock.sniff(prn=_rx, timeout=sniff_time, store=False)
 
+        # Pace the probe rate: request=3 bytes (DLC 3), response=8 bytes (DLC 8)
+        _extra = _inter_probe_delay(bitrate, busload, 3, 8, sniff_time)
+        if _extra > 0.0:
+            time.sleep(_extra)
+
     return found
 
 
 # --- Technique 4 – TP.CM RTS Probing
 
 def j1939_scan_rts_probe(
-    sock,                              # type: SuperSocket
-    scan_range=_SCAN_ADDR_RANGE,       # type: Iterable[int]
-    src_addr=J1939_NULL_ADDRESS,       # type: int
-    sniff_time=0.1,                    # type: float
-    noise_ids=None,                    # type: Optional[Set[int]]
-    force=False,                       # type: bool
-    stop_event=None,                   # type: Optional[Event]
+    sock,                                   # type: SuperSocket
+    scan_range=_SCAN_ADDR_RANGE,            # type: Iterable[int]
+    src_addr=J1939_NULL_ADDRESS,            # type: int
+    sniff_time=0.1,                         # type: float
+    noise_ids=None,                         # type: Optional[Set[int]]
+    force=False,                            # type: bool
+    stop_event=None,                        # type: Optional[Event]
+    bitrate=_J1939_DEFAULT_BITRATE,         # type: int
+    busload=_J1939_DEFAULT_BUSLOAD,         # type: float
 ):
     # type: (...) -> Dict[int, CAN]
     """Enumerate CAs by sending minimal TP.CM_RTS frames to each DA.
@@ -356,6 +440,9 @@ def j1939_scan_rts_probe(
     (Connection Management – Request to Send) frame.  An active node
     replies with either TP.CM_CTS (clear to send) or ``TP_Conn_Abort``
     (connection abort).  Both responses confirm the node is present.
+
+    The inter-probe gap is automatically paced so that the scanner contributes
+    at most *busload* × *bitrate* bits per second to the bus.
 
     :param sock: raw CAN socket to use for sending / sniffing
     :param scan_range: iterable of destination addresses to probe
@@ -367,6 +454,9 @@ def j1939_scan_rts_probe(
     :param force: if True, probe all DAs in *scan_range* regardless of
                   *noise_ids*
     :param stop_event: optional :class:`threading.Event` to abort early
+    :param bitrate: CAN bus bitrate in bit/s (default 250000 for J1939)
+    :param busload: maximum fraction of bus capacity the scanner may consume
+                    (default 0.05 = 5 %)
     :returns: dict mapping responder source address (int) to the CAN reply
     """
     found = {}  # type: Dict[int, CAN]
@@ -416,23 +506,30 @@ def j1939_scan_rts_probe(
 
         sock.sniff(prn=_rx, timeout=sniff_time, store=False)
 
+        # Pace the probe rate: RTS probe=8 bytes (DLC 8), response=8 bytes (DLC 8)
+        _extra = _inter_probe_delay(bitrate, busload, 8, 8, sniff_time)
+        if _extra > 0.0:
+            time.sleep(_extra)
+
     return found
 
 
 # --- Top-level combined scanner
 
 def j1939_scan(
-    sock,                               # type: SuperSocket
-    scan_range=_SCAN_ADDR_RANGE,        # type: Iterable[int]
-    methods=None,                       # type: Optional[List[str]]
-    src_addr=J1939_NULL_ADDRESS,        # type: int
-    sniff_time=0.1,                     # type: float
-    broadcast_listen_time=1.0,          # type: float
-    noise_listen_time=1.0,              # type: float
-    noise_ids=None,                     # type: Optional[Set[int]]
-    force=False,                        # type: bool
-    stop_event=None,                    # type: Optional[Event]
-    verbose=False,                      # type: bool
+    sock,                                   # type: SuperSocket
+    scan_range=_SCAN_ADDR_RANGE,            # type: Iterable[int]
+    methods=None,                           # type: Optional[List[str]]
+    src_addr=J1939_NULL_ADDRESS,            # type: int
+    sniff_time=0.1,                         # type: float
+    broadcast_listen_time=1.0,              # type: float
+    noise_listen_time=1.0,                  # type: float
+    noise_ids=None,                         # type: Optional[Set[int]]
+    force=False,                            # type: bool
+    stop_event=None,                        # type: Optional[Event]
+    verbose=False,                          # type: bool
+    bitrate=_J1939_DEFAULT_BITRATE,         # type: int
+    busload=_J1939_DEFAULT_BUSLOAD,         # type: float
 ):
     # type: (...) -> Dict[int, Dict[str, object]]
     """Scan for J1939 Controller Applications using one or more techniques.
@@ -468,6 +565,10 @@ def j1939_scan(
                   all addresses are probed and reported)
     :param stop_event: :class:`threading.Event` to abort the scan early
     :param verbose: if True, log discovered CAs to the console
+    :param bitrate: CAN bus bitrate in bit/s passed to unicast / RTS methods
+                    (default 250000 for J1939)
+    :param busload: maximum scanner bus-load fraction passed to unicast / RTS
+                    methods (default 0.05 = 5 %)
     :returns: dict mapping SA (int) to ``{"method": str, "packet": CAN}``
 
     Example::
@@ -517,6 +618,8 @@ def j1939_scan(
             noise_ids=noise_ids,
             force=force,
             stop_event=stop_event,
+            bitrate=bitrate,
+            busload=busload,
         ), "addr_claim")
 
     if "ecu_id" in methods:
@@ -529,6 +632,8 @@ def j1939_scan(
             noise_ids=noise_ids,
             force=force,
             stop_event=stop_event,
+            bitrate=bitrate,
+            busload=busload,
         ), "ecu_id")
 
     if "unicast" in methods:
@@ -542,6 +647,8 @@ def j1939_scan(
             noise_ids=noise_ids,
             force=force,
             stop_event=stop_event,
+            bitrate=bitrate,
+            busload=busload,
         ), "unicast")
 
     if "rts_probe" in methods:
@@ -555,6 +662,8 @@ def j1939_scan(
             noise_ids=noise_ids,
             force=force,
             stop_event=stop_event,
+            bitrate=bitrate,
+            busload=busload,
         ), "rts_probe")
 
     return results

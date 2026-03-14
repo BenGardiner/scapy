@@ -57,6 +57,7 @@ Usage::
 """
 
 import struct
+import time
 from threading import Event
 
 # Typing imports
@@ -76,6 +77,13 @@ from scapy.contrib.automotive.j1939.j1939_soft_socket import (
     _j1939_can_id,
     _j1939_decode_can_id,
     log_j1939,
+)
+
+from scapy.contrib.automotive.j1939.j1939_scanner import (
+    _J1939_DEFAULT_BITRATE,
+    _J1939_DEFAULT_BUSLOAD,
+    _can_frame_bits,  # noqa: F401 – re-exported for tests
+    _inter_probe_delay,
 )
 
 # --- DM scanner constants
@@ -161,15 +169,17 @@ def _pgn_matches(pf, ps, pgn):
 # --- Technique: unicast DM PGN probe
 
 def j1939_scan_dm_pgn(
-    sock,                           # type: SuperSocket
-    target_da,                      # type: int
-    pgn,                            # type: int
-    dm_name="Unknown",              # type: str
-    src_addr=J1939_NULL_ADDRESS,    # type: int
-    sniff_time=1.0,                 # type: float
-    noise_ids=None,                 # type: Optional[Set[int]]
-    force=False,                    # type: bool
-    stop_event=None,                # type: Optional[Event]
+    sock,                                   # type: SuperSocket
+    target_da,                              # type: int
+    pgn,                                    # type: int
+    dm_name="Unknown",                      # type: str
+    src_addr=J1939_NULL_ADDRESS,            # type: int
+    sniff_time=1.0,                         # type: float
+    noise_ids=None,                         # type: Optional[Set[int]]
+    force=False,                            # type: bool
+    stop_event=None,                        # type: Optional[Event]
+    bitrate=_J1939_DEFAULT_BITRATE,         # type: int
+    busload=_J1939_DEFAULT_BUSLOAD,         # type: float
 ):
     # type: (...) -> DmScanResult
     """Probe *target_da* for support of a single Diagnostic Message PGN.
@@ -178,6 +188,11 @@ def j1939_scan_dm_pgn(
     waits up to *sniff_time* seconds for a reply.  The ECU is considered to
     support the PGN if it replies with that PGN.  A NACK (PGN 0xE800, control
     byte 0x01) means the ECU does not support it.  Silence is a Timeout.
+
+    The inter-probe gap is automatically paced so that the scanner contributes
+    at most *busload* × *bitrate* bits per second to the bus, counting both
+    the outgoing probe frame (3-byte payload) and the expected response frame
+    (8-byte payload).
 
     :param sock: raw CAN socket to use for sending / sniffing
     :param target_da: destination address of the ECU to probe (0x00–0xFD)
@@ -189,6 +204,9 @@ def j1939_scan_dm_pgn(
                       this set (and *force* is False) no probe is sent
     :param force: if True, probe even if *target_da* is in *noise_ids*
     :param stop_event: optional :class:`threading.Event` to abort early
+    :param bitrate: CAN bus bitrate in bit/s (default 250000 for J1939)
+    :param busload: maximum fraction of bus capacity the scanner may consume
+                    (default 0.05 = 5 %)
     :returns: :class:`DmScanResult` describing the outcome for this PGN
     """
     if not force and noise_ids is not None and target_da in noise_ids:
@@ -232,6 +250,11 @@ def j1939_scan_dm_pgn(
 
     sock.sniff(prn=_rx, timeout=sniff_time, store=False)
 
+    # Pace the probe rate: request=3 bytes (DLC 3), response=8 bytes (DLC 8)
+    _extra = _inter_probe_delay(bitrate, busload, 3, 8, sniff_time)
+    if _extra > 0.0:
+        time.sleep(_extra)
+
     if result:
         return result[0]
 
@@ -243,14 +266,16 @@ def j1939_scan_dm_pgn(
 # --- Top-level DM scanner
 
 def j1939_scan_dm(
-    sock,                           # type: SuperSocket
-    target_da,                      # type: int
-    pgns=None,                      # type: Optional[List[str]]
-    src_addr=J1939_NULL_ADDRESS,    # type: int
-    sniff_time=1.0,                 # type: float
-    noise_ids=None,                 # type: Optional[Set[int]]
-    force=False,                    # type: bool
-    stop_event=None,                # type: Optional[Event]
+    sock,                                   # type: SuperSocket
+    target_da,                              # type: int
+    pgns=None,                              # type: Optional[List[str]]
+    src_addr=J1939_NULL_ADDRESS,            # type: int
+    sniff_time=1.0,                         # type: float
+    noise_ids=None,                         # type: Optional[Set[int]]
+    force=False,                            # type: bool
+    stop_event=None,                        # type: Optional[Event]
+    bitrate=_J1939_DEFAULT_BITRATE,         # type: int
+    busload=_J1939_DEFAULT_BUSLOAD,         # type: float
 ):
     # type: (...) -> Dict[str, DmScanResult]
     """Probe *target_da* for all (or a selected subset of) Diagnostic Message PGNs.
@@ -269,6 +294,9 @@ def j1939_scan_dm(
                       this set (and *force* is False) all probes are skipped
     :param force: if True, probe even if *target_da* is in *noise_ids*
     :param stop_event: optional :class:`threading.Event` to abort early
+    :param bitrate: CAN bus bitrate in bit/s (default 250000 for J1939)
+    :param busload: maximum fraction of bus capacity the scanner may consume
+                    (default 0.05 = 5 %)
     :returns: dict mapping each DM name (str) to its :class:`DmScanResult`
 
     Example::
@@ -302,6 +330,8 @@ def j1939_scan_dm(
             noise_ids=noise_ids,
             force=force,
             stop_event=stop_event,
+            bitrate=bitrate,
+            busload=busload,
         )
 
     return results

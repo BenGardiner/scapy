@@ -24,6 +24,11 @@ from scapy.contrib.automotive.j1939.j1939_dm_scanner import (
     j1939_scan_dm_pgn,
     _pgn_matches,
 )
+from scapy.contrib.automotive.j1939.j1939_scanner import (
+    _J1939_DEFAULT_BITRATE,
+    _J1939_DEFAULT_BUSLOAD,
+    _inter_probe_delay,
+)
 from test.testsocket import TestSocket, cleanup_testsockets
 
 = Redirect logging
@@ -315,3 +320,43 @@ results = j1939_scan_dm(sock, target_da=0x00, pgns=["DM1", "DM5"],
 assert set(results.keys()) == {"DM1", "DM5"}, \
     "Expected only DM1 and DM5, got {}".format(set(results.keys()))
 cleanup_testsockets()
+
+
++ Pacing — DM scanner
+~ automotive_comm
+
+= scan_dm_pgn: bitrate and busload params accepted without error (timeout path)
+sock = TestSocket(CAN)
+res = j1939_scan_dm_pgn(sock, target_da=0x00, pgn=J1939_DM_PGNS["DM1"],
+                        dm_name="DM1", bitrate=250000, busload=0.05,
+                        sniff_time=0.02)
+assert res.error == "Timeout"
+cleanup_testsockets()
+
+= scan_dm_pgn: invalid busload raises ValueError
+def test_dm_pgn_invalid_busload():
+    sock = TestSocket(CAN)
+    try:
+        j1939_scan_dm_pgn(sock, target_da=0x00, pgn=J1939_DM_PGNS["DM1"],
+                          dm_name="DM1", busload=0.0, sniff_time=0.02)
+        assert False, "Expected ValueError"
+    except ValueError as e:
+        assert "busload" in str(e).lower(), str(e)
+    cleanup_testsockets()
+
+test_dm_pgn_invalid_busload()
+
+= scan_dm: bitrate and busload params propagate to scan_dm_pgn
+sock = TestSocket(CAN)
+results = j1939_scan_dm(sock, target_da=0x00, pgns=["DM1"],
+                        bitrate=250000, busload=0.1, sniff_time=0.02)
+assert "DM1" in results
+assert results["DM1"].error == "Timeout"
+cleanup_testsockets()
+
+= pacing delay for DM scan is consistent with _inter_probe_delay math
+# tx=3-byte request (DLC 3 = 91 bits), rx=8-byte response (DLC 8 = 131 bits)
+# At 250kbps 0.5% busload sniff_time=0:
+#   delay = (91+131) / (250000 * 0.005) = 222/1250 = 0.1776 s
+d = _inter_probe_delay(250000, 0.005, 3, 8, 0.0)
+assert abs(d - 0.1776) < 1e-4, "Expected ~0.1776 s, got {}".format(d)

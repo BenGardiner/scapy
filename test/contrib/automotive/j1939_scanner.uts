@@ -27,6 +27,10 @@ from scapy.contrib.automotive.j1939.j1939_scanner import (
     PGN_ECU_ID,
     SCAN_METHODS,
     _build_request_payload,
+    _can_frame_bits,
+    _inter_probe_delay,
+    _J1939_DEFAULT_BITRATE,
+    _J1939_DEFAULT_BUSLOAD,
 )
 from scapy.error import Scapy_Exception
 from test.testsocket import TestSocket, cleanup_testsockets
@@ -647,3 +651,89 @@ def test_j1939_scan_auto_passive():
     cleanup_testsockets()
 
 test_j1939_scan_auto_passive()
+
+
++ Pacing helpers
+~ automotive_comm
+
+= _can_frame_bits: DLC=0 → 67 overhead bits only
+assert _can_frame_bits(0) == 67
+
+= _can_frame_bits: DLC=3 → 91 bits (3-byte request payload)
+assert _can_frame_bits(3) == 91
+
+= _can_frame_bits: DLC=8 → 131 bits (8-byte standard CAN frame)
+assert _can_frame_bits(8) == 131
+
+= _J1939_DEFAULT_BITRATE is 250000 and _J1939_DEFAULT_BUSLOAD is 0.05
+assert _J1939_DEFAULT_BITRATE == 250000
+assert _J1939_DEFAULT_BUSLOAD == 0.05
+
+= _inter_probe_delay: no extra sleep when sniff_time covers the budget
+# 250 kbps, 5 % busload, tx=3-byte request (91 bits), rx=8-byte response (131 bits)
+# budget_cycle = (91+131) / (250000 * 0.05) = 222 / 12500 = 0.01776 s
+# sniff_time=0.1 >> 0.01776  →  delay = 0
+d = _inter_probe_delay(250000, 0.05, 3, 8, 0.1)
+assert d == 0.0, "Expected 0, got {}".format(d)
+
+= _inter_probe_delay: positive delay when busload is very low
+# 250 kbps, 0.1 % busload, tx=3 bytes, rx=8 bytes, sniff_time=0
+# budget_cycle = 222 / (250000 * 0.001) = 0.888 s
+d = _inter_probe_delay(250000, 0.001, 3, 8, 0.0)
+expected = (91 + 131) / (250000 * 0.001)
+assert abs(d - expected) < 1e-9, "{} != {}".format(d, expected)
+
+= _inter_probe_delay: higher busload yields smaller delay
+d_low = _inter_probe_delay(250000, 0.05, 8, 8, 0.0)
+d_high = _inter_probe_delay(250000, 0.50, 8, 8, 0.0)
+assert d_low > d_high, "Lower busload must give longer delay"
+
+= _inter_probe_delay: raises ValueError for busload <= 0
+def test_pacing_invalid_busload():
+    try:
+        _inter_probe_delay(250000, 0.0, 3, 8, 0.1)
+        assert False, "Expected ValueError"
+    except ValueError as e:
+        assert "busload" in str(e).lower(), str(e)
+
+test_pacing_invalid_busload()
+
+= _inter_probe_delay: raises ValueError for negative busload
+def test_pacing_negative_busload():
+    try:
+        _inter_probe_delay(250000, -0.1, 3, 8, 0.1)
+        assert False, "Expected ValueError"
+    except ValueError as e:
+        assert "busload" in str(e).lower(), str(e)
+
+test_pacing_negative_busload()
+
+= _inter_probe_delay: busload=1.0 accepted and yields minimal delay
+d = _inter_probe_delay(250000, 1.0, 3, 8, 0.0)
+expected = (91 + 131) / (250000 * 1.0)
+assert abs(d - expected) < 1e-9
+
+= unicast: bitrate and busload params accepted without error
+sock = TestSocket(CAN)
+found = j1939_scan_unicast(sock, scan_range=[], bitrate=250000, busload=0.05,
+                           sniff_time=0.02)
+assert found == {}
+cleanup_testsockets()
+
+= rts_probe: bitrate and busload params accepted without error
+sock = TestSocket(CAN)
+found = j1939_scan_rts_probe(sock, scan_range=[], bitrate=250000, busload=0.05,
+                              sniff_time=0.02)
+assert found == {}
+cleanup_testsockets()
+
+= j1939_scan: bitrate and busload params accepted without error
+def test_j1939_scan_pacing_params():
+    sock = TestSocket(CAN)
+    found = j1939_scan(sock, methods=["unicast"], scan_range=[],
+                       bitrate=250000, busload=0.05, noise_ids=set(),
+                       sniff_time=0.02)
+    assert found == {}
+    cleanup_testsockets()
+
+test_j1939_scan_pacing_params()

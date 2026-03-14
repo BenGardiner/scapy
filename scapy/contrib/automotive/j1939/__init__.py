@@ -81,6 +81,10 @@ from scapy.contrib.automotive.j1939.j1939_scanner import (
     j1939_scan_rts_probe,
     PGN_ECU_ID,
     SCAN_METHODS,
+    _J1939_DEFAULT_BITRATE,
+    _J1939_DEFAULT_BUSLOAD,
+    _can_frame_bits,
+    _inter_probe_delay,
 )
 
 from scapy.contrib.automotive.j1939.j1939_dm_scanner import (

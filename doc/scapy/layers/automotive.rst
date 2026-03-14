@@ -1551,6 +1551,45 @@ Examples::
     pre-scan while keeping noise filtering on (but with an empty initial baseline).
 
 
+Bus-load pacing
+---------------
+
+All per-address probe functions (``j1939_scan_unicast``, ``j1939_scan_rts_probe``)
+and the DM scanner (``j1939_scan_dm``, ``j1939_scan_dm_pgn``) automatically pace
+their probe rate so that the scanner's contribution to the bus stays within a
+configurable fraction of the total bitrate.  The broadcast methods
+(``j1939_scan_addr_claim``, ``j1939_scan_ecu_id``) accept the same parameters for
+API uniformity, but do not apply pacing because they send only a single probe frame.
+
+``bitrate`` (``int``, default ``250000``)
+    CAN bus bitrate in bit/s.  SAE J1939 mandates 250 kbit/s; adjust when testing
+    on 500 kbit/s or 1 Mbit/s buses.
+
+``busload`` (``float``, default ``0.05``)
+    Maximum fraction of bus capacity (0 < *busload* ≤ 1.0) the scanner may
+    consume, counting both the outgoing probe frame and the expected response
+    frame.  The default of ``0.05`` (5 %) is conservative and safe for live
+    production buses.  Increase it for faster scans on quiet or virtual
+    interfaces.  A value of ``1.0`` means no artificial pacing delay is added.
+
+The pacing formula counts the fixed-field bits of a CAN extended frame
+(67 bits of overhead plus 8 bits per data byte — no bit-stuffing overhead),
+computes the minimum cycle time for the configured budget, and sleeps for any
+remaining time after the per-probe sniff window::
+
+    >>> # Conservative 2 % bus load scan
+    >>> found = j1939_scan_unicast(sock, sniff_time=0.05,
+    ...                           bitrate=250000, busload=0.02)
+
+    >>> # Fast scan on a test bench – allow 50 % bus load
+    >>> found = j1939_scan_unicast(sock, sniff_time=0.05,
+    ...                           bitrate=250000, busload=0.50)
+
+    >>> # 500 kbit/s bus at 10 % load
+    >>> found = j1939_scan(sock, sniff_time=0.05,
+    ...                    bitrate=500000, busload=0.10)
+
+
 J1939 Diagnostic Message (DM) Scanner
 ---------------------------------------
 
@@ -1591,6 +1630,13 @@ Probe a single PGN directly::
     ...                         pgn=J1939_DM_PGNS["DM1"], dm_name="DM1")
     >>> print(res)
     <DmScanResult dm=DM1 pgn=0xFECA supported=True error=None>
+
+Both ``j1939_scan_dm`` and ``j1939_scan_dm_pgn`` accept ``bitrate`` and
+``busload`` to pace the probe rate (see `Bus-load pacing`_ above)::
+
+    >>> # Scan at most 10 % of a 250 kbit/s bus
+    >>> results = j1939_scan_dm(sock, target_da=0x00,
+    ...                         bitrate=250000, busload=0.10)
 
 
 ======================================
