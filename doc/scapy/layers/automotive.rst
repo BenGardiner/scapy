@@ -28,6 +28,10 @@ function to get all information about one specific protocol.
 |                      +----------------------+--------------------------------------------------------+
 |                      | GMLAN                | GMLAN, GMLAN_*, GMLAN_[Utilities]                      |
 |                      +----------------------+--------------------------------------------------------+
+|                      | SAE J1939            | j1939_scan, j1939_scan_passive, j1939_scan_addr_claim, |
+|                      |                      | j1939_scan_ecu_id, j1939_scan_unicast,                 |
+|                      |                      | j1939_scan_rts_probe                                   |
+|                      +----------------------+--------------------------------------------------------+
 |                      | SOME/IP              | SOMEIP, SD                                             |
 |                      +----------------------+--------------------------------------------------------+
 |                      | BMW HSFZ             | HSFZ, HSFZSocket, UDS_HSFZSocket                       |
@@ -1364,7 +1368,277 @@ Request the Vehicle Identification Number (VIN)::
 .. image:: ../graphics/animations/animation-scapy-obd.svg
 
 
-Message Authentication (AUTOSAR SecOC)
+SAE J1939
+=========
+
+SAE J1939 is a higher-layer protocol built on top of CAN that is widely used in heavy-duty
+vehicles, agricultural machinery, construction equipment, and any application that adopts the
+SAE J1939 standard family.  The central concept of J1939 is the *Controller Application*
+(CA): every logical function on the network claims a unique *Source Address* (SA, 0x00–0xFD)
+and communicates with other CAs using *Parameter Group Numbers* (PGNs).
+
+Scapy provides four complementary active techniques for enumerating active CAs on a J1939
+bus, as well as a passive sniffing helper.  All active scanners automatically perform a
+passive pre-scan to detect pre-existing bus traffic ("background noise") so that already-known
+CAs are not re-probed or re-reported by default.
+
+.. note::
+    The J1939 scanner requires the ``automotive.j1939`` contrib to be loaded and a raw CAN
+    socket.  On Linux, a ``CANSocket`` on a SocketCAN interface is the recommended choice.
+
+Setup::
+
+    >>> load_contrib('automotive.j1939')
+    >>> from scapy.contrib.cansocket import CANSocket
+    >>> from scapy.contrib.automotive.j1939.j1939_scanner import (
+    ...     j1939_scan,
+    ...     j1939_scan_passive,
+    ...     j1939_scan_addr_claim,
+    ...     j1939_scan_ecu_id,
+    ...     j1939_scan_unicast,
+    ...     j1939_scan_rts_probe,
+    ... )
+    >>> sock = CANSocket("can0")
+
+
+j1939_scan_passive — background-noise detection
+-------------------------------------------------
+
+``j1939_scan_passive()`` listens on the bus without sending any frame and returns the
+``set`` of source addresses observed.  The result can be used as the ``noise_ids`` argument
+to all active scanners to suppress already-known CAs.
+
+::
+
+    >>> noise = j1939_scan_passive(sock, listen_time=2.0)
+    >>> print("Pre-existing SAs:", {hex(sa) for sa in noise})
+    Pre-existing SAs: {'0x10', '0x27', '0x49'}
+
+
+Active scanning techniques
+--------------------------
+
+The four active techniques complement each other and are all noise-aware by default.
+
+**Technique 1 — Global Address Claim Request** (``j1939_scan_addr_claim``)
+
+Broadcasts a single Request (PGN 59904) for the Address Claimed PGN (60928).
+Every J1939-81-compliant CA **must** respond.  Best for networks where all nodes implement
+the J1939-81 address-claiming procedure::
+
+    >>> found = j1939_scan_addr_claim(sock, listen_time=1.0)
+    >>> for sa, pkt in sorted(found.items()):
+    ...     print("SA=0x{:02X}".format(sa))
+    SA=0x10
+    SA=0x27
+
+Suppress pre-existing CAs by passing a noise baseline::
+
+    >>> noise = j1939_scan_passive(sock, listen_time=1.0)
+    >>> found = j1939_scan_addr_claim(sock, listen_time=1.0, noise_ids=noise)
+
+**Technique 2 — Global ECU Identification Request** (``j1939_scan_ecu_id``)
+
+Broadcasts a Request for the ECU Identification Information PGN (64965).
+Responding nodes announce their ECU identification string via a BAM multi-packet
+transfer.  Identifies CAs that publish an ECU ID::
+
+    >>> found = j1939_scan_ecu_id(sock, listen_time=1.0)
+
+**Technique 3 — Unicast Ping Sweep** (``j1939_scan_unicast``)
+
+Iterates through destination addresses 0x00–0xFD, sending a unicast Request for
+Address Claimed to each.  Any response whose source address equals the probed DA
+is treated as a positive reply.  Detects nodes even if they do not respond to
+global broadcasts::
+
+    >>> found = j1939_scan_unicast(sock, scan_range=range(0x00, 0xFE), sniff_time=0.05)
+    >>> for sa, pkt in sorted(found.items()):
+    ...     print("SA=0x{:02X}".format(sa))
+
+**Technique 4 — TP.CM RTS Probing** (``j1939_scan_rts_probe``)
+
+Sends a minimal TP.CM_RTS (Transport Protocol Connection Management – Request to
+Send) frame to each destination address.  An active node replies with either
+TP.CM_CTS (Clear to Send) or TP.Conn_Abort (Connection Abort).  Both responses
+confirm the node is present, even if it refuses the connection::
+
+    >>> found = j1939_scan_rts_probe(sock, scan_range=range(0x00, 0xFE), sniff_time=0.05)
+
+
+j1939_scan — combined scanner with automatic noise filtering
+-------------------------------------------------------------
+
+``j1939_scan()`` runs any subset of the four techniques and merges results.  Before
+starting any active probe it performs a passive pre-scan (``j1939_scan_passive``) to
+collect the set of source addresses already present on the bus.  Those addresses are
+excluded from probing and from the returned results.
+
+The returned dictionary maps each **newly-discovered** source address to a record with
+keys ``"method"`` (the first technique that found the CA) and ``"packet"`` (the first
+CAN frame received from it).
+
+Quick scan using all four techniques::
+
+    >>> found = j1939_scan(sock)
+    >>> for sa, info in sorted(found.items()):
+    ...     print("SA=0x{:02X}  found_by={}".format(sa, info["method"]))
+    SA=0x10  found_by=addr_claim
+    SA=0x49  found_by=unicast
+
+Select specific techniques and tune timing::
+
+    >>> found = j1939_scan(
+    ...     sock,
+    ...     methods=["addr_claim", "unicast"],
+    ...     broadcast_listen_time=2.0,
+    ...     sniff_time=0.05,
+    ... )
+
+Adjust the passive pre-scan duration::
+
+    >>> found = j1939_scan(sock, noise_listen_time=2.0)
+
+Provide an explicit noise baseline to skip the automatic passive pre-scan::
+
+    >>> noise = j1939_scan_passive(sock, listen_time=2.0)
+    >>> found = j1939_scan(sock, noise_ids=noise)
+
+Force-probe all addresses regardless of background noise::
+
+    >>> found = j1939_scan(sock, force=True)
+
+
+Noise filtering with ``noise_ids`` and ``force``
+-------------------------------------------------
+
+All active scan functions accept two keyword arguments that control noise filtering:
+
+``noise_ids`` (``Optional[Set[int]]``, default ``None``)
+    A set of source addresses already known to be present on the bus (e.g., from
+    ``j1939_scan_passive()``).  For **broadcast** techniques (``addr_claim``,
+    ``ecu_id``) the probe is still sent but any response whose SA is in
+    ``noise_ids`` is silently dropped from the result.  For **unicast/RTS sweep**
+    techniques (``unicast``, ``rts_probe``) the DA is skipped entirely — no probe
+    frame is transmitted.
+
+``force`` (``bool``, default ``False``)
+    When ``True``, noise filtering is disabled completely: all addresses are probed
+    and all responses are reported, regardless of ``noise_ids``.
+
+Examples::
+
+    # Suppress three known-noisy CAs from a unicast sweep
+    >>> found = j1939_scan_unicast(
+    ...     sock,
+    ...     scan_range=range(0x00, 0xFE),
+    ...     noise_ids={0x10, 0x27, 0x49},
+    ...     sniff_time=0.05,
+    ... )
+
+    # Probe everything, even if already seen on the bus
+    >>> found = j1939_scan_unicast(
+    ...     sock,
+    ...     scan_range=range(0x00, 0xFE),
+    ...     noise_ids={0x10, 0x27, 0x49},
+    ...     force=True,
+    ...     sniff_time=0.05,
+    ... )
+
+.. note::
+    When ``noise_ids`` is passed explicitly to ``j1939_scan()``, the automatic
+    passive pre-scan is skipped.  Pass ``noise_ids=set()`` to suppress the
+    pre-scan while keeping noise filtering on (but with an empty initial baseline).
+
+
+Bus-load pacing
+---------------
+
+All per-address probe functions (``j1939_scan_unicast``, ``j1939_scan_rts_probe``)
+and the DM scanner (``j1939_scan_dm``, ``j1939_scan_dm_pgn``) automatically pace
+their probe rate so that the scanner's contribution to the bus stays within a
+configurable fraction of the total bitrate.  The broadcast methods
+(``j1939_scan_addr_claim``, ``j1939_scan_ecu_id``) accept the same parameters for
+API uniformity, but do not apply pacing because they send only a single probe frame.
+
+``bitrate`` (``int``, default ``250000``)
+    CAN bus bitrate in bit/s.  SAE J1939 mandates 250 kbit/s; adjust when testing
+    on 500 kbit/s or 1 Mbit/s buses.
+
+``busload`` (``float``, default ``0.05``)
+    Maximum fraction of bus capacity (0 < *busload* ≤ 1.0) the scanner may
+    consume, counting both the outgoing probe frame and the expected response
+    frame.  The default of ``0.05`` (5 %) is conservative and safe for live
+    production buses.  Increase it for faster scans on quiet or virtual
+    interfaces.  A value of ``1.0`` means no artificial pacing delay is added.
+
+The pacing formula counts the fixed-field bits of a CAN extended frame
+(67 bits of overhead plus 8 bits per data byte — no bit-stuffing overhead),
+computes the minimum cycle time for the configured budget, and sleeps for any
+remaining time after the per-probe sniff window::
+
+    >>> # Conservative 2 % bus load scan
+    >>> found = j1939_scan_unicast(sock, sniff_time=0.05,
+    ...                           bitrate=250000, busload=0.02)
+
+    >>> # Fast scan on a test bench – allow 50 % bus load
+    >>> found = j1939_scan_unicast(sock, sniff_time=0.05,
+    ...                           bitrate=250000, busload=0.50)
+
+    >>> # 500 kbit/s bus at 10 % load
+    >>> found = j1939_scan(sock, sniff_time=0.05,
+    ...                    bitrate=500000, busload=0.10)
+
+
+J1939 Diagnostic Message (DM) Scanner
+---------------------------------------
+
+The ``j1939_scan_dm`` function probes a single ECU (identified by its
+Destination Address) to discover which SAE J1939-73 Diagnostic Messages it
+supports.  For each PGN in the built-in table the scanner sends a unicast
+Request (PGN 59904) and classifies the reply:
+
+- **Positive response** — the ECU replies with the requested PGN.
+- **NACK** — the ECU replies with an Acknowledgment (PGN 0xE800), control
+  byte 0x01 (Negative Acknowledgment).
+- **Timeout** — the ECU does not reply within *sniff_time* seconds.
+
+Probe a target ECU for all eight standard DMs::
+
+    >>> from scapy.contrib.automotive.j1939.j1939_dm_scanner import (
+    ...     j1939_scan_dm,
+    ... )
+    >>> sock = CANSocket("can0")
+    >>> results = j1939_scan_dm(sock, target_da=0x00)
+    >>> for name, res in sorted(results.items()):
+    ...     status = "supported" if res.supported else res.error
+    ...     print("{} (PGN 0x{:04X}): {}".format(name, res.pgn, status))
+    DM1 (PGN 0xFECA): supported
+    DM2 (PGN 0xFECB): NACK
+    DM3 (PGN 0xFECC): Timeout
+
+Scan only a subset of DMs::
+
+    >>> results = j1939_scan_dm(sock, target_da=0x00, pgns=["DM1", "DM5"])
+
+Probe a single PGN directly::
+
+    >>> from scapy.contrib.automotive.j1939.j1939_dm_scanner import (
+    ...     j1939_scan_dm_pgn, J1939_DM_PGNS,
+    ... )
+    >>> res = j1939_scan_dm_pgn(sock, target_da=0x00,
+    ...                         pgn=J1939_DM_PGNS["DM1"], dm_name="DM1")
+    >>> print(res)
+    <DmScanResult dm=DM1 pgn=0xFECA supported=True error=None>
+
+Both ``j1939_scan_dm`` and ``j1939_scan_dm_pgn`` accept ``bitrate`` and
+``busload`` to pace the probe rate (see `Bus-load pacing`_ above)::
+
+    >>> # Scan at most 10 % of a 250 kbit/s bus
+    >>> results = j1939_scan_dm(sock, target_da=0x00,
+    ...                         bitrate=250000, busload=0.10)
+
+
 ======================================
 
 AutoSAR SecOC is a security architecture protecting communication between ECUs in a vehicle from cyber-attacks.
