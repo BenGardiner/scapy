@@ -1475,16 +1475,17 @@ collect the set of source addresses already present on the bus.  Those addresses
 excluded from probing and from the returned results.
 
 The returned dictionary maps each **newly-discovered** source address to a record with
-keys ``"method"`` (the first technique that found the CA) and ``"packet"`` (the first
-CAN frame received from it).
+keys ``"methods"`` (a list of **all** techniques that detected the CA, in order of
+first detection) and ``"packet"`` (the first CAN frame received from it).  A CA
+visible to multiple scan techniques will appear in all of their names.
 
 Quick scan using all four techniques::
 
     >>> found = j1939_scan(sock)
     >>> for sa, info in sorted(found.items()):
-    ...     print("SA=0x{:02X}  found_by={}".format(sa, info["method"]))
-    SA=0x10  found_by=addr_claim
-    SA=0x49  found_by=unicast
+    ...     print("SA=0x{:02X}  found_by={}".format(sa, info["methods"]))
+    SA=0x10  found_by=['addr_claim', 'unicast', 'rts_probe']
+    SA=0x49  found_by=['unicast']
 
 Select specific techniques and tune timing::
 

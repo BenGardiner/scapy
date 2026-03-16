@@ -63,7 +63,7 @@ Usage::
     >>> sock = CANSocket("can0")
     >>> found = j1939_scan(sock, methods=["addr_claim", "unicast"])
     >>> for sa, info in found.items():
-    ...     print("SA=0x{:02X}  found_by={}".format(sa, info["method"]))
+    ...     print("SA=0x{:02X}  found_by={}".format(sa, info["methods"]))
 """
 
 import struct
@@ -77,6 +77,7 @@ from typing import (
     List,
     Optional,
     Set,
+    cast,
 )
 
 from scapy.layers.can import CAN
@@ -537,7 +538,9 @@ def j1939_scan(
     Runs each requested scan method and merges the results.  The returned
     dictionary maps each discovered source address to a dict with keys:
 
-    - ``"method"`` (str): name of the first technique that found this CA
+    - ``"methods"`` (List[str]): list of all techniques that found this CA,
+      in the order they detected it.  A CA discovered by more than one
+      technique will appear in all of their names.
     - ``"packet"`` (CAN): the first CAN response received from this CA
 
     By default, before running any active probe the function performs a
@@ -569,13 +572,14 @@ def j1939_scan(
                     (default 250000 for J1939)
     :param busload: maximum scanner bus-load fraction passed to unicast / RTS
                     methods (default 0.05 = 5 %)
-    :returns: dict mapping SA (int) to ``{"method": str, "packet": CAN}``
+    :returns: dict mapping SA (int) to
+              ``{"methods": List[str], "packet": CAN}``
 
     Example::
 
         >>> found = j1939_scan(sock)
         >>> for sa, info in sorted(found.items()):
-        ...     print("SA=0x{:02X} via {}".format(sa, info["method"]))
+        ...     print("SA=0x{:02X} via {}".format(sa, info["methods"]))
     """
     if methods is None:
         methods = list(SCAN_METHODS)
@@ -606,7 +610,13 @@ def j1939_scan(
                 if verbose:
                     log_j1939.info(
                         "j1939_scan: found SA=0x%02X via %s", sa, method_name)
-                results[sa] = {"method": method_name, "packet": pkt}
+                results[sa] = {"methods": [method_name], "packet": pkt}
+            else:
+                if verbose:
+                    log_j1939.info(
+                        "j1939_scan: SA=0x%02X also detected via %s",
+                        sa, method_name)
+                cast(List[str], results[sa]["methods"]).append(method_name)
 
     if "addr_claim" in methods:
         if stop_event is not None and stop_event.is_set():

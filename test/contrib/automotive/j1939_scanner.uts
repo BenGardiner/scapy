@@ -324,7 +324,7 @@ def test_scan_invalid_method():
 
 test_scan_invalid_method()
 
-= j1939_scan: merges results from multiple methods; first discoverer wins
+= j1939_scan: merges results from multiple methods; addr_claim is first discoverer
 # addr_claim finds SA=0x10 first; unicast also gets a spurious 0x10 response
 sock = TestSocket(CAN)
 # Response for addr_claim (SA=0x10)
@@ -337,11 +337,11 @@ found = j1939_scan(sock, scan_range=[0x10], methods=["addr_claim", "unicast"],
                    broadcast_listen_time=0.1, sniff_time=0.02, noise_ids=set())
 assert 0x10 in found, "SA=0x10 should be found"
 # First method that found it should be addr_claim
-assert found[0x10]["method"] == "addr_claim", \
-    "Expected addr_claim but got {}".format(found[0x10]["method"])
+assert found[0x10]["methods"][0] == "addr_claim", \
+    "Expected addr_claim but got {}".format(found[0x10]["methods"][0])
 cleanup_testsockets()
 
-= j1939_scan: result dict has 'method' and 'packet' keys
+= j1939_scan: result dict has 'methods' and 'packet' keys
 sock = TestSocket(CAN)
 resp_can_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x11)
 sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
@@ -349,9 +349,9 @@ sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
 # noise_ids=set() bypasses the passive pre-scan so the pre-injected response is available.
 found = j1939_scan(sock, methods=["addr_claim"], broadcast_listen_time=0.1, noise_ids=set())
 assert 0x11 in found
-assert "method" in found[0x11], "Expected 'method' key"
+assert "methods" in found[0x11], "Expected 'methods' key"
 assert "packet" in found[0x11], "Expected 'packet' key"
-assert found[0x11]["method"] == "addr_claim"
+assert found[0x11]["methods"] == ["addr_claim"]
 cleanup_testsockets()
 
 = j1939_scan: stop_event halts scan immediately
@@ -379,7 +379,7 @@ sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
 found = j1939_scan(sock, methods=["unicast"], scan_range=[0x30], sniff_time=0.1,
                    noise_ids=set())
 assert 0x30 in found
-assert found[0x30]["method"] == "unicast"
+assert found[0x30]["methods"] == ["unicast"]
 cleanup_testsockets()
 
 
@@ -653,7 +653,76 @@ def test_j1939_scan_auto_passive():
 test_j1939_scan_auto_passive()
 
 
-+ Pacing helpers
++ j1939_scan – multi-method accumulation
+
+= j1939_scan: SA detected by two methods accumulates both in methods list
+def test_multi_method_accumulation():
+    sock = TestSocket(CAN)
+    # Inject addr_claim response for SA=0x15
+    resp_can_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x15)
+    sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                            data=b'\x00' * 8)))
+    # Also inject unicast response for the same SA=0x15
+    sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                            data=b'\x00' * 8)))
+    found = j1939_scan(sock, scan_range=[0x15],
+                       methods=["addr_claim", "unicast"],
+                       broadcast_listen_time=0.1, sniff_time=0.1,
+                       noise_ids=set())
+    assert 0x15 in found
+    # addr_claim must be first; unicast must also be present
+    assert "addr_claim" in found[0x15]["methods"], \
+        "addr_claim should be in methods: {}".format(found[0x15]["methods"])
+    assert "unicast" in found[0x15]["methods"], \
+        "unicast should be in methods: {}".format(found[0x15]["methods"])
+    assert found[0x15]["methods"][0] == "addr_claim", \
+        "First detection should be addr_claim"
+    cleanup_testsockets()
+
+test_multi_method_accumulation()
+
+= j1939_scan: methods list has no duplicates when SA detected once
+def test_single_detection_methods_list():
+    sock = TestSocket(CAN)
+    resp_can_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x16)
+    sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                            data=b'\x00' * 8)))
+    found = j1939_scan(sock, methods=["addr_claim"],
+                       broadcast_listen_time=0.1, noise_ids=set())
+    assert 0x16 in found
+    assert found[0x16]["methods"] == ["addr_claim"], \
+        "Single detection should give ['addr_claim'], got: {}".format(
+            found[0x16]["methods"])
+    cleanup_testsockets()
+
+test_single_detection_methods_list()
+
+= j1939_scan: two different SAs detected by different methods have separate lists
+def test_two_sas_different_methods():
+    sock = TestSocket(CAN)
+    # SA=0x17 only in addr_claim
+    resp17 = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x17)
+    sock.ins.send(bytes(CAN(identifier=resp17, flags="extended",
+                            data=b'\x00' * 8)))
+    # SA=0x18 only in unicast
+    resp18 = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x18)
+    sock.ins.send(bytes(CAN(identifier=resp18, flags="extended",
+                            data=b'\x00' * 8)))
+    found = j1939_scan(sock, scan_range=[0x18],
+                       methods=["addr_claim", "unicast"],
+                       broadcast_listen_time=0.1, sniff_time=0.1,
+                       noise_ids=set())
+    assert 0x17 in found
+    assert 0x18 in found
+    assert found[0x17]["methods"] == ["addr_claim"], \
+        "SA=0x17 methods: {}".format(found[0x17]["methods"])
+    assert found[0x18]["methods"] == ["unicast"], \
+        "SA=0x18 methods: {}".format(found[0x18]["methods"])
+    cleanup_testsockets()
+
+test_two_sas_different_methods()
+
+
 ~ automotive_comm
 
 = _can_frame_bits: DLC=0 → 67 overhead bits only
