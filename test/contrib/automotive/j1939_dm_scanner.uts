@@ -360,3 +360,89 @@ cleanup_testsockets()
 #   delay = (91+131) / (250000 * 0.005) = 222/1250 = 0.1776 s
 d = _inter_probe_delay(250000, 0.005, 3, 8, 0.0)
 assert abs(d - 0.1776) < 1e-4, "Expected ~0.1776 s, got {}".format(d)
+
+
++ reconnect_handler and reset_handler
+~ automotive_comm
+
+= scan_dm: reset_handler is called between probes
+call_log = []
+
+def my_reset():
+    call_log.append("reset")
+
+sock = TestSocket(CAN)
+results = j1939_scan_dm(sock, target_da=0x00, pgns=["DM1", "DM2"],
+                        reset_handler=my_reset, sniff_time=0.02)
+# Two PGNs → one reset call between them
+assert call_log == ["reset"], "Expected 1 reset call, got: {}".format(call_log)
+cleanup_testsockets()
+
+= scan_dm: reset_handler called N-1 times for N pgns
+call_log2 = []
+
+def my_reset2():
+    call_log2.append("reset")
+
+sock = TestSocket(CAN)
+results = j1939_scan_dm(sock, target_da=0x00, pgns=["DM1", "DM2", "DM3"],
+                        reset_handler=my_reset2, sniff_time=0.02)
+# 3 PGNs → 2 reset calls
+assert len(call_log2) == 2, "Expected 2 reset calls, got: {}".format(call_log2)
+cleanup_testsockets()
+
+= scan_dm: reset_handler not called for single-pgn scan
+call_log3 = []
+
+def my_reset3():
+    call_log3.append("reset")
+
+sock = TestSocket(CAN)
+results = j1939_scan_dm(sock, target_da=0x00, pgns=["DM1"],
+                        reset_handler=my_reset3, sniff_time=0.02)
+assert call_log3 == [], "Expected no reset calls for single pgn"
+cleanup_testsockets()
+
+= scan_dm: reconnect_handler is called after reset_handler and returns new socket
+call_log4 = []
+
+def my_reset4():
+    call_log4.append("reset")
+
+new_sock_holder = []
+
+def my_reconnect():
+    call_log4.append("reconnect")
+    s = TestSocket(CAN)
+    new_sock_holder.append(s)
+    return s
+
+sock = TestSocket(CAN)
+results = j1939_scan_dm(sock, target_da=0x00, pgns=["DM1", "DM2"],
+                        reset_handler=my_reset4, reconnect_handler=my_reconnect,
+                        sniff_time=0.02)
+assert call_log4 == ["reset", "reconnect"], \
+    "Expected reset+reconnect, got: {}".format(call_log4)
+assert len(new_sock_holder) == 1
+cleanup_testsockets()
+
+= scan_dm: reconnect_handler alone (no reset_handler) is accepted
+reconnect_log = []
+
+def my_reconnect_only():
+    reconnect_log.append("reconnect")
+    return TestSocket(CAN)
+
+sock = TestSocket(CAN)
+results = j1939_scan_dm(sock, target_da=0x00, pgns=["DM1", "DM2"],
+                        reconnect_handler=my_reconnect_only, sniff_time=0.02)
+assert reconnect_log == ["reconnect"], \
+    "Expected 1 reconnect call, got: {}".format(reconnect_log)
+cleanup_testsockets()
+
+= scan_dm: no reset/reconnect handlers → same behaviour as before
+sock = TestSocket(CAN)
+results = j1939_scan_dm(sock, target_da=0x00, pgns=["DM1"],
+                        sniff_time=0.02)
+assert "DM1" in results
+cleanup_testsockets()

@@ -314,7 +314,7 @@ class J1939SoftSocket(SuperSocket):
         rx_pgn=None,       # type: Optional[int]
         priority=6,        # type: int
         bs=0,              # type: int
-        listen_only=False, # type: bool
+        listen_only=False,  # type: bool
         basecls=J1939,     # type: Type[Packet]
         name=None,         # type: Optional[int]
         preferred_address=None,  # type: Optional[int]
@@ -385,7 +385,7 @@ class J1939SoftSocket(SuperSocket):
 
     @staticmethod
     def select(sockets, remain=None):  # type: ignore[override]
-        # type: (List[Union[SuperSocket, ObjectPipe[Any]]], Optional[float]) -> List[Union[SuperSocket, ObjectPipe[Any]]]
+        # type: (List[Union[SuperSocket, ObjectPipe[Any]]], Optional[float]) -> List[Union[SuperSocket, ObjectPipe[Any]]]  # noqa: E501
         """Called during sendrecv() to wait for sockets to be ready."""
         obj_pipes = [  # type: ignore[var-annotated]
             x.impl.rx_queue for x in sockets if
@@ -617,7 +617,7 @@ class J1939SocketImplementation:
         rx_pgn=0,          # type: int
         priority=6,        # type: int
         bs=0,              # type: int
-        listen_only=False, # type: bool
+        listen_only=False,  # type: bool
         name=None,         # type: Optional[int]
         preferred_address=None,  # type: Optional[int]
     ):
@@ -677,7 +677,7 @@ class J1939SocketImplementation:
 
         # Miscellaneous state
         self.filter_warning_emitted = False
-        self.last_rx_sa = 0  # last received source address (used by J1939SoftSocket.recv)
+        self.last_rx_sa = 0  # last received SA (used by J1939SoftSocket.recv)
 
         # I/O queues
         self.rx_queue = ObjectPipe[Tuple[bytes, Union[float, EDecimal]]]()
@@ -889,7 +889,10 @@ class J1939SocketImplementation:
             ps = da
         else:
             ps = pgn & 0xFF
-        return ((self.priority & 0x7) << 26) | (dp << 24) | (pf << 16) | (ps << 8) | (sa & 0xFF)
+        return (
+            ((self.priority & 0x7) << 26) | (dp << 24) |
+            (pf << 16) | (ps << 8) | (sa & 0xFF)
+        )
 
     # ------------------------------------------------------------------
     # CAN receive dispatch
@@ -1148,8 +1151,9 @@ class J1939SocketImplementation:
     def _recv_abort(self, data, sa, da):
         # type: (bytes, int, int) -> None
         """Handle a received TP.Conn_Abort frame."""
-        log_j1939.warning("TP.Conn_Abort received from SA=0x%02X, reason=0x%02X",
-                           sa, data[1] if len(data) > 1 else 0xFF)
+        log_j1939.warning(
+            "TP.Conn_Abort received from SA=0x%02X, reason=0x%02X",
+            sa, data[1] if len(data) > 1 else 0xFF)
         # Reset both TX and RX state machines
         if self.rx_timeout_handle is not None:
             try:
@@ -1352,8 +1356,10 @@ class J1939SocketImplementation:
                 self.bam_dt_gap, self._tx_timer_handler)
         else:
             # CMDT — send RTS
-            log_j1939.debug("Starting CMDT RTS: %d bytes, %d packets, PGN=0x%05X, DA=0x%02X",
-                            length, num_packets, pgn, da)
+            log_j1939.debug(
+                "Starting CMDT RTS: %d bytes, %d packets, "
+                "PGN=0x%05X, DA=0x%02X",
+                length, num_packets, pgn, da)
             rts_data = (struct.pack("B", TP_CM_RTS) +
                         struct.pack("<H", length) +
                         struct.pack("B", num_packets) +

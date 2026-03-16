@@ -34,15 +34,11 @@ Usage example::
     8
 """
 
-import struct
-
 # Typing imports
 from typing import (
     Any,
     List,
-    Optional,
     Tuple,
-    TYPE_CHECKING,
 )
 
 from scapy.error import Scapy_Exception
@@ -59,11 +55,7 @@ from scapy.packet import Packet
 from scapy.contrib.automotive.j1939.j1939_soft_socket import (
     J1939,
     J1939_GLOBAL_ADDRESS,
-    log_j1939,
 )
-
-if TYPE_CHECKING:
-    from scapy.contrib.automotive.j1939 import J1939Socket
 
 # ---------------------------------------------------------------------------
 # PGN constants for Diagnostic Messages (J1939-73)

@@ -1639,6 +1639,41 @@ Both ``j1939_scan_dm`` and ``j1939_scan_dm_pgn`` accept ``bitrate`` and
     ...                         bitrate=250000, busload=0.10)
 
 
+Reset and reconnect handlers
+-----------------------------
+
+``j1939_scan_dm`` mirrors the interface of
+:class:`~scapy.contrib.automotive.uds_scan.UDS_Scanner` and accepts two
+optional handler callbacks to manage ECU state between DM probes:
+
+``reset_handler`` (``Optional[Callable[[], None]]``, default ``None``)
+    Called between each pair of DM PGN probes to reset the target ECU to a
+    known state (e.g. toggle an ignition line, trigger a power cycle, or send a
+    hardware-reset signal).  Called *N − 1* times when scanning *N* PGNs.
+
+``reconnect_handler`` (``Optional[Callable[[], SuperSocket]]``, default ``None``)
+    Called immediately after *reset_handler* (when provided) to re-establish the
+    CAN connection.  Must return a new
+    :class:`~scapy.supersocket.SuperSocket`; all subsequent probes use the
+    returned socket.  Can also be provided without *reset_handler* when the ECU
+    spontaneously drops the connection after each diagnostic exchange.
+
+Example — reset and reconnect between every DM probe::
+
+    >>> def reset():
+    ...     pass  # e.g., toggle GPIO reset pin
+    >>> def reconnect():
+    ...     return CANSocket("can0")
+    >>> results = j1939_scan_dm(
+    ...     reconnect(), target_da=0x00,
+    ...     reset_handler=reset,
+    ...     reconnect_handler=reconnect,
+    ... )
+    >>> for name, res in sorted(results.items()):
+    ...     status = "supported" if res.supported else res.error
+    ...     print("{}: {}".format(name, status))
+
+
 ======================================
 
 AutoSAR SecOC is a security architecture protecting communication between ECUs in a vehicle from cyber-attacks.

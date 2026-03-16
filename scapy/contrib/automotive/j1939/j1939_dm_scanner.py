@@ -62,6 +62,7 @@ from threading import Event
 
 # Typing imports
 from typing import (
+    Callable,
     Dict,
     List,
     Optional,
@@ -82,7 +83,6 @@ from scapy.contrib.automotive.j1939.j1939_soft_socket import (
 from scapy.contrib.automotive.j1939.j1939_scanner import (
     _J1939_DEFAULT_BITRATE,
     _J1939_DEFAULT_BUSLOAD,
-    _can_frame_bits,  # noqa: F401 – re-exported for tests
     _inter_probe_delay,
 )
 
@@ -106,12 +106,12 @@ _DM_SCAN_PRIORITY = 6
 #: Ordered mapping from DM name (str) to PGN number (int).
 #: All entries are PDU2 (PF byte >= 0xF0) broadcast-capable messages.
 J1939_DM_PGNS = {
-    "DM1":  0xFECA,  # 65226 - Active Diagnostic Trouble Codes
-    "DM2":  0xFECB,  # 65227 - Previously Active DTCs
-    "DM3":  0xFECC,  # 65228 - DTC Clear/Reset for Previously Active DTCs
-    "DM4":  0xFECD,  # 65229 - Freeze Frame Parameters
-    "DM5":  0xFECE,  # 65230 - Diagnostic Readiness 1
-    "DM6":  0xFECF,  # 65231 - Emission-Related Pending DTCs
+    "DM1": 0xFECA,   # 65226 - Active Diagnostic Trouble Codes
+    "DM2": 0xFECB,   # 65227 - Previously Active DTCs
+    "DM3": 0xFECC,   # 65228 - DTC Clear/Reset for Previously Active DTCs
+    "DM4": 0xFECD,   # 65229 - Freeze Frame Parameters
+    "DM5": 0xFECE,   # 65230 - Diagnostic Readiness 1
+    "DM6": 0xFECF,   # 65231 - Emission-Related Pending DTCs
     "DM11": 0xFED3,  # 65235 - DTC Clear/Reset for Active DTCs
     "DM12": 0xFED4,  # 65236 - Emission-Related Active DTCs
 }
@@ -276,6 +276,8 @@ def j1939_scan_dm(
     stop_event=None,                        # type: Optional[Event]
     bitrate=_J1939_DEFAULT_BITRATE,         # type: int
     busload=_J1939_DEFAULT_BUSLOAD,         # type: float
+    reset_handler=None,                     # type: Optional[Callable[[], None]]
+    reconnect_handler=None,                 # type: Optional[Callable[[], SuperSocket]]
 ):
     # type: (...) -> Dict[str, DmScanResult]
     """Probe *target_da* for all (or a selected subset of) Diagnostic Message PGNs.
@@ -283,6 +285,13 @@ def j1939_scan_dm(
     Iterates over the DM names in *pgns* (or all entries in
     :data:`J1939_DM_PGNS` when *pgns* is ``None``), calling
     :func:`j1939_scan_dm_pgn` for each one and collecting the results.
+
+    If *reset_handler* is provided it is called between each pair of DM PGN
+    probes to reset the target ECU to a known state.  If *reconnect_handler*
+    is also provided it is called immediately after the reset to obtain a fresh
+    socket; subsequent probes will use the returned socket.  This mirrors the
+    interface of :class:`~scapy.contrib.automotive.uds_scan.UDS_Scanner` where
+    ``reset_handler`` and ``reconnect_handler`` serve the same role.
 
     :param sock: raw CAN socket to use for sending / sniffing
     :param target_da: destination address of the ECU to probe (0x00–0xFD)
@@ -297,6 +306,14 @@ def j1939_scan_dm(
     :param bitrate: CAN bus bitrate in bit/s (default 250000 for J1939)
     :param busload: maximum fraction of bus capacity the scanner may consume
                     (default 0.05 = 5 %)
+    :param reset_handler: optional callable (no arguments, no return value)
+                          to reset the target ECU between DM probes.  Called
+                          after each probe except the last.
+    :param reconnect_handler: optional callable (no arguments) that returns a
+                              new :class:`~scapy.supersocket.SuperSocket`.
+                              Called after *reset_handler* when provided;
+                              the returned socket is used for all subsequent
+                              probes.
     :returns: dict mapping each DM name (str) to its :class:`DmScanResult`
 
     Example::
@@ -305,6 +322,18 @@ def j1939_scan_dm(
         >>> for name, res in sorted(results.items()):
         ...     if res.supported:
         ...         print("[+] {} (PGN 0x{:04X})".format(name, res.pgn))
+
+    Example with reset and reconnect::
+
+        >>> def reset():
+        ...     pass  # reset ECU via HW reset line or similar
+        >>> def reconnect():
+        ...     return CANSocket("can0")
+        >>> results = j1939_scan_dm(
+        ...     reconnect(), target_da=0x00,
+        ...     reset_handler=reset,
+        ...     reconnect_handler=reconnect,
+        ... )
     """
     if pgns is None:
         pgns = list(J1939_DM_PGNS.keys())
@@ -316,12 +345,14 @@ def j1939_scan_dm(
                     name, list(J1939_DM_PGNS.keys())))
 
     results = {}  # type: Dict[str, DmScanResult]
+    active_sock = sock  # may be replaced if reconnect_handler is used
+    num_pgns = len(pgns)
 
-    for dm_name in pgns:
+    for i, dm_name in enumerate(pgns):
         if stop_event is not None and stop_event.is_set():
             break
         results[dm_name] = j1939_scan_dm_pgn(
-            sock,
+            active_sock,
             target_da=target_da,
             pgn=J1939_DM_PGNS[dm_name],
             dm_name=dm_name,
@@ -333,6 +364,14 @@ def j1939_scan_dm(
             bitrate=bitrate,
             busload=busload,
         )
+        # Between probes: reset target and/or reconnect if handlers provided
+        if i < num_pgns - 1:
+            if reset_handler is not None:
+                log_j1939.debug("dm_scan: calling reset_handler between probes")
+                reset_handler()
+            if reconnect_handler is not None:
+                log_j1939.debug("dm_scan: calling reconnect_handler")
+                active_sock = reconnect_handler()
 
     return results
 
