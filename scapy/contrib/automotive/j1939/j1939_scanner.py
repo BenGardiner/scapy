@@ -591,6 +591,7 @@ def j1939_scan_uds(
                       data=_UDS_TESTER_PRESENT_REQ))
         log_j1939.debug("uds: probing DA=0x%02X", da)
 
+        # Capture the loop variable explicitly to avoid closure capture issues
         _da = da
 
         def _rx(pkt, _da=_da):
