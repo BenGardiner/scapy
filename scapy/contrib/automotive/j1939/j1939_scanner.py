@@ -35,9 +35,9 @@ Technique 4 — TP.CM RTS Probing
 
 Technique 5 — UDS TesterPresent Probe
     Iterates through destination addresses 0x00–0xFD, sending a UDS
-    TesterPresent request (SID 0x3E, sub-function 0x00) over J1939
-    Proprietary A (PGN 0xDA00).  Nodes that implement UDS reply with a
-    positive response (SID 0x7E).
+    TesterPresent request (SID 0x3E, sub-function 0x00) over both J1939
+    Proprietary A (PGN 0xDA00) and Proprietary B (PGN 0xDB00).  Nodes that
+    implement UDS reply with a positive response (SID 0x7E).
 
 Detection Matrix
 ----------------
@@ -61,7 +61,8 @@ response it expects from an active CA in order to detect it.
 |            | sent to each DA                         | TP_Conn_Abort (ctrl=0xFF) from probed DA |
 +------------+-----------------------------------------+------------------------------------------+
 | uds        | UDS TesterPresent (PF=0xDA, DA=ECU-SA)  | UDS positive response 02 7E 00           |
-|            | payload 02 3E 00                        | from probed DA                           |
+|            | AND (PF=0xDB, DA=ECU-SA)                | from probed DA                           |
+|            | payload 02 3E 00                        |                                          |
 +------------+-----------------------------------------+------------------------------------------+
 
 Usage::
@@ -126,6 +127,12 @@ PGN_PROPRIETARY_A = 0xDA00  # PF = 0xDA
 
 #: PF byte for Proprietary A (0xDA)
 J1939_PF_PROPRIETARY_A = 0xDA
+
+#: PGN for J1939 Proprietary B (PDU1 peer-to-peer) – second UDS probe channel
+PGN_PROPRIETARY_B = 0xDB00  # PF = 0xDB
+
+#: PF byte for Proprietary B (0xDB)
+J1939_PF_PROPRIETARY_B = 0xDB
 
 #: UDS TesterPresent request payload (SID=0x3E, subfunction=0x00, length=2)
 _UDS_TESTER_PRESENT_REQ = b'\x02\x3e\x00'
@@ -553,10 +560,11 @@ def j1939_scan_uds(
     """Enumerate CAs by sending a UDS TesterPresent request to each DA.
 
     For each destination address *da* in *scan_range*, sends a UDS
-    TesterPresent request (SID 0x3E, sub-function 0x00) carried over J1939
-    Proprietary A (PGN 0xDA00, PF=0xDA).  A node that implements UDS replies
-    with a positive response frame whose first three payload bytes are
-    ``02 7E 00``.  Only well-formed positive responses are recorded.
+    TesterPresent request (SID 0x3E, sub-function 0x00) carried over **both**
+    J1939 Proprietary A (PGN 0xDA00, PF=0xDA) and Proprietary B (PGN 0xDB00,
+    PF=0xDB).  A node that implements UDS replies with a positive response
+    frame whose first three payload bytes are ``02 7E 00``.  Only well-formed
+    positive responses are recorded.
 
     The inter-probe gap is automatically paced so that the scanner contributes
     at most *busload* × *bitrate* bits per second to the bus.
@@ -584,12 +592,17 @@ def j1939_scan_uds(
         if not force and noise_ids is not None and da in noise_ids:
             log_j1939.debug("uds: skipping noise DA=0x%02X", da)
             continue
-        # CAN-ID: priority=6, PF=0xDA (Proprietary A), DA=da, SA=src_addr
-        can_id = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_PROPRIETARY_A,
-                               da, src_addr)
-        sock.send(CAN(identifier=can_id, flags="extended",
+        # Send TesterPresent over PGN 0xDA00 (Proprietary A)
+        can_id_a = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_PROPRIETARY_A,
+                                  da, src_addr)
+        sock.send(CAN(identifier=can_id_a, flags="extended",
                       data=_UDS_TESTER_PRESENT_REQ))
-        log_j1939.debug("uds: probing DA=0x%02X", da)
+        # Send TesterPresent over PGN 0xDB00 (Proprietary B)
+        can_id_b = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_PROPRIETARY_B,
+                                  da, src_addr)
+        sock.send(CAN(identifier=can_id_b, flags="extended",
+                      data=_UDS_TESTER_PRESENT_REQ))
+        log_j1939.debug("uds: probing DA=0x%02X on PGN 0xDA00 and 0xDB00", da)
 
         # Capture the loop variable explicitly to avoid closure capture issues
         _da = da
@@ -607,8 +620,10 @@ def j1939_scan_uds(
 
         sock.sniff(prn=_rx, timeout=sniff_time, store=False)
 
-        # Pace the probe rate: request=3 bytes (DLC 3), response=3 bytes (DLC 3)
-        _extra = _inter_probe_delay(bitrate, busload, 3, 3, sniff_time)
+        # Pace the probe rate: two 3-byte requests + one 3-byte response
+        _bits = 3 * _can_frame_bits(3)
+        _cycle = _bits / (bitrate * busload)
+        _extra = max(0.0, _cycle - sniff_time)
         if _extra > 0.0:
             time.sleep(_extra)
 
@@ -818,5 +833,7 @@ __all__ = [
     "PGN_ECU_ID",
     "PGN_PROPRIETARY_A",
     "J1939_PF_PROPRIETARY_A",
+    "PGN_PROPRIETARY_B",
+    "J1939_PF_PROPRIETARY_B",
     "SCAN_METHODS",
 ]
