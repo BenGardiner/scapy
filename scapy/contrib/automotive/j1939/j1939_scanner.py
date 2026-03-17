@@ -215,7 +215,7 @@ def _inter_probe_delay(bitrate, busload, tx_dlc, rx_dlc, sniff_time):
 
 def j1939_scan_passive(
     sock,                  # type: SuperSocket
-    listen_time=1.0,       # type: float
+    listen_time=2.0,       # type: float
     stop_event=None,       # type: Optional[Event]
 ):
     # type: (...) -> Set[int]
