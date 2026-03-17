@@ -25,11 +25,12 @@ from scapy.contrib.automotive.j1939.j1939_scanner import (
     j1939_scan_unicast,
     j1939_scan_rts_probe,
     j1939_scan_uds,
+    J1939_NULL_ADDRESSES,
     PGN_ECU_ID,
-    PGN_PROPRIETARY_A,
-    J1939_PF_PROPRIETARY_A,
-    PGN_PROPRIETARY_B,
-    J1939_PF_PROPRIETARY_B,
+    PGN_DIAG_A,
+    J1939_PF_DIAG_A,
+    PGN_DIAG_B,
+    J1939_PF_DIAG_B,
     SCAN_METHODS,
     _build_request_payload,
     _can_frame_bits,
@@ -60,6 +61,10 @@ assert PGN_ECU_ID == 0xFDC5
 = SCAN_METHODS contains all five technique names
 assert set(SCAN_METHODS) == {"addr_claim", "ecu_id", "unicast", "rts_probe", "uds"}
 
+= J1939_NULL_ADDRESSES is [0xF1..0xF9] (9 diagnostic source addresses)
+assert J1939_NULL_ADDRESSES == list(range(0xF1, 0xFA))
+assert len(J1939_NULL_ADDRESSES) == 9
+
 = _build_request_payload encodes PGN_ADDRESS_CLAIMED correctly
 # PGN 60928 = 0xEE00: LE 3 bytes = \x00 \xEE \x00
 payload = _build_request_payload(PGN_ADDRESS_CLAIMED)
@@ -77,7 +82,8 @@ assert payload == b'\xc5\xfd\x00', "Got {}".format(payload.hex())
 def test_addr_claim_probe_frame():
     with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
         tx_sock.pair(monitor)
-        j1939_scan_addr_claim(tx_sock, listen_time=0.0)
+        j1939_scan_addr_claim(tx_sock, listen_time=0.0,
+                              src_addrs=[J1939_NULL_ADDRESS])
         pkts = monitor.sniff(count=1, timeout=0.2)
         assert len(pkts) == 1, "Expected 1 probe frame, got {}".format(len(pkts))
         probe = pkts[0]
@@ -137,7 +143,8 @@ cleanup_testsockets()
 def test_ecu_id_probe_frame():
     with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
         tx_sock.pair(monitor)
-        j1939_scan_ecu_id(tx_sock, listen_time=0.0)
+        j1939_scan_ecu_id(tx_sock, listen_time=0.0,
+                          src_addrs=[J1939_NULL_ADDRESS])
         pkts = monitor.sniff(count=1, timeout=0.2)
         assert len(pkts) == 1
         probe = pkts[0]
@@ -190,7 +197,9 @@ cleanup_testsockets()
 def test_unicast_probe_frames():
     with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
         tx_sock.pair(monitor)
-        j1939_scan_unicast(tx_sock, scan_range=[0x01, 0x02, 0x03], sniff_time=0.0)
+        j1939_scan_unicast(tx_sock, scan_range=[0x01, 0x02, 0x03],
+                           sniff_time=0.0,
+                           src_addrs=[J1939_NULL_ADDRESS])
         pkts = monitor.sniff(count=3, timeout=0.5)
         assert len(pkts) == 3, "Expected 3 probe frames"
         das = set()
@@ -227,7 +236,8 @@ cleanup_testsockets()
 def test_unicast_probe_payload():
     with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
         tx_sock.pair(monitor)
-        j1939_scan_unicast(tx_sock, scan_range=[0x42], sniff_time=0.0)
+        j1939_scan_unicast(tx_sock, scan_range=[0x42], sniff_time=0.0,
+                           src_addrs=[J1939_NULL_ADDRESS])
         pkts = monitor.sniff(count=1, timeout=0.2)
         assert len(pkts) == 1
         assert bytes(pkts[0].data) == _build_request_payload(PGN_ADDRESS_CLAIMED)
@@ -248,7 +258,8 @@ cleanup_testsockets()
 def test_rts_probe_frames():
     with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
         tx_sock.pair(monitor)
-        j1939_scan_rts_probe(tx_sock, scan_range=[0x05, 0x06], sniff_time=0.0)
+        j1939_scan_rts_probe(tx_sock, scan_range=[0x05, 0x06], sniff_time=0.0,
+                             src_addrs=[J1939_NULL_ADDRESS])
         pkts = monitor.sniff(count=2, timeout=0.5)
         assert len(pkts) == 2, "Expected 2 RTS probe frames"
         for pkt in pkts:
@@ -293,7 +304,8 @@ cleanup_testsockets()
 def test_rts_probe_payload_format():
     with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
         tx_sock.pair(monitor)
-        j1939_scan_rts_probe(tx_sock, scan_range=[0x50], sniff_time=0.0)
+        j1939_scan_rts_probe(tx_sock, scan_range=[0x50], sniff_time=0.0,
+                             src_addrs=[J1939_NULL_ADDRESS])
         pkts = monitor.sniff(count=1, timeout=0.2)
         assert len(pkts) == 1
         payload = bytes(pkts[0].data)
@@ -346,7 +358,7 @@ assert found[0x10]["methods"][0] == "addr_claim", \
     "Expected addr_claim but got {}".format(found[0x10]["methods"][0])
 cleanup_testsockets()
 
-= j1939_scan: result dict has 'methods' and 'packet' keys
+= j1939_scan: result dict has 'methods' and 'packets' keys
 sock = TestSocket(CAN)
 resp_can_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x11)
 sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
@@ -355,8 +367,10 @@ sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
 found = j1939_scan(sock, methods=["addr_claim"], broadcast_listen_time=0.1, noise_ids=set())
 assert 0x11 in found
 assert "methods" in found[0x11], "Expected 'methods' key"
-assert "packet" in found[0x11], "Expected 'packet' key"
+assert "packets" in found[0x11], "Expected 'packets' key"
+assert isinstance(found[0x11]["packets"], list), "'packets' must be a list"
 assert found[0x11]["methods"] == ["addr_claim"]
+assert len(found[0x11]["packets"]) == 1, "Single detection: packets list must have 1 entry"
 cleanup_testsockets()
 
 = j1939_scan: stop_event halts scan immediately
@@ -481,7 +495,8 @@ def test_unicast_noise_no_probe_sent():
         tx_sock.pair(monitor)
         # noise_ids = {0x01, 0x02}, scan_range = [0x01, 0x02, 0x03]
         j1939_scan_unicast(tx_sock, scan_range=[0x01, 0x02, 0x03],
-                           noise_ids={0x01, 0x02}, sniff_time=0.0)
+                           noise_ids={0x01, 0x02}, sniff_time=0.0,
+                           src_addrs=[J1939_NULL_ADDRESS])
         pkts = monitor.sniff(count=5, timeout=0.3)
         # Only DA=0x03 should have been probed (1 probe frame)
         assert len(pkts) == 1, "Expected 1 probe (only DA=0x03), got {}".format(len(pkts))
@@ -579,7 +594,8 @@ def test_rts_probe_noise_no_probe():
         tx_sock.pair(monitor)
         # noise_ids = {0x50}, scan_range = [0x50, 0x51]
         j1939_scan_rts_probe(tx_sock, scan_range=[0x50, 0x51],
-                              noise_ids={0x50}, sniff_time=0.0)
+                              noise_ids={0x50}, sniff_time=0.0,
+                              src_addrs=[J1939_NULL_ADDRESS])
         pkts = monitor.sniff(count=5, timeout=0.3)
         # Only DA=0x51 should have received an RTS probe
         assert len(pkts) == 1, "Expected 1 RTS probe (DA=0x51 only), got {}".format(len(pkts))
@@ -743,6 +759,79 @@ def test_two_sas_different_methods():
 test_two_sas_different_methods()
 
 
++ j1939_scan – src_addrs and packets
+
+= addr_claim: default src_addrs sends one probe per address in J1939_NULL_ADDRESSES
+def test_addr_claim_multi_src_addrs():
+    with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
+        tx_sock.pair(monitor)
+        j1939_scan_addr_claim(tx_sock, listen_time=0.0)
+        pkts = monitor.sniff(count=len(J1939_NULL_ADDRESSES), timeout=0.5)
+        assert len(pkts) == len(J1939_NULL_ADDRESSES), \
+            "Expected {} probe frames, got {}".format(
+                len(J1939_NULL_ADDRESSES), len(pkts))
+        sas = [_j1939_decode_can_id(p.identifier)[3] for p in pkts]
+        assert sorted(sas) == sorted(J1939_NULL_ADDRESSES), \
+            "Probe SAs should be J1939_NULL_ADDRESSES, got: {}".format(
+                [hex(s) for s in sas])
+    cleanup_testsockets()
+
+test_addr_claim_multi_src_addrs()
+
+= uds: default src_addrs sends 2*len(J1939_NULL_ADDRESSES) probes per DA
+def test_uds_multi_src_addrs():
+    with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
+        tx_sock.pair(monitor)
+        expected = 2 * len(J1939_NULL_ADDRESSES)
+        j1939_scan_uds(tx_sock, scan_range=[0x50], sniff_time=0.0,
+                       noise_ids=set())
+        pkts = monitor.sniff(count=expected, timeout=0.5)
+        assert len(pkts) == expected, \
+            "Expected {} probes (2 PGNs * {} SAs), got {}".format(
+                expected, len(J1939_NULL_ADDRESSES), len(pkts))
+        probe_sas = {_j1939_decode_can_id(p.identifier)[3] for p in pkts}
+        assert probe_sas == set(J1939_NULL_ADDRESSES), \
+            "Probe SAs must cover all J1939_NULL_ADDRESSES"
+    cleanup_testsockets()
+
+test_uds_multi_src_addrs()
+
+= j1939_scan: packets list is parallel to methods list (one entry per method)
+def test_packets_list_parallel_to_methods():
+    import threading
+    import time
+    sock = TestSocket(CAN)
+    _BROADCAST_TIME = 0.05
+    _INJECT_OFFSET = 0.02
+    def inject_unicast_response():
+        time.sleep(_BROADCAST_TIME + _INJECT_OFFSET)
+        resp = _j1939_can_id(6, 0xEB, J1939_NULL_ADDRESS, 0x19)
+        sock.ins.send(bytes(CAN(identifier=resp, flags="extended",
+                                data=b'\x00' * 8)))
+    resp_addr = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED,
+                               J1939_GLOBAL_ADDRESS, 0x19)
+    sock.ins.send(bytes(CAN(identifier=resp_addr, flags="extended",
+                            data=b'\x00' * 8)))
+    t = threading.Thread(target=inject_unicast_response)
+    t.start()
+    found = j1939_scan(sock, scan_range=[0x19],
+                       methods=["addr_claim", "unicast"],
+                       broadcast_listen_time=_BROADCAST_TIME, sniff_time=0.1,
+                       noise_ids=set())
+    t.join()
+    assert 0x19 in found
+    methods = found[0x19]["methods"]
+    packets = found[0x19]["packets"]
+    assert isinstance(packets, list), "'packets' must be a list"
+    assert len(packets) == len(methods), \
+        "packets and methods must have the same length"
+    assert methods[0] == "addr_claim"
+    assert methods[1] == "unicast"
+    cleanup_testsockets()
+
+test_packets_list_parallel_to_methods()
+
+
 ~ automotive_comm
 
 = _can_frame_bits: DLC=0 → 67 overhead bits only
@@ -830,18 +919,18 @@ test_j1939_scan_pacing_params()
 
 + Technique 5 – UDS TesterPresent Probe
 
-= PGN_PROPRIETARY_A is 0xDA00, J1939_PF_PROPRIETARY_A is 0xDA; PGN_PROPRIETARY_B is 0xDB00, J1939_PF_PROPRIETARY_B is 0xDB
-assert PGN_PROPRIETARY_A == 0xDA00
-assert J1939_PF_PROPRIETARY_A == 0xDA
-assert PGN_PROPRIETARY_B == 0xDB00
-assert J1939_PF_PROPRIETARY_B == 0xDB
+= PGN_DIAG_A is 0xDA00, J1939_PF_DIAG_A is 0xDA; PGN_DIAG_B is 0xDB00, J1939_PF_DIAG_B is 0xDB
+assert PGN_DIAG_A == 0xDA00
+assert J1939_PF_DIAG_A == 0xDA
+assert PGN_DIAG_B == 0xDB00
+assert J1939_PF_DIAG_B == 0xDB
 
-= uds: sends both Proprietary-A and Proprietary-B probe frames per DA
+= uds: sends both Diag-A and Diag-B probe frames per DA with 8-byte padded payload
 def test_uds_probe_frames():
     with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
         tx_sock.pair(monitor)
         j1939_scan_uds(tx_sock, scan_range=[0x20], sniff_time=0.0,
-                       noise_ids=set())
+                       noise_ids=set(), src_addrs=[J1939_NULL_ADDRESS])
         pkts = monitor.sniff(count=2, timeout=0.2)
         assert len(pkts) == 2, "Expected 2 probe frames (0xDA + 0xDB), got {}".format(len(pkts))
         pfs = set()
@@ -851,11 +940,11 @@ def test_uds_probe_frames():
             assert ps == 0x20, "DA (ps) should be 0x20, got 0x{:02X}".format(ps)
             assert sa == J1939_NULL_ADDRESS, \
                 "SA should be 0xFE (null), got 0x{:02X}".format(sa)
-            assert bytes(probe.data) == b'\x02\x3e\x00', \
-                "Payload should be UDS TesterPresent 02 3E 00, got {}".format(
+            assert bytes(probe.data) == b'\x02\x3e\x00\xff\xff\xff\xff\xff', \
+                "Payload should be padded UDS TesterPresent, got {}".format(
                     bytes(probe.data).hex())
             pfs.add(pf)
-        assert {J1939_PF_PROPRIETARY_A, J1939_PF_PROPRIETARY_B} == pfs, \
+        assert {J1939_PF_DIAG_A, J1939_PF_DIAG_B} == pfs, \
             "Expected probes on both PF=0xDA and PF=0xDB, got PFs: {}".format(
                 [hex(p) for p in pfs])
     cleanup_testsockets()
@@ -866,9 +955,9 @@ test_uds_probe_frames()
 def test_uds_positive_response():
     sock = TestSocket(CAN)
     # Inject a fake UDS TesterPresent positive response from SA=0x30
-    # Use PF=0xDA (Proprietary A) DA=0xFE, SA=0x30 – any extended frame with
+    # Use PF=0xDA (Diag A) DA=0xFE, SA=0x30 – any extended frame with
     # SA=0x30 whose first 3 data bytes are 02 7E 00 is accepted.
-    resp_can_id = _j1939_can_id(6, J1939_PF_PROPRIETARY_A, J1939_NULL_ADDRESS, 0x30)
+    resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_A, J1939_NULL_ADDRESS, 0x30)
     sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
                             data=b'\x02\x7e\x00')))
     found = j1939_scan_uds(sock, scan_range=[0x30], sniff_time=0.1,
@@ -879,10 +968,10 @@ def test_uds_positive_response():
 
 test_uds_positive_response()
 
-= uds: records SA when UDS positive response is from PGN 0xDB00 (Proprietary B)
+= uds: records SA when UDS positive response is from PGN 0xDB00 (Diag B)
 def test_uds_positive_response_pgn_db():
     sock = TestSocket(CAN)
-    resp_can_id = _j1939_can_id(6, J1939_PF_PROPRIETARY_B, J1939_NULL_ADDRESS, 0x3A)
+    resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_B, J1939_NULL_ADDRESS, 0x3A)
     sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
                             data=b'\x02\x7e\x00')))
     found = j1939_scan_uds(sock, scan_range=[0x3A], sniff_time=0.1,
@@ -898,7 +987,7 @@ test_uds_positive_response_pgn_db()
 def test_uds_wrong_response_ignored():
     sock = TestSocket(CAN)
     # Inject a frame from SA=0x31 with incorrect UDS response bytes
-    resp_can_id = _j1939_can_id(6, J1939_PF_PROPRIETARY_A, J1939_NULL_ADDRESS, 0x31)
+    resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_A, J1939_NULL_ADDRESS, 0x31)
     sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
                             data=b'\x02\x3e\x00')))  # request, not response
     found = j1939_scan_uds(sock, scan_range=[0x31], sniff_time=0.1,
@@ -912,7 +1001,7 @@ test_uds_wrong_response_ignored()
 = uds: noise_ids suppresses probing
 def test_uds_noise_suppression():
     sock = TestSocket(CAN)
-    resp_can_id = _j1939_can_id(6, J1939_PF_PROPRIETARY_A, J1939_NULL_ADDRESS, 0x32)
+    resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_A, J1939_NULL_ADDRESS, 0x32)
     sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
                             data=b'\x02\x7e\x00')))
     # SA=0x32 in noise_ids and force=False → must be skipped
@@ -927,7 +1016,7 @@ test_uds_noise_suppression()
 = uds: force=True bypasses noise_ids
 def test_uds_force():
     sock = TestSocket(CAN)
-    resp_can_id = _j1939_can_id(6, J1939_PF_PROPRIETARY_A, J1939_NULL_ADDRESS, 0x33)
+    resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_A, J1939_NULL_ADDRESS, 0x33)
     sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
                             data=b'\x02\x7e\x00')))
     found = j1939_scan_uds(sock, scan_range=[0x33], sniff_time=0.1,
@@ -952,14 +1041,15 @@ def test_uds_multiple_responses():
             remaining = target - time.time()
             if remaining > 0:
                 time.sleep(remaining)
-            resp_can_id = _j1939_can_id(6, J1939_PF_PROPRIETARY_A,
+            resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_A,
                                         J1939_NULL_ADDRESS, da)
             sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
                                     data=b'\x02\x7e\x00')))
     t = threading.Thread(target=inject_responses)
     t.start()
     found = j1939_scan_uds(sock, scan_range=_SCAN_DAS,
-                           sniff_time=_SNIFF_TIME, noise_ids=set())
+                           sniff_time=_SNIFF_TIME, noise_ids=set(),
+                           src_addrs=[J1939_NULL_ADDRESS])
     t.join()
     for sa_val in _SCAN_DAS:
         assert sa_val in found, \
@@ -985,7 +1075,7 @@ test_uds_stop_event()
 = j1939_scan: uds technique is invoked and finds UDS-responding CAs
 def test_j1939_scan_uds_technique():
     sock = TestSocket(CAN)
-    resp_can_id = _j1939_can_id(6, J1939_PF_PROPRIETARY_A,
+    resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_A,
                                 J1939_NULL_ADDRESS, 0x40)
     sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
                             data=b'\x02\x7e\x00')))
@@ -1000,7 +1090,7 @@ def test_j1939_scan_uds_technique():
 
 test_j1939_scan_uds_technique()
 
-= j1939_scan: SA found by addr_claim and uds accumulates both methods
+= j1939_scan: SA found by addr_claim and uds accumulates both methods and packets
 def test_j1939_scan_addr_claim_and_uds():
     import threading
     import time
@@ -1009,7 +1099,7 @@ def test_j1939_scan_addr_claim_and_uds():
     _INJECT_OFFSET = 0.02  # inject 20 ms after the broadcast window closes
     def inject_uds_response():
         time.sleep(_BROADCAST_TIME + _INJECT_OFFSET)
-        resp_uds = _j1939_can_id(6, J1939_PF_PROPRIETARY_A,
+        resp_uds = _j1939_can_id(6, J1939_PF_DIAG_A,
                                   J1939_NULL_ADDRESS, 0x41)
         sock.ins.send(bytes(CAN(identifier=resp_uds, flags="extended",
                                 data=b'\x02\x7e\x00')))
@@ -1028,6 +1118,8 @@ def test_j1939_scan_addr_claim_and_uds():
     assert "addr_claim" in found[0x41]["methods"]
     assert "uds" in found[0x41]["methods"]
     assert found[0x41]["methods"][0] == "addr_claim"
+    assert len(found[0x41]["packets"]) == 2, \
+        "Two methods found SA=0x41; packets list must have 2 entries"
     cleanup_testsockets()
 
 test_j1939_scan_addr_claim_and_uds()

@@ -34,10 +34,12 @@ Technique 4 — TP.CM RTS Probing
     both of which confirm the node is present.
 
 Technique 5 — UDS TesterPresent Probe
-    Iterates through destination addresses 0x00–0xFD, sending a UDS
-    TesterPresent request (SID 0x3E, sub-function 0x00) over both J1939
-    Proprietary A (PGN 0xDA00) and Proprietary B (PGN 0xDB00).  Nodes that
-    implement UDS reply with a positive response (SID 0x7E).
+    Iterates through destination addresses 0x00–0xFD, sending a padded UDS
+    TesterPresent request (SID 0x3E, sub-function 0x00, 5 x 0xFF padding)
+    over both J1939 Diagnostic Message A (PGN 0xDA00, PGN_DIAG_A) and
+    Diagnostic Message B (PGN 0xDB00, PGN_DIAG_B), once for every source
+    address in *src_addrs*.  Nodes that implement UDS reply with a positive
+    response (SID 0x7E).
 
 Detection Matrix
 ----------------
@@ -62,7 +64,8 @@ response it expects from an active CA in order to detect it.
 +------------+-----------------------------------------+------------------------------------------+
 | uds        | UDS TesterPresent (PF=0xDA, DA=ECU-SA)  | UDS positive response 02 7E 00           |
 |            | AND (PF=0xDB, DA=ECU-SA)                | from probed DA                           |
-|            | payload 02 3E 00                        |                                          |
+|            | payload 02 3E 00 FF FF FF FF FF         |                                          |
+|            | once per SA in src_addrs                |                                          |
 +------------+-----------------------------------------+------------------------------------------+
 
 Usage::
@@ -73,7 +76,8 @@ Usage::
     >>> sock = CANSocket("can0")
     >>> found = j1939_scan(sock, methods=["addr_claim", "unicast"])
     >>> for sa, info in found.items():
-    ...     print("SA=0x{:02X}  found_by={}".format(sa, info["methods"]))
+    ...     print("SA=0x{:02X}  found_by={}  pkts={}".format(
+    ...           sa, info["methods"], len(info["packets"])))
 """
 
 import struct
@@ -95,7 +99,6 @@ from scapy.supersocket import SuperSocket
 
 from scapy.contrib.automotive.j1939.j1939_soft_socket import (
     J1939_GLOBAL_ADDRESS,
-    J1939_NULL_ADDRESS,
     J1939_TP_CM_PF,
     TP_CM_RTS,
     TP_CM_CTS,
@@ -122,20 +125,25 @@ _SCAN_PRIORITY = 6
 #: Scan address range for unicast / RTS sweeps (0x00 – 0xFD inclusive)
 _SCAN_ADDR_RANGE = range(0x00, 0xFE)  # 0xFE = null / 0xFF = broadcast
 
-#: PGN for J1939 Proprietary A (PDU1 peer-to-peer) used by UDS-over-J1939 probing
-PGN_PROPRIETARY_A = 0xDA00  # PF = 0xDA
+#: Candidate diagnostic source addresses (SAE J1939 reserved diagnostic range).
+#: Used as the default for *src_addrs* in all scan functions.
+J1939_NULL_ADDRESSES = list(range(0xF1, 0xFA))  # [0xF1 .. 0xF9]
 
-#: PF byte for Proprietary A (0xDA)
-J1939_PF_PROPRIETARY_A = 0xDA
+#: PGN for J1939 Diagnostic Message A (PDU1 peer-to-peer, PF=0xDA)
+PGN_DIAG_A = 0xDA00
 
-#: PGN for J1939 Proprietary B (PDU1 peer-to-peer) – second UDS probe channel
-PGN_PROPRIETARY_B = 0xDB00  # PF = 0xDB
+#: PF byte for Diagnostic Message A
+J1939_PF_DIAG_A = 0xDA
 
-#: PF byte for Proprietary B (0xDB)
-J1939_PF_PROPRIETARY_B = 0xDB
+#: PGN for J1939 Diagnostic Message B (PDU1 peer-to-peer, PF=0xDB)
+PGN_DIAG_B = 0xDB00
 
-#: UDS TesterPresent request payload (SID=0x3E, subfunction=0x00, length=2)
-_UDS_TESTER_PRESENT_REQ = b'\x02\x3e\x00'
+#: PF byte for Diagnostic Message B
+J1939_PF_DIAG_B = 0xDB
+
+#: UDS TesterPresent request payload: length=2, SID=0x3E, subfunction=0x00,
+#: followed by 5 padding bytes (0xFF) to fill an 8-byte CAN frame.
+_UDS_TESTER_PRESENT_REQ = b'\x02\x3e\x00\xff\xff\xff\xff\xff'
 
 #: Expected UDS positive response for TesterPresent (SID=0x7E, length=2)
 _UDS_TESTER_PRESENT_RESP = b'\x02\x7e\x00'
@@ -244,7 +252,7 @@ def j1939_scan_passive(
 
 def j1939_scan_addr_claim(
     sock,                                   # type: SuperSocket
-    src_addr=J1939_NULL_ADDRESS,            # type: int
+    src_addrs=None,                         # type: Optional[List[int]]
     listen_time=1.0,                        # type: float
     noise_ids=None,                         # type: Optional[Set[int]]
     force=False,                            # type: bool
@@ -255,11 +263,13 @@ def j1939_scan_addr_claim(
     # type: (...) -> Dict[int, CAN]
     """Enumerate CAs via a global Request for Address Claimed (PGN 60928).
 
-    Sends a single broadcast Request frame and listens for Address Claimed
-    replies.  Every J1939-81-compliant CA must respond.
+    Sends a broadcast Request frame from each address in *src_addrs* and
+    listens for Address Claimed replies.  Every J1939-81-compliant CA must
+    respond.
 
     :param sock: raw CAN socket to use for sending / sniffing
-    :param src_addr: source address to use in the request (default 0xFE)
+    :param src_addrs: list of source addresses to use in requests; defaults
+                      to :data:`J1939_NULL_ADDRESSES` ([0xF1..0xF9])
     :param listen_time: seconds to collect responses after sending
     :param noise_ids: set of source addresses already seen on the bus
                       (from :func:`j1939_scan_passive`).  SAs in this set
@@ -274,14 +284,16 @@ def j1939_scan_addr_claim(
                     technique.
     :returns: dict mapping responder source address (int) to the CAN reply
     """
-    # Build the request CAN frame:
-    # CAN-ID: prio=6, PF=0xEA (Request), DA=0xFF (global), SA=src_addr
-    # Payload: 3-byte LE PGN 60928 (0xEE00)
-    can_id = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_REQUEST,
-                           J1939_GLOBAL_ADDRESS, src_addr)
+    if src_addrs is None:
+        src_addrs = J1939_NULL_ADDRESSES
     payload = _build_request_payload(PGN_ADDRESS_CLAIMED)
-    sock.send(CAN(identifier=can_id, flags="extended", data=payload))
-    log_j1939.debug("addr_claim: broadcast request sent (CAN-ID=0x%08X)", can_id)
+    for _sa in src_addrs:
+        can_id = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_REQUEST,
+                               J1939_GLOBAL_ADDRESS, _sa)
+        sock.send(CAN(identifier=can_id, flags="extended", data=payload))
+        log_j1939.debug(
+            "addr_claim: broadcast request sent SA=0x%02X (CAN-ID=0x%08X)",
+            _sa, can_id)
 
     found = {}  # type: Dict[int, CAN]
 
@@ -307,7 +319,7 @@ def j1939_scan_addr_claim(
 
 def j1939_scan_ecu_id(
     sock,                                   # type: SuperSocket
-    src_addr=J1939_NULL_ADDRESS,            # type: int
+    src_addrs=None,                         # type: Optional[List[int]]
     listen_time=1.0,                        # type: float
     noise_ids=None,                         # type: Optional[Set[int]]
     force=False,                            # type: bool
@@ -318,11 +330,12 @@ def j1939_scan_ecu_id(
     # type: (...) -> Dict[int, CAN]
     """Enumerate CAs via a global Request for ECU Identification (PGN 64965).
 
-    Sends a single broadcast Request frame and listens for BAM announce
-    headers whose PGN field matches 64965.
+    Sends a broadcast Request frame from each address in *src_addrs* and
+    listens for BAM announce headers whose PGN field matches 64965.
 
     :param sock: raw CAN socket to use for sending / sniffing
-    :param src_addr: source address to use in the request (default 0xFE)
+    :param src_addrs: list of source addresses to use in requests; defaults
+                      to :data:`J1939_NULL_ADDRESSES` ([0xF1..0xF9])
     :param listen_time: seconds to collect responses after sending
     :param noise_ids: set of source addresses to suppress from results
                       (see :func:`j1939_scan_passive`)
@@ -335,11 +348,16 @@ def j1939_scan_ecu_id(
                     technique.
     :returns: dict mapping responder source address (int) to the CAN reply
     """
-    can_id = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_REQUEST,
-                           J1939_GLOBAL_ADDRESS, src_addr)
+    if src_addrs is None:
+        src_addrs = J1939_NULL_ADDRESSES
     payload = _build_request_payload(PGN_ECU_ID)
-    sock.send(CAN(identifier=can_id, flags="extended", data=payload))
-    log_j1939.debug("ecu_id: broadcast request sent (CAN-ID=0x%08X)", can_id)
+    for _sa in src_addrs:
+        can_id = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_REQUEST,
+                               J1939_GLOBAL_ADDRESS, _sa)
+        sock.send(CAN(identifier=can_id, flags="extended", data=payload))
+        log_j1939.debug(
+            "ecu_id: broadcast request sent SA=0x%02X (CAN-ID=0x%08X)",
+            _sa, can_id)
 
     found = {}  # type: Dict[int, CAN]
 
@@ -375,7 +393,7 @@ def j1939_scan_ecu_id(
 def j1939_scan_unicast(
     sock,                                   # type: SuperSocket
     scan_range=_SCAN_ADDR_RANGE,            # type: Iterable[int]
-    src_addr=J1939_NULL_ADDRESS,            # type: int
+    src_addrs=None,                         # type: Optional[List[int]]
     sniff_time=0.1,                         # type: float
     noise_ids=None,                         # type: Optional[Set[int]]
     force=False,                            # type: bool
@@ -387,8 +405,9 @@ def j1939_scan_unicast(
     """Enumerate CAs by sending unicast Address Claim Requests to each DA.
 
     For each destination address *da* in *scan_range*, sends a Request for
-    Address Claimed (PGN 60928) addressed to *da*.  Any CAN frame whose
-    source address equals *da* is counted as a positive response.
+    Address Claimed (PGN 60928) addressed to *da* once for each address in
+    *src_addrs*.  Any CAN frame whose source address equals *da* is counted
+    as a positive response.
 
     When *noise_ids* is provided (and *force* is False), destination addresses
     that appear in *noise_ids* are skipped entirely — no probe is sent and no
@@ -397,11 +416,12 @@ def j1939_scan_unicast(
 
     The inter-probe gap is automatically paced so that the scanner contributes
     at most *busload* × *bitrate* bits per second to the bus, counting both
-    the outgoing probe frame and the expected response frame.
+    the outgoing probe frames and the expected response frame.
 
     :param sock: raw CAN socket to use for sending / sniffing
     :param scan_range: iterable of destination addresses to probe
-    :param src_addr: source address to use in requests (default 0xFE)
+    :param src_addrs: list of source addresses to use in requests; defaults
+                      to :data:`J1939_NULL_ADDRESSES` ([0xF1..0xF9])
     :param sniff_time: seconds to wait for a response after each probe
     :param noise_ids: set of source addresses already known from background
                       traffic (see :func:`j1939_scan_passive`).  DAs whose
@@ -414,6 +434,8 @@ def j1939_scan_unicast(
                     (default 0.05 = 5 %)
     :returns: dict mapping responder source address (int) to the CAN reply
     """
+    if src_addrs is None:
+        src_addrs = J1939_NULL_ADDRESSES
     found = {}  # type: Dict[int, CAN]
 
     for da in scan_range:
@@ -422,9 +444,10 @@ def j1939_scan_unicast(
         if not force and noise_ids is not None and da in noise_ids:
             log_j1939.debug("unicast: skipping noise DA=0x%02X", da)
             continue
-        can_id = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_REQUEST, da, src_addr)
         payload = _build_request_payload(PGN_ADDRESS_CLAIMED)
-        sock.send(CAN(identifier=can_id, flags="extended", data=payload))
+        for _sa in src_addrs:
+            can_id = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_REQUEST, da, _sa)
+            sock.send(CAN(identifier=can_id, flags="extended", data=payload))
         log_j1939.debug("unicast: probing DA=0x%02X", da)
 
         # Capture the loop variable explicitly to avoid closure capture issues
@@ -441,8 +464,10 @@ def j1939_scan_unicast(
 
         sock.sniff(prn=_rx, timeout=sniff_time, store=False)
 
-        # Pace the probe rate: request=3 bytes (DLC 3), response=8 bytes (DLC 8)
-        _extra = _inter_probe_delay(bitrate, busload, 3, 8, sniff_time)
+        # Pace the probe rate: len(src_addrs) request frames (DLC 3) + response (DLC 8)
+        _tx_bits = len(src_addrs) * _can_frame_bits(3)
+        _extra = max(0.0, (_tx_bits + _can_frame_bits(8)) / (bitrate * busload)
+                     - sniff_time)
         if _extra > 0.0:
             time.sleep(_extra)
 
@@ -454,7 +479,7 @@ def j1939_scan_unicast(
 def j1939_scan_rts_probe(
     sock,                                   # type: SuperSocket
     scan_range=_SCAN_ADDR_RANGE,            # type: Iterable[int]
-    src_addr=J1939_NULL_ADDRESS,            # type: int
+    src_addrs=None,                         # type: Optional[List[int]]
     sniff_time=0.1,                         # type: float
     noise_ids=None,                         # type: Optional[Set[int]]
     force=False,                            # type: bool
@@ -466,16 +491,18 @@ def j1939_scan_rts_probe(
     """Enumerate CAs by sending minimal TP.CM_RTS frames to each DA.
 
     For each destination address *da* in *scan_range*, sends a TP.CM_RTS
-    (Connection Management – Request to Send) frame.  An active node
-    replies with either TP.CM_CTS (clear to send) or ``TP_Conn_Abort``
-    (connection abort).  Both responses confirm the node is present.
+    (Connection Management – Request to Send) frame once per address in
+    *src_addrs*.  An active node replies with either TP.CM_CTS (clear to
+    send) or ``TP_Conn_Abort`` (connection abort).  Both responses confirm
+    the node is present.
 
     The inter-probe gap is automatically paced so that the scanner contributes
     at most *busload* × *bitrate* bits per second to the bus.
 
     :param sock: raw CAN socket to use for sending / sniffing
     :param scan_range: iterable of destination addresses to probe
-    :param src_addr: source address to use in probes (default 0xFE)
+    :param src_addrs: list of source addresses to use in probes; defaults
+                      to :data:`J1939_NULL_ADDRESSES` ([0xF1..0xF9])
     :param sniff_time: seconds to wait for a response after each probe
     :param noise_ids: set of source addresses already known from background
                       traffic (see :func:`j1939_scan_passive`).  DAs whose
@@ -488,6 +515,8 @@ def j1939_scan_rts_probe(
                     (default 0.05 = 5 %)
     :returns: dict mapping responder source address (int) to the CAN reply
     """
+    if src_addrs is None:
+        src_addrs = J1939_NULL_ADDRESSES
     found = {}  # type: Dict[int, CAN]
 
     for da in scan_range:
@@ -496,23 +525,25 @@ def j1939_scan_rts_probe(
         if not force and noise_ids is not None and da in noise_ids:
             log_j1939.debug("rts_probe: skipping noise DA=0x%02X", da)
             continue
-        # CAN-ID: priority=7, PF=0xEC (TP.CM), DA=da, SA=src_addr
-        can_id = _j1939_can_id(7, J1939_TP_CM_PF, da, src_addr)
         # TP.CM_RTS payload (8 bytes):
         #   byte 0: 0x10 = RTS control
         #   bytes 1-2 LE: total message size = 9
         #   byte 3: total packets = 2
         #   byte 4: max packets per CTS = 0xFF (no limit)
         #   bytes 5-7: PGN being transferred (probe PGN = 0x0000FF)
-        payload = struct.pack("<BHBBBBB",
-                              TP_CM_RTS,  # 0x10
-                              9,          # total message size (LE 2-byte)
-                              2,          # total number of TP.DT packets
-                              0xFF,       # max packets per CTS
-                              0xFF,       # PGN byte 1 (probe value)
-                              0x00,       # PGN byte 2
-                              0x00)       # PGN byte 3
-        sock.send(CAN(identifier=can_id, flags="extended", data=payload))
+        rts_payload = struct.pack("<BHBBBBB",
+                                  TP_CM_RTS,  # 0x10
+                                  9,          # total message size (LE 2-byte)
+                                  2,          # total number of TP.DT packets
+                                  0xFF,       # max packets per CTS
+                                  0xFF,       # PGN byte 1 (probe value)
+                                  0x00,       # PGN byte 2
+                                  0x00)       # PGN byte 3
+        for _sa in src_addrs:
+            # CAN-ID: priority=7, PF=0xEC (TP.CM), DA=da, SA=_sa
+            can_id = _j1939_can_id(7, J1939_TP_CM_PF, da, _sa)
+            sock.send(CAN(identifier=can_id, flags="extended",
+                          data=rts_payload))
         log_j1939.debug("rts_probe: probing DA=0x%02X", da)
 
         _da = da
@@ -535,8 +566,10 @@ def j1939_scan_rts_probe(
 
         sock.sniff(prn=_rx, timeout=sniff_time, store=False)
 
-        # Pace the probe rate: RTS probe=8 bytes (DLC 8), response=8 bytes (DLC 8)
-        _extra = _inter_probe_delay(bitrate, busload, 8, 8, sniff_time)
+        # Pace: len(src_addrs) RTS probes (DLC 8) + one expected response (DLC 8)
+        _tx_bits = len(src_addrs) * _can_frame_bits(8)
+        _extra = max(0.0, (_tx_bits + _can_frame_bits(8)) / (bitrate * busload)
+                     - sniff_time)
         if _extra > 0.0:
             time.sleep(_extra)
 
@@ -548,7 +581,7 @@ def j1939_scan_rts_probe(
 def j1939_scan_uds(
     sock,                                   # type: SuperSocket
     scan_range=_SCAN_ADDR_RANGE,            # type: Iterable[int]
-    src_addr=J1939_NULL_ADDRESS,            # type: int
+    src_addrs=None,                         # type: Optional[List[int]]
     sniff_time=0.1,                         # type: float
     noise_ids=None,                         # type: Optional[Set[int]]
     force=False,                            # type: bool
@@ -559,19 +592,20 @@ def j1939_scan_uds(
     # type: (...) -> Dict[int, CAN]
     """Enumerate CAs by sending a UDS TesterPresent request to each DA.
 
-    For each destination address *da* in *scan_range*, sends a UDS
-    TesterPresent request (SID 0x3E, sub-function 0x00) carried over **both**
-    J1939 Proprietary A (PGN 0xDA00, PF=0xDA) and Proprietary B (PGN 0xDB00,
-    PF=0xDB).  A node that implements UDS replies with a positive response
-    frame whose first three payload bytes are ``02 7E 00``.  Only well-formed
-    positive responses are recorded.
+    For each destination address *da* in *scan_range* and each source address
+    in *src_addrs*, sends a padded UDS TesterPresent request over both
+    Diagnostic Message A (PGN 0xDA00, PF=0xDA) and Diagnostic Message B
+    (PGN 0xDB00, PF=0xDB).  A node that implements UDS replies with a
+    positive response frame whose first three payload bytes are ``02 7E 00``.
+    Only well-formed positive responses are recorded.
 
     The inter-probe gap is automatically paced so that the scanner contributes
     at most *busload* × *bitrate* bits per second to the bus.
 
     :param sock: raw CAN socket to use for sending / sniffing
     :param scan_range: iterable of destination addresses to probe
-    :param src_addr: source address to use in requests (default 0xFE)
+    :param src_addrs: list of source addresses to use in requests; defaults
+                      to :data:`J1939_NULL_ADDRESSES` ([0xF1..0xF9])
     :param sniff_time: seconds to wait for a response after each probe
     :param noise_ids: set of source addresses already known from background
                       traffic (see :func:`j1939_scan_passive`).  DAs whose
@@ -584,6 +618,8 @@ def j1939_scan_uds(
                     (default 0.05 = 5 %)
     :returns: dict mapping responder source address (int) to the CAN reply
     """
+    if src_addrs is None:
+        src_addrs = J1939_NULL_ADDRESSES
     found = {}  # type: Dict[int, CAN]
 
     for da in scan_range:
@@ -592,17 +628,15 @@ def j1939_scan_uds(
         if not force and noise_ids is not None and da in noise_ids:
             log_j1939.debug("uds: skipping noise DA=0x%02X", da)
             continue
-        # Send TesterPresent over PGN 0xDA00 (Proprietary A)
-        can_id_a = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_PROPRIETARY_A,
-                                  da, src_addr)
-        sock.send(CAN(identifier=can_id_a, flags="extended",
-                      data=_UDS_TESTER_PRESENT_REQ))
-        # Send TesterPresent over PGN 0xDB00 (Proprietary B)
-        can_id_b = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_PROPRIETARY_B,
-                                  da, src_addr)
-        sock.send(CAN(identifier=can_id_b, flags="extended",
-                      data=_UDS_TESTER_PRESENT_REQ))
-        log_j1939.debug("uds: probing DA=0x%02X on PGN 0xDA00 and 0xDB00", da)
+        for _sa in src_addrs:
+            can_id_a = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_DIAG_A, da, _sa)
+            sock.send(CAN(identifier=can_id_a, flags="extended",
+                          data=_UDS_TESTER_PRESENT_REQ))
+            can_id_b = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_DIAG_B, da, _sa)
+            sock.send(CAN(identifier=can_id_b, flags="extended",
+                          data=_UDS_TESTER_PRESENT_REQ))
+        log_j1939.debug(
+            "uds: probing DA=0x%02X on PGN_DIAG_A and PGN_DIAG_B", da)
 
         # Capture the loop variable explicitly to avoid closure capture issues
         _da = da
@@ -620,10 +654,10 @@ def j1939_scan_uds(
 
         sock.sniff(prn=_rx, timeout=sniff_time, store=False)
 
-        # Pace the probe rate: two 3-byte requests + one 3-byte response
-        _bits = 3 * _can_frame_bits(3)
-        _cycle = _bits / (bitrate * busload)
-        _extra = max(0.0, _cycle - sniff_time)
+        # Pace: 2 probes per src_addr (Diag A + Diag B), all DLC=8, + 1 response
+        _tx_bits = 2 * len(src_addrs) * _can_frame_bits(8)
+        _extra = max(0.0, (_tx_bits + _can_frame_bits(8)) / (bitrate * busload)
+                     - sniff_time)
         if _extra > 0.0:
             time.sleep(_extra)
 
@@ -636,7 +670,7 @@ def j1939_scan(
     sock,                                   # type: SuperSocket
     scan_range=_SCAN_ADDR_RANGE,            # type: Iterable[int]
     methods=None,                           # type: Optional[List[str]]
-    src_addr=J1939_NULL_ADDRESS,            # type: int
+    src_addrs=None,                         # type: Optional[List[int]]
     sniff_time=0.1,                         # type: float
     broadcast_listen_time=1.0,              # type: float
     noise_listen_time=1.0,                  # type: float
@@ -656,7 +690,8 @@ def j1939_scan(
     - ``"methods"`` (List[str]): list of all techniques that found this CA,
       in the order they detected it.  A CA discovered by more than one
       technique will appear in all of their names.
-    - ``"packet"`` (CAN): the first CAN response received from this CA
+    - ``"packets"`` (List[CAN]): list of CAN response frames, one per entry
+      in ``"methods"``, in the same order.
 
     By default, before running any active probe the function performs a
     passive bus listen (via :func:`j1939_scan_passive`) for *noise_listen_time*
@@ -670,7 +705,8 @@ def j1939_scan(
     :param methods: list of method names to run; valid values are
                     ``"addr_claim"``, ``"ecu_id"``, ``"unicast"``,
                     ``"rts_probe"``, ``"uds"``.  Default is all five.
-    :param src_addr: source address used in outgoing probes (default 0xFE)
+    :param src_addrs: list of source addresses to use in outgoing probes;
+                      defaults to :data:`J1939_NULL_ADDRESSES` ([0xF1..0xF9])
     :param sniff_time: per-address listen time for unicast / RTS methods
     :param broadcast_listen_time: listen time for broadcast methods
     :param noise_listen_time: seconds for the passive pre-scan (default 1.0).
@@ -691,7 +727,7 @@ def j1939_scan(
     :param busload: maximum scanner bus-load fraction passed to unicast / RTS /
                     UDS methods (default 0.05 = 5 %)
     :returns: dict mapping SA (int) to
-              ``{"methods": List[str], "packet": CAN}``
+              ``{"methods": List[str], "packets": List[CAN]}``
 
     Example::
 
@@ -707,6 +743,9 @@ def j1939_scan(
             raise ValueError(
                 "Unknown scan method {!r}; valid methods: {}".format(
                     m, SCAN_METHODS))
+
+    if src_addrs is None:
+        src_addrs = J1939_NULL_ADDRESSES
 
     # If the caller left bitrate at the sentinel default, try to pull the real
     # value from the socket (e.g. CANSocket stores it as sock.bitrate).
@@ -738,20 +777,21 @@ def j1939_scan(
                 if verbose:
                     log_j1939.info(
                         "j1939_scan: found SA=0x%02X via %s", sa, method_name)
-                results[sa] = {"methods": [method_name], "packet": pkt}
+                results[sa] = {"methods": [method_name], "packets": [pkt]}
             else:
                 if verbose:
                     log_j1939.info(
                         "j1939_scan: SA=0x%02X also detected via %s",
                         sa, method_name)
                 cast(List[str], results[sa]["methods"]).append(method_name)
+                cast(List[CAN], results[sa]["packets"]).append(pkt)
 
     if "addr_claim" in methods:
         if stop_event is not None and stop_event.is_set():
             return results
         _merge(j1939_scan_addr_claim(
             sock,
-            src_addr=src_addr,
+            src_addrs=src_addrs,
             listen_time=broadcast_listen_time,
             noise_ids=noise_ids,
             force=force,
@@ -765,7 +805,7 @@ def j1939_scan(
             return results
         _merge(j1939_scan_ecu_id(
             sock,
-            src_addr=src_addr,
+            src_addrs=src_addrs,
             listen_time=broadcast_listen_time,
             noise_ids=noise_ids,
             force=force,
@@ -780,7 +820,7 @@ def j1939_scan(
         _merge(j1939_scan_unicast(
             sock,
             scan_range=scan_range_list,
-            src_addr=src_addr,
+            src_addrs=src_addrs,
             sniff_time=sniff_time,
             noise_ids=noise_ids,
             force=force,
@@ -795,7 +835,7 @@ def j1939_scan(
         _merge(j1939_scan_rts_probe(
             sock,
             scan_range=scan_range_list,
-            src_addr=src_addr,
+            src_addrs=src_addrs,
             sniff_time=sniff_time,
             noise_ids=noise_ids,
             force=force,
@@ -810,7 +850,7 @@ def j1939_scan(
         _merge(j1939_scan_uds(
             sock,
             scan_range=scan_range_list,
-            src_addr=src_addr,
+            src_addrs=src_addrs,
             sniff_time=sniff_time,
             noise_ids=noise_ids,
             force=force,
@@ -830,10 +870,11 @@ __all__ = [
     "j1939_scan_unicast",
     "j1939_scan_rts_probe",
     "j1939_scan_uds",
+    "J1939_NULL_ADDRESSES",
     "PGN_ECU_ID",
-    "PGN_PROPRIETARY_A",
-    "J1939_PF_PROPRIETARY_A",
-    "PGN_PROPRIETARY_B",
-    "J1939_PF_PROPRIETARY_B",
+    "PGN_DIAG_A",
+    "J1939_PF_DIAG_A",
+    "PGN_DIAG_B",
+    "J1939_PF_DIAG_B",
     "SCAN_METHODS",
 ]
