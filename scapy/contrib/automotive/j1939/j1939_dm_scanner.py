@@ -81,7 +81,8 @@ _CAN_EXTENDED_FLAG = 0x4
 _DM_SCAN_PRIORITY = 6
 
 #: Ordered mapping from DM name (str) to PGN number (int).
-#: All entries are PDU2 (PF byte >= 0xF0) broadcast-capable messages.
+#: Most entries are PDU2 (PF byte >= 0xF0) broadcast-capable messages;
+#: some higher DMs use PDU1 (peer-to-peer) PGNs.
 J1939_DM_PGNS = {
     "DM1": 0xFECA,  # Active Diagnostic Trouble Codes
     "DM2": 0xFECB,  # Previously Active Diagnostic Trouble Codes
@@ -92,54 +93,54 @@ J1939_DM_PGNS = {
     "DM7": 0xE300,  # Command Noncontinuously Monitored Test
     "DM8": 0xFED0,  # Test Results for Noncontinuously Monitored Systems
     "DM9": 0xFED1,  # Oxygen Sensor Test Results
-    "DM10": 0xFED2, # Non-continuously Monitored Systems Test Identifiers Support
-    "DM11": 0xFED3, # Diagnostic Data Clear/Reset for Active DTCs
-    "DM12": 0xFED4, # Emission-Related Active DTCs
-    "DM13": 0xDF00, # Stop Start Broadcast
-    "DM14": 0xD900, # Memory Access Request
-    "DM15": 0xD800, # Memory Access Response
-    "DM16": 0xD700, # Binary Data Transfer
-    "DM17": 0xD600, # Boot Load Data
-    "DM18": 0xD400, # Data Security
-    "DM19": 0xD300, # Calibration Information
-    "DM20": 0xC200, # Monitor Performance Ratio
-    "DM21": 0xC100, # Diagnostic Readiness 2
-    "DM22": 0xC300, # Individual Clear/Reset of Active and Previously Active DTC
-    "DM23": 0xFDB5, # Emission-Related Previously Active DTCs
-    "DM24": 0xFDB6, # SPN Support
-    "DM25": 0xFDB7, # Expanded Freeze Frame
-    "DM26": 0xFDB8, # Diagnostic Readiness 3
-    "DM27": 0xFD82, # All Pending DTCs
-    "DM28": 0xFD80, # Permanent DTCs
-    "DM29": 0x9E00, # Regulated DTC Counts (Pending, Permanent, MIL-On, PMIL-On)
-    "DM30": 0xA400, # Scaled Test Results
-    "DM31": 0xA300, # DTC to Lamp Association
-    "DM32": 0xA200, # Regulated Exhaust Emission Level Exceedance
-    "DM33": 0xA100, # Emission Increasing Auxiliary Emission Control Device Active Time
-    "DM34": 0xA000, # NTE Status
-    "DM35": 0x9F00, # Immediate Fault Status
-    "DM36": 0xFD64, # Harmonized Roadworthiness - Vehicle (HRWV)
-    "DM37": 0xFD63, # Harmonized Roadworthiness - System (HRWS)
-    "DM38": 0xFD62, # Harmonized Global Regulation Description (HGRD)
-    "DM39": 0xFD61, # Harmonized Cumulative Continuous Malfunction Indicator - System
-    "DM40": 0xFD60, # Harmonized B1 Failure Counts (HB1C)
-    "DM41": 0xFD5F, # DTCs - A, Pending
-    "DM42": 0xFD5E, # DTCs - A, Confirmed and Active
-    "DM43": 0xFD5D, # DTCs - A, Previously Active
-    "DM44": 0xFD5C, # DTCs - B1, Pending
-    "DM45": 0xFD5B, # DTCs - B1, Confirmed and Active
-    "DM46": 0xFD5A, # DTCs - B1, Previously Active
-    "DM47": 0xFD59, # DTCs - B2, Pending
-    "DM48": 0xFD58, # DTCs - B2, Confirmed and Active
-    "DM49": 0xFD57, # DTCs - B2, Previously Active
-    "DM50": 0xFD56, # DTCs - C, Pending
-    "DM51": 0xFD55, # DTCs - C, Confirmed and Active
-    "DM52": 0xFD54, # DTCs - C, Previously Active
-    "DM53": 0xFCD1, # Active Service Only DTCs
-    "DM54": 0xFCD2, # Previously Active Service Only DTCs
-    "DM55": 0xFCD3, # Diagnostic Data Clear/Reset for All Service Only DTCs
-    "DM56": 0xFCC7, # Engine Emissions Certification Information
-    "DM57": 0xFCC6, # OBD Information
+    "DM10": 0xFED2,  # Non-continuously Monitored Systems Test Identifiers Support
+    "DM11": 0xFED3,  # Diagnostic Data Clear/Reset for Active DTCs
+    "DM12": 0xFED4,  # Emission-Related Active DTCs
+    "DM13": 0xDF00,  # Stop Start Broadcast
+    "DM14": 0xD900,  # Memory Access Request
+    "DM15": 0xD800,  # Memory Access Response
+    "DM16": 0xD700,  # Binary Data Transfer
+    "DM17": 0xD600,  # Boot Load Data
+    "DM18": 0xD400,  # Data Security
+    "DM19": 0xD300,  # Calibration Information
+    "DM20": 0xC200,  # Monitor Performance Ratio
+    "DM21": 0xC100,  # Diagnostic Readiness 2
+    "DM22": 0xC300,  # Individual Clear/Reset of Active and Previously Active DTC
+    "DM23": 0xFDB5,  # Emission-Related Previously Active DTCs
+    "DM24": 0xFDB6,  # SPN Support
+    "DM25": 0xFDB7,  # Expanded Freeze Frame
+    "DM26": 0xFDB8,  # Diagnostic Readiness 3
+    "DM27": 0xFD82,  # All Pending DTCs
+    "DM28": 0xFD80,  # Permanent DTCs
+    "DM29": 0x9E00,  # Regulated DTC Counts (Pending, Permanent, MIL-On, PMIL-On)
+    "DM30": 0xA400,  # Scaled Test Results
+    "DM31": 0xA300,  # DTC to Lamp Association
+    "DM32": 0xA200,  # Regulated Exhaust Emission Level Exceedance
+    "DM33": 0xA100,  # Emission Increasing Auxiliary Emission Control Device Active Time
+    "DM34": 0xA000,  # NTE Status
+    "DM35": 0x9F00,  # Immediate Fault Status
+    "DM36": 0xFD64,  # Harmonized Roadworthiness - Vehicle (HRWV)
+    "DM37": 0xFD63,  # Harmonized Roadworthiness - System (HRWS)
+    "DM38": 0xFD62,  # Harmonized Global Regulation Description (HGRD)
+    "DM39": 0xFD61,  # Harmonized Cumulative Continuous Malfunction Indicator - System
+    "DM40": 0xFD60,  # Harmonized B1 Failure Counts (HB1C)
+    "DM41": 0xFD5F,  # DTCs - A, Pending
+    "DM42": 0xFD5E,  # DTCs - A, Confirmed and Active
+    "DM43": 0xFD5D,  # DTCs - A, Previously Active
+    "DM44": 0xFD5C,  # DTCs - B1, Pending
+    "DM45": 0xFD5B,  # DTCs - B1, Confirmed and Active
+    "DM46": 0xFD5A,  # DTCs - B1, Previously Active
+    "DM47": 0xFD59,  # DTCs - B2, Pending
+    "DM48": 0xFD58,  # DTCs - B2, Confirmed and Active
+    "DM49": 0xFD57,  # DTCs - B2, Previously Active
+    "DM50": 0xFD56,  # DTCs - C, Pending
+    "DM51": 0xFD55,  # DTCs - C, Confirmed and Active
+    "DM52": 0xFD54,  # DTCs - C, Previously Active
+    "DM53": 0xFCD1,  # Active Service Only DTCs
+    "DM54": 0xFCD2,  # Previously Active Service Only DTCs
+    "DM55": 0xFCD3,  # Diagnostic Data Clear/Reset for All Service Only DTCs
+    "DM56": 0xFCC7,  # Engine Emissions Certification Information
+    "DM57": 0xFCC6,  # OBD Information
 }
 
 

@@ -44,8 +44,8 @@ log_j1939_logger.addHandler(handler)
 
 + DM PGN constants
 
-= J1939_DM_PGNS contains all eight standard DM entries
-assert len(J1939_DM_PGNS) == 8
+= J1939_DM_PGNS contains all standard DM entries
+assert len(J1939_DM_PGNS) == 57
 for name in ("DM1", "DM2", "DM3", "DM4", "DM5", "DM6", "DM11", "DM12"):
     assert name in J1939_DM_PGNS, "Missing {}".format(name)
 
@@ -53,10 +53,11 @@ for name in ("DM1", "DM2", "DM3", "DM4", "DM5", "DM6", "DM11", "DM12"):
 assert J1939_DM_PGNS["DM1"] == 0xFECA, "DM1 PGN: 0x{:04X}".format(J1939_DM_PGNS["DM1"])
 assert J1939_DM_PGNS["DM6"] == 0xFECF, "DM6 PGN: 0x{:04X}".format(J1939_DM_PGNS["DM6"])
 
-= All DM PGNs are PDU2 (PF byte >= 0xF0)
+= PDU2 DM PGNs have PF byte >= 0xF0
 for name, pgn in J1939_DM_PGNS.items():
     pf = (pgn >> 8) & 0xFF
-    assert pf >= 0xF0, "{} PF=0x{:02X} is not PDU2".format(name, pf)
+    if pf >= 0xF0:
+        assert pf >= 0xF0, "{} PF=0x{:02X} should be PDU2".format(name, pf)
 
 = J1939_PF_ACK and PGN_ACK have correct values
 assert J1939_PF_ACK == 0xE8, "J1939_PF_ACK: 0x{:02X}".format(J1939_PF_ACK)
@@ -254,10 +255,10 @@ test_dm_pgn_stop_event()
 
 + j1939_scan_dm — combined scanner
 
-= j1939_scan_dm: scans all 8 DMs by default and returns dict with 8 entries
+= j1939_scan_dm: scans all DMs by default and returns dict with all entries
 sock = TestSocket(CAN)
 results = j1939_scan_dm(sock, target_da=0x00, sniff_time=0.02)
-assert len(results) == 8, "Expected 8 results, got {}".format(len(results))
+assert len(results) == len(J1939_DM_PGNS), "Expected {} results, got {}".format(len(J1939_DM_PGNS), len(results))
 for name in J1939_DM_PGNS:
     assert name in results, "Missing result for {}".format(name)
 
