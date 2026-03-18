@@ -715,7 +715,7 @@ def test_multi_method_accumulation():
     found = j1939_scan(sock, scan_range=[0x15],
                        methods=["addr_claim", "unicast"],
                        broadcast_listen_time=_BROADCAST_TIME, sniff_time=0.1,
-                       noise_ids=set())
+                       noise_ids=set(), src_addrs=[J1939_NULL_ADDRESS])
     t.join()
     assert 0x15 in found
     assert "addr_claim" in found[0x15]["methods"], \
@@ -767,7 +767,7 @@ def test_two_sas_different_methods():
     found = j1939_scan(sock, scan_range=[0x18],
                        methods=["addr_claim", "unicast"],
                        broadcast_listen_time=_BROADCAST_TIME, sniff_time=0.1,
-                       noise_ids=set())
+                       noise_ids=set(), src_addrs=[J1939_NULL_ADDRESS])
     t.join()
     assert 0x17 in found
     assert 0x18 in found
@@ -841,7 +841,7 @@ def test_packets_list_parallel_to_methods():
     found = j1939_scan(sock, scan_range=[0x19],
                        methods=["addr_claim", "unicast"],
                        broadcast_listen_time=_BROADCAST_TIME, sniff_time=0.1,
-                       noise_ids=set())
+                       noise_ids=set(), src_addrs=[J1939_NULL_ADDRESS])
     t.join()
     assert 0x19 in found
     methods = found[0x19]["methods"]
@@ -1018,22 +1018,19 @@ def test_uds_both_functional_and_physical():
         resp_f = _j1939_can_id(6, J1939_PF_DIAG_B, J1939_GLOBAL_ADDRESS, 0x55)
         tx_sock.ins.send(bytes(CAN(identifier=resp_f, flags="extended",
                                     data=b'\x02\x7e\x00')))
-        
         # Inject response for physical unicast (PF=0xDA, DA=0x55) from SA=0x55
         resp_p = _j1939_can_id(6, J1939_PF_DIAG_A, J1939_NULL_ADDRESS, 0x55)
         tx_sock.ins.send(bytes(CAN(identifier=resp_p, flags="extended",
                                     data=b'\x02\x7e\x00')))
-
         found = j1939_scan_uds(tx_sock, scan_range=[0x55], sniff_time=0.1,
                                broadcast_listen_time=0.05,
                                noise_ids=set(), src_addrs=[J1939_NULL_ADDRESS])
-        
         assert 0x55 in found
         # Should have captured both responses
         assert len(found[0x55]) == 2
         # Check PFs
-        pfs = { _j1939_decode_can_id(p.identifier)[1] for p in found[0x55] }
-        assert pfs == { J1939_PF_DIAG_A, J1939_PF_DIAG_B }
+        pfs = {_j1939_decode_can_id(p.identifier)[1] for p in found[0x55]}
+        assert pfs == {J1939_PF_DIAG_A, J1939_PF_DIAG_B}
     cleanup_testsockets()
 
 test_uds_both_functional_and_physical()
@@ -1205,7 +1202,7 @@ def test_j1939_scan_addr_claim_and_uds():
     found = j1939_scan(sock, methods=["addr_claim", "uds"],
                        scan_range=[0x41],
                        broadcast_listen_time=_BROADCAST_TIME, sniff_time=0.1,
-                       noise_ids=set())
+                       noise_ids=set(), src_addrs=[J1939_NULL_ADDRESS])
     t.join()
     assert 0x41 in found
     assert "addr_claim" in found[0x41]["methods"]
