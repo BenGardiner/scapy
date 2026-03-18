@@ -105,6 +105,8 @@ sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
                         data=b'\x01\x02\x03\x04\x05\x06\x07\x08')))
 found = j1939_scan_addr_claim(sock, listen_time=0.1)
 assert 0x10 in found, "Expected SA=0x10, got: {}".format([hex(k) for k in found])
+assert isinstance(found[0x10], list)
+assert len(found[0x10]) == 1
 cleanup_testsockets()
 
 = addr_claim: multiple replies from different SAs are all captured
@@ -117,6 +119,7 @@ def test_addr_claim_multiple():
     found = j1939_scan_addr_claim(sock, listen_time=0.2)
     assert set(found.keys()) == {0x10, 0x20, 0x30}, \
         "Expected three SAs, got: {}".format([hex(k) for k in found])
+    assert all(isinstance(v, list) and len(v) == 1 for v in found.values())
     cleanup_testsockets()
 
 test_addr_claim_multiple()
@@ -167,6 +170,8 @@ sock.ins.send(bytes(CAN(identifier=bam_can_id, flags="extended",
                         data=bam_payload)))
 found = j1939_scan_ecu_id(sock, listen_time=0.1)
 assert 0x20 in found, "Expected SA=0x20"
+assert isinstance(found[0x20], list)
+assert len(found[0x20]) == 1
 cleanup_testsockets()
 
 = ecu_id: ignores BAM for a different PGN
@@ -220,6 +225,8 @@ sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
                         data=b'\x00' * 8)))
 found = j1939_scan_unicast(sock, scan_range=[0x30], sniff_time=0.1)
 assert 0x30 in found, "Expected SA=0x30 in results"
+assert isinstance(found[0x30], list)
+assert len(found[0x30]) == 1
 cleanup_testsockets()
 
 = unicast: does not report SA that is not in scan_range
@@ -278,6 +285,8 @@ sock.ins.send(bytes(CAN(identifier=cts_can_id, flags="extended",
                         data=bytes([TP_CM_CTS, 0x02, 0x01, 0xFF, 0xFF, 0xFF, 0x00, 0x00]))))
 found = j1939_scan_rts_probe(sock, scan_range=[0x40], sniff_time=0.1)
 assert 0x40 in found, "Expected SA=0x40 via CTS reply"
+assert isinstance(found[0x40], list)
+assert len(found[0x40]) == 1
 cleanup_testsockets()
 
 = rts_probe: detects Conn_Abort reply from probed node
@@ -288,6 +297,8 @@ sock.ins.send(bytes(CAN(identifier=abort_can_id, flags="extended",
                         data=bytes([TP_Conn_Abort, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00]))))
 found = j1939_scan_rts_probe(sock, scan_range=[0x41], sniff_time=0.1)
 assert 0x41 in found, "Expected SA=0x41 via Conn_Abort reply"
+assert isinstance(found[0x41], list)
+assert len(found[0x41]) == 1
 cleanup_testsockets()
 
 = rts_probe: ignores non-TP.CM responses
@@ -356,6 +367,9 @@ assert 0x10 in found, "SA=0x10 should be found"
 # First method that found it should be addr_claim
 assert found[0x10]["methods"][0] == "addr_claim", \
     "Expected addr_claim but got {}".format(found[0x10]["methods"][0])
+assert isinstance(found[0x10]["packets"], list)
+assert len(found[0x10]["packets"]) == 1
+assert isinstance(found[0x10]["packets"][0], list)
 cleanup_testsockets()
 
 = j1939_scan: result dict has 'methods' and 'packets' keys
@@ -371,6 +385,7 @@ assert "packets" in found[0x11], "Expected 'packets' key"
 assert isinstance(found[0x11]["packets"], list), "'packets' must be a list"
 assert found[0x11]["methods"] == ["addr_claim"]
 assert len(found[0x11]["packets"]) == 1, "Single detection: packets list must have 1 entry"
+assert isinstance(found[0x11]["packets"][0], list)
 cleanup_testsockets()
 
 = j1939_scan: stop_event halts scan immediately
@@ -399,6 +414,9 @@ found = j1939_scan(sock, methods=["unicast"], scan_range=[0x30], sniff_time=0.1,
                    noise_ids=set())
 assert 0x30 in found
 assert found[0x30]["methods"] == ["unicast"]
+assert isinstance(found[0x30]["packets"], list)
+assert len(found[0x30]["packets"]) == 1
+assert isinstance(found[0x30]["packets"][0], list)
 cleanup_testsockets()
 
 
@@ -706,6 +724,9 @@ def test_multi_method_accumulation():
         "unicast should be in methods: {}".format(found[0x15]["methods"])
     assert found[0x15]["methods"][0] == "addr_claim", \
         "First detection should be addr_claim"
+    assert len(found[0x15]["packets"]) == 2
+    assert isinstance(found[0x15]["packets"][0], list)
+    assert isinstance(found[0x15]["packets"][1], list)
     cleanup_testsockets()
 
 test_multi_method_accumulation()
@@ -779,7 +800,10 @@ def test_addr_claim_multi_src_addrs():
 test_addr_claim_multi_src_addrs()
 
 = uds: default src_addrs sends 2*len(J1939_NULL_ADDRESSES) probes per DA
-def test_uds_multi_src_addrs():
+def test_uds_multi_src_addrs_count():
+    # With the new functional then physical scan, if no responses are received:
+    # 1 broadcast per src_addr (functional) + 1 unicast per src_addr (physical)
+    # Total = 2 * len(src_addrs)
     with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
         tx_sock.pair(monitor)
         expected = 2 * len(J1939_NULL_ADDRESSES)
@@ -787,14 +811,14 @@ def test_uds_multi_src_addrs():
                        noise_ids=set())
         pkts = monitor.sniff(count=expected, timeout=0.5)
         assert len(pkts) == expected, \
-            "Expected {} probes (2 PGNs * {} SAs), got {}".format(
+            "Expected {} probes (2 * {} SAs), got {}".format(
                 expected, len(J1939_NULL_ADDRESSES), len(pkts))
         probe_sas = {_j1939_decode_can_id(p.identifier)[3] for p in pkts}
         assert probe_sas == set(J1939_NULL_ADDRESSES), \
             "Probe SAs must cover all J1939_NULL_ADDRESSES"
     cleanup_testsockets()
 
-test_uds_multi_src_addrs()
+test_uds_multi_src_addrs_count()
 
 = j1939_scan: packets list is parallel to methods list (one entry per method)
 def test_packets_list_parallel_to_methods():
@@ -827,6 +851,8 @@ def test_packets_list_parallel_to_methods():
         "packets and methods must have the same length"
     assert methods[0] == "addr_claim"
     assert methods[1] == "unicast"
+    assert isinstance(packets[0], list)
+    assert isinstance(packets[1], list)
     cleanup_testsockets()
 
 test_packets_list_parallel_to_methods()
@@ -960,6 +986,8 @@ def test_uds_positive_response():
                            noise_ids=set(), skip_functional=True)
     assert 0x30 in found, "Expected SA=0x30, got: {}".format(
         [hex(k) for k in found])
+    assert isinstance(found[0x30], list)
+    assert len(found[0x30]) == 1
     cleanup_testsockets()
 
 test_uds_positive_response()
@@ -976,34 +1004,39 @@ def test_uds_positive_response_pgn_db():
     assert 0x3A in found, \
         "Expected SA=0x3A (Functional response), got: {}".format(
             [hex(k) for k in found])
+    assert isinstance(found[0x3A], list)
+    assert len(found[0x3A]) == 1
     cleanup_testsockets()
 
 test_uds_positive_response_pgn_db()
 
-= uds: unicast is skipped for SA found via functional scan
-def test_uds_skip_unicast_if_found():
+= uds: both functional and physical responses are captured
+def test_uds_both_functional_and_physical():
     with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
         tx_sock.pair(monitor)
         # Inject response for functional broadcast (PF=0xDB, DA=0xFF) from SA=0x55
-        resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_B, J1939_GLOBAL_ADDRESS, 0x55)
-        tx_sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+        resp_f = _j1939_can_id(6, J1939_PF_DIAG_B, J1939_GLOBAL_ADDRESS, 0x55)
+        tx_sock.ins.send(bytes(CAN(identifier=resp_f, flags="extended",
                                     data=b'\x02\x7e\x00')))
         
+        # Inject response for physical unicast (PF=0xDA, DA=0x55) from SA=0x55
+        resp_p = _j1939_can_id(6, J1939_PF_DIAG_A, J1939_NULL_ADDRESS, 0x55)
+        tx_sock.ins.send(bytes(CAN(identifier=resp_p, flags="extended",
+                                    data=b'\x02\x7e\x00')))
+
         found = j1939_scan_uds(tx_sock, scan_range=[0x55], sniff_time=0.1,
                                broadcast_listen_time=0.05,
                                noise_ids=set(), src_addrs=[J1939_NULL_ADDRESS])
         
         assert 0x55 in found
-        # Sniff probes on monitor
-        pkts = monitor.sniff(count=10, timeout=0.2)
-        # Should only see 1 probe frame (the functional broadcast one)
-        assert len(pkts) == 1, "Expected only 1 probe (functional), got {}".format(len(pkts))
-        _, pf, ps, _ = _j1939_decode_can_id(pkts[0].identifier)
-        assert pf == J1939_PF_DIAG_B
-        assert ps == J1939_GLOBAL_ADDRESS
+        # Should have captured both responses
+        assert len(found[0x55]) == 2
+        # Check PFs
+        pfs = { _j1939_decode_can_id(p.identifier)[1] for p in found[0x55] }
+        assert pfs == { J1939_PF_DIAG_A, J1939_PF_DIAG_B }
     cleanup_testsockets()
 
-test_uds_skip_unicast_if_found()
+test_uds_both_functional_and_physical()
 
 = uds: skip_functional=True avoids broadcast probes
 def test_uds_skip_functional():
@@ -1143,6 +1176,9 @@ def test_j1939_scan_uds_technique():
             [hex(k) for k in found])
     assert found[0x40]["methods"] == ["uds"], \
         "methods should be ['uds'], got: {}".format(found[0x40]["methods"])
+    assert isinstance(found[0x40]["packets"], list)
+    assert len(found[0x40]["packets"]) == 1
+    assert isinstance(found[0x40]["packets"][0], list)
     cleanup_testsockets()
 
 test_j1939_scan_uds_technique()
@@ -1177,6 +1213,8 @@ def test_j1939_scan_addr_claim_and_uds():
     assert found[0x41]["methods"][0] == "addr_claim"
     assert len(found[0x41]["packets"]) == 2, \
         "Two methods found SA=0x41; packets list must have 2 entries"
+    assert isinstance(found[0x41]["packets"][0], list)
+    assert isinstance(found[0x41]["packets"][1], list)
     cleanup_testsockets()
 
 test_j1939_scan_addr_claim_and_uds()

@@ -262,7 +262,7 @@ def j1939_scan_addr_claim(
     bitrate=_J1939_DEFAULT_BITRATE,  # type: int
     busload=_J1939_DEFAULT_BUSLOAD,  # type: float
 ):
-    # type: (...) -> Dict[int, CAN]
+    # type: (...) -> Dict[int, List[CAN]]
     """Enumerate CAs via a global Request for Address Claimed (PGN 60928).
 
     Sends a broadcast Request frame from each address in *src_addrs* and
@@ -284,7 +284,8 @@ def j1939_scan_addr_claim(
     :param busload: maximum scanner bus-load fraction (default 0.05).
                     Accepted for API uniformity; not used by this broadcast
                     technique.
-    :returns: dict mapping responder source address (int) to the CAN reply
+    :returns: dict mapping responder source address (int) to a list of
+              matching CAN replies
     """
     if src_addrs is None:
         src_addrs = J1939_NULL_ADDRESSES
@@ -298,7 +299,7 @@ def j1939_scan_addr_claim(
             "addr_claim: broadcast request sent SA=0x%02X (CAN-ID=0x%08X)", _sa, can_id
         )
 
-    found = {}  # type: Dict[int, CAN]
+    found = {}  # type: Dict[int, List[CAN]]
 
     def _rx(pkt):
         # type: (CAN) -> None
@@ -307,12 +308,14 @@ def j1939_scan_addr_claim(
         if stop_event is not None and stop_event.is_set():
             return
         _, pf, _, sa = _j1939_decode_can_id(pkt.identifier)
-        if pf == J1939_PF_ADDRESS_CLAIMED and sa not in found:
+        if pf == J1939_PF_ADDRESS_CLAIMED:
             if not force and noise_ids is not None and sa in noise_ids:
                 log_j1939.debug("addr_claim: suppressing noise SA=0x%02X", sa)
                 return
             log_j1939.debug("addr_claim: response from SA=0x%02X", sa)
-            found[sa] = pkt
+            if sa not in found:
+                found[sa] = []
+            found[sa].append(pkt)
 
     sock.sniff(prn=_rx, timeout=listen_time, store=False)
     return found
@@ -331,7 +334,7 @@ def j1939_scan_ecu_id(
     bitrate=_J1939_DEFAULT_BITRATE,  # type: int
     busload=_J1939_DEFAULT_BUSLOAD,  # type: float
 ):
-    # type: (...) -> Dict[int, CAN]
+    # type: (...) -> Dict[int, List[CAN]]
     """Enumerate CAs via a global Request for ECU Identification (PGN 64965).
 
     Sends a broadcast Request frame from each address in *src_addrs* and
@@ -350,7 +353,8 @@ def j1939_scan_ecu_id(
     :param busload: maximum scanner bus-load fraction (default 0.05).
                     Accepted for API uniformity; not used by this broadcast
                     technique.
-    :returns: dict mapping responder source address (int) to the CAN reply
+    :returns: dict mapping responder source address (int) to a list of
+              matching CAN replies
     """
     if src_addrs is None:
         src_addrs = J1939_NULL_ADDRESSES
@@ -364,7 +368,7 @@ def j1939_scan_ecu_id(
             "ecu_id: broadcast request sent SA=0x%02X (CAN-ID=0x%08X)", _sa, can_id
         )
 
-    found = {}  # type: Dict[int, CAN]
+    found = {}  # type: Dict[int, List[CAN]]
 
     def _rx(pkt):
         # type: (CAN) -> None
@@ -382,12 +386,14 @@ def j1939_scan_ecu_id(
         if len(data) < 8:
             return
         # BAM control byte = 0x20, PGN at bytes 5-7 (LE)
-        if data[0] == 0x20 and data[5:8] == payload and sa not in found:
+        if data[0] == 0x20 and data[5:8] == payload:
             if not force and noise_ids is not None and sa in noise_ids:
                 log_j1939.debug("ecu_id: suppressing noise SA=0x%02X", sa)
                 return
             log_j1939.debug("ecu_id: BAM from SA=0x%02X", sa)
-            found[sa] = pkt
+            if sa not in found:
+                found[sa] = []
+            found[sa].append(pkt)
 
     sock.sniff(prn=_rx, timeout=listen_time, store=False)
     return found
@@ -407,7 +413,7 @@ def j1939_scan_unicast(
     bitrate=_J1939_DEFAULT_BITRATE,  # type: int
     busload=_J1939_DEFAULT_BUSLOAD,  # type: float
 ):
-    # type: (...) -> Dict[int, CAN]
+    # type: (...) -> Dict[int, List[CAN]]
     """Enumerate CAs by sending unicast Address Claim Requests to each DA.
 
     For each destination address *da* in *scan_range*, sends a Request for
@@ -438,11 +444,12 @@ def j1939_scan_unicast(
     :param bitrate: CAN bus bitrate in bit/s (default 250000 for J1939)
     :param busload: maximum fraction of bus capacity the scanner may consume
                     (default 0.05 = 5 %)
-    :returns: dict mapping responder source address (int) to the CAN reply
+    :returns: dict mapping responder source address (int) to a list of
+              matching CAN replies
     """
     if src_addrs is None:
         src_addrs = J1939_NULL_ADDRESSES
-    found = {}  # type: Dict[int, CAN]
+    found = {}  # type: Dict[int, List[CAN]]
 
     for da in scan_range:
         if stop_event is not None and stop_event.is_set():
@@ -464,9 +471,11 @@ def j1939_scan_unicast(
             if not (pkt.flags & _CAN_EXTENDED_FLAG):
                 return
             _, _, _, sa = _j1939_decode_can_id(pkt.identifier)
-            if sa == _da and _da not in found:
+            if sa == _da:
                 log_j1939.debug("unicast: response from SA=0x%02X", sa)
-                found[_da] = pkt
+                if _da not in found:
+                    found[_da] = []
+                found[_da].append(pkt)
 
         sock.sniff(prn=_rx, timeout=sniff_time, store=False)
 
@@ -495,7 +504,7 @@ def j1939_scan_rts_probe(
     bitrate=_J1939_DEFAULT_BITRATE,  # type: int
     busload=_J1939_DEFAULT_BUSLOAD,  # type: float
 ):
-    # type: (...) -> Dict[int, CAN]
+    # type: (...) -> Dict[int, List[CAN]]
     """Enumerate CAs by sending minimal TP.CM_RTS frames to each DA.
 
     For each destination address *da* in *scan_range*, sends a TP.CM_RTS
@@ -521,11 +530,12 @@ def j1939_scan_rts_probe(
     :param bitrate: CAN bus bitrate in bit/s (default 250000 for J1939)
     :param busload: maximum fraction of bus capacity the scanner may consume
                     (default 0.05 = 5 %)
-    :returns: dict mapping responder source address (int) to the CAN reply
+    :returns: dict mapping responder source address (int) to a list of
+              matching CAN replies
     """
     if src_addrs is None:
         src_addrs = J1939_NULL_ADDRESSES
-    found = {}  # type: Dict[int, CAN]
+    found = {}  # type: Dict[int, List[CAN]]
 
     for da in scan_range:
         if stop_event is not None and stop_event.is_set():
@@ -562,7 +572,7 @@ def j1939_scan_rts_probe(
             if not (pkt.flags & _CAN_EXTENDED_FLAG):
                 return
             _, pf, _, sa = _j1939_decode_can_id(pkt.identifier)
-            if sa != _da or _da in found:
+            if sa != _da:
                 return
             # TP.CM response from the probed node (CTS or Abort)
             if pf == J1939_TP_CM_PF:
@@ -571,7 +581,9 @@ def j1939_scan_rts_probe(
                     log_j1939.debug(
                         "rts_probe: response (ctrl=0x%02X) from SA=0x%02X", d[0], sa
                     )
-                    found[_da] = pkt
+                    if _da not in found:
+                        found[_da] = []
+                    found[_da].append(pkt)
 
         sock.sniff(prn=_rx, timeout=sniff_time, store=False)
 
@@ -603,7 +615,7 @@ def j1939_scan_uds(
     broadcast_listen_time=1.0,  # type: float
     diag_pgn=J1939_PF_DIAG_A,  # type: int
 ):
-    # type: (...) -> Dict[int, CAN]
+    # type: (...) -> Dict[int, List[CAN]]
     """Enumerate CAs by sending a UDS TesterPresent request to each DA.
 
     First, if *skip_functional* is False, sends a broadcast UDS TesterPresent
@@ -638,11 +650,12 @@ def j1939_scan_uds(
                                   broadcast functional probe
     :param diag_pgn: PF byte for UDS diagnostic messages (default 0xDA).
                      Functional addressing uses ``diag_pgn | 0x01``.
-    :returns: dict mapping responder source address (int) to the CAN reply
+    :returns: dict mapping responder source address (int) to a list of
+              matching CAN replies
     """
     if src_addrs is None:
         src_addrs = J1939_NULL_ADDRESSES
-    found = {}  # type: Dict[int, CAN]
+    found = {}  # type: Dict[int, List[CAN]]
 
     if not skip_functional:
         for _sa in src_addrs:
@@ -664,21 +677,20 @@ def j1939_scan_uds(
             if stop_event is not None and stop_event.is_set():
                 return
             _, _, _, sa = _j1939_decode_can_id(pkt.identifier)
-            if sa not in found:
-                if not force and noise_ids is not None and sa in noise_ids:
-                    return
-                data = bytes(pkt.data)
-                if data[:3] == _UDS_TESTER_PRESENT_RESP:
-                    log_j1939.debug("uds: functional response from SA=0x%02X", sa)
-                    found[sa] = pkt
+            if not force and noise_ids is not None and sa in noise_ids:
+                return
+            data = bytes(pkt.data)
+            if data[:3] == _UDS_TESTER_PRESENT_RESP:
+                log_j1939.debug("uds: functional response from SA=0x%02X", sa)
+                if sa not in found:
+                    found[sa] = []
+                found[sa].append(pkt)
 
         sock.sniff(prn=_rx_functional, timeout=broadcast_listen_time, store=False)
 
     for da in scan_range:
         if stop_event is not None and stop_event.is_set():
             break
-        if da in found:
-            continue
         if not force and noise_ids is not None and da in noise_ids:
             log_j1939.debug("uds: skipping noise DA=0x%02X", da)
             continue
@@ -698,11 +710,13 @@ def j1939_scan_uds(
             if not (pkt.flags & _CAN_EXTENDED_FLAG):
                 return
             _, _, _, sa = _j1939_decode_can_id(pkt.identifier)
-            if sa == _da and _da not in found:
+            if sa == _da:
                 data = bytes(pkt.data)
                 if data[:3] == _UDS_TESTER_PRESENT_RESP:
                     log_j1939.debug("uds: response from SA=0x%02X", sa)
-                    found[_da] = pkt
+                    if _da not in found:
+                        found[_da] = []
+                    found[_da].append(pkt)
 
         sock.sniff(prn=_rx, timeout=sniff_time, store=False)
 
@@ -746,8 +760,8 @@ def j1939_scan(
     - ``"methods"`` (List[str]): list of all techniques that found this CA,
       in the order they detected it.  A CA discovered by more than one
       technique will appear in all of their names.
-    - ``"packets"`` (List[CAN]): list of CAN response frames, one per entry
-      in ``"methods"``, in the same order.
+    - ``"packets"`` (List[List[CAN]]): list of lists of CAN response frames,
+      one inner list per entry in ``"methods"``, in the same order.
 
     By default, before running any active probe the function performs a
     passive bus listen (via :func:`j1939_scan_passive`) for *noise_listen_time*
@@ -785,7 +799,7 @@ def j1939_scan(
     :param skip_functional: passed to :func:`j1939_scan_uds`
     :param diag_pgn: passed to :func:`j1939_scan_uds`
     :returns: dict mapping SA (int) to
-              ``{"methods": List[str], "packets": List[CAN]}``
+              ``{"methods": List[str], "packets": List[List[CAN]]}``
 
     Example::
 
@@ -833,21 +847,21 @@ def j1939_scan(
     scan_range_list = list(scan_range)
 
     def _merge(found, method_name):
-        # type: (Dict[int, CAN], str) -> None
-        for sa, pkt in found.items():
+        # type: (Dict[int, List[CAN]], str) -> None
+        for sa, pkts in found.items():
             if sa not in results:
                 if verbose:
                     log_j1939.info(
                         "j1939_scan: found SA=0x%02X via %s", sa, method_name
                     )
-                results[sa] = {"methods": [method_name], "packets": [pkt]}
+                results[sa] = {"methods": [method_name], "packets": [pkts]}
             else:
                 if verbose:
                     log_j1939.info(
                         "j1939_scan: SA=0x%02X also detected via %s", sa, method_name
                     )
                 cast(List[str], results[sa]["methods"]).append(method_name)
-                cast(List[CAN], results[sa]["packets"]).append(pkt)
+                cast(List[List[CAN]], results[sa]["packets"]).append(pkts)
 
     if "addr_claim" in methods:
         if stop_event is not None and stop_event.is_set():
