@@ -208,33 +208,6 @@ assert res.supported is False, "Response from wrong SA must be ignored"
 assert res.error == "Timeout"
 cleanup_testsockets()
 
-
-+ j1939_scan_dm_pgn — noise filtering
-
-= dm_pgn_probe: target_da in noise_ids skips probe (returns Skipped)
-sock = TestSocket(CAN)
-res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=J1939_DM_PGNS["DM1"],
-                        dm_name="DM1", noise_ids={0x10}, sniff_time=0.05)
-assert res.supported is False
-assert res.error == "Skipped (noise)"
-cleanup_testsockets()
-
-= dm_pgn_probe: force=True ignores noise_ids and probes anyway
-def test_dm_pgn_force():
-    sock = TestSocket(CAN)
-    # Inject positive response from SA=0x10
-    resp_can_id = _j1939_can_id(6, 0xFE, 0xCA, 0x10)
-    sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
-                            data=b'\xff\xff' + b'\x00' * 6)))
-    res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=J1939_DM_PGNS["DM1"],
-                            dm_name="DM1", noise_ids={0x10}, force=True,
-                            sniff_time=0.1)
-    assert res.supported is True, "force=True should override noise_ids"
-    assert res.error is None
-    cleanup_testsockets()
-
-test_dm_pgn_force()
-
 = dm_pgn_probe: stop_event already set returns Aborted immediately
 def test_dm_pgn_stop_event():
     ev = Event()

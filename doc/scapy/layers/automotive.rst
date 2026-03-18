@@ -1505,52 +1505,6 @@ Provide an explicit noise baseline to skip the automatic passive pre-scan::
     >>> noise = j1939_scan_passive(sock, listen_time=2.0)
     >>> found = j1939_scan(sock, noise_ids=noise)
 
-Force-probe all addresses regardless of background noise::
-
-    >>> found = j1939_scan(sock, force=True)
-
-
-Noise filtering with ``noise_ids`` and ``force``
--------------------------------------------------
-
-All active scan functions accept two keyword arguments that control noise filtering:
-
-``noise_ids`` (``Optional[Set[int]]``, default ``None``)
-    A set of source addresses already known to be present on the bus (e.g., from
-    ``j1939_scan_passive()``).  For **broadcast** techniques (``addr_claim``,
-    ``ecu_id``) the probe is still sent but any response whose SA is in
-    ``noise_ids`` is silently dropped from the result.  For **unicast/RTS sweep**
-    techniques (``unicast``, ``rts_probe``) the DA is skipped entirely — no probe
-    frame is transmitted.
-
-``force`` (``bool``, default ``False``)
-    When ``True``, noise filtering is disabled completely: all addresses are probed
-    and all responses are reported, regardless of ``noise_ids``.
-
-Examples::
-
-    # Suppress three known-noisy CAs from a unicast sweep
-    >>> found = j1939_scan_unicast(
-    ...     sock,
-    ...     scan_range=range(0x00, 0xFE),
-    ...     noise_ids={0x10, 0x27, 0x49},
-    ...     sniff_time=0.05,
-    ... )
-
-    # Probe everything, even if already seen on the bus
-    >>> found = j1939_scan_unicast(
-    ...     sock,
-    ...     scan_range=range(0x00, 0xFE),
-    ...     noise_ids={0x10, 0x27, 0x49},
-    ...     force=True,
-    ...     sniff_time=0.05,
-    ... )
-
-.. note::
-    When ``noise_ids`` is passed explicitly to ``j1939_scan()``, the automatic
-    passive pre-scan is skipped.  Pass ``noise_ids=set()`` to suppress the
-    pre-scan while keeping noise filtering on (but with an empty initial baseline).
-
 
 Bus-load pacing
 ---------------

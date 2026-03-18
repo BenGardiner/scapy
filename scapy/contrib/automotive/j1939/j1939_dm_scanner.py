@@ -155,8 +155,7 @@ class DmScanResult(object):
     :param supported: ``True`` if the ECU replied with the requested PGN
     :param packet: the first CAN response received (``None`` on timeout)
     :param error: ``None`` when supported; ``"NACK"`` for negative ack;
-                  ``"Timeout"`` when no reply; ``"Skipped (noise)"`` when the
-                  target DA was in *noise_ids* and *force* was False
+                  ``"Timeout"`` when no reply
     """
 
     __slots__ = ("dm_name", "pgn", "supported", "packet", "error")
@@ -206,8 +205,6 @@ def j1939_scan_dm_pgn(
     dm_name="Unknown",  # type: str
     src_addr=J1939_NULL_ADDRESS,  # type: int
     sniff_time=1.0,  # type: float
-    noise_ids=None,  # type: Optional[Set[int]]
-    force=False,  # type: bool
     stop_event=None,  # type: Optional[Event]
     bitrate=_J1939_DEFAULT_BITRATE,  # type: int
     busload=_J1939_DEFAULT_BUSLOAD,  # type: float
@@ -231,19 +228,12 @@ def j1939_scan_dm_pgn(
     :param dm_name: human-readable DM name included in the returned result
     :param src_addr: source address used in outgoing probes (default 0xFE)
     :param sniff_time: seconds to wait for a response after sending the probe
-    :param noise_ids: set of source addresses to skip; when *target_da* is in
-                      this set (and *force* is False) no probe is sent
-    :param force: if True, probe even if *target_da* is in *noise_ids*
     :param stop_event: optional :class:`threading.Event` to abort early
     :param bitrate: CAN bus bitrate in bit/s (default 250000 for J1939)
     :param busload: maximum fraction of bus capacity the scanner may consume
                     (default 0.05 = 5 %)
     :returns: :class:`DmScanResult` describing the outcome for this PGN
     """
-    if not force and noise_ids is not None and target_da in noise_ids:
-        log_j1939.debug("dm_scan: skipping noise DA=0x%02X", target_da)
-        return DmScanResult(dm_name, pgn, False, error="Skipped (noise)")
-
     if stop_event is not None and stop_event.is_set():
         return DmScanResult(dm_name, pgn, False, error="Aborted")
 
@@ -299,11 +289,9 @@ def j1939_scan_dm_pgn(
 def j1939_scan_dm(
     sock,  # type: SuperSocket
     target_da,  # type: int
-    pgns=None,  # type: Optional[List[str]]
+    dms=None,  # type: Optional[List[str]]
     src_addr=J1939_NULL_ADDRESS,  # type: int
     sniff_time=1.0,  # type: float
-    noise_ids=None,  # type: Optional[Set[int]]
-    force=False,  # type: bool
     stop_event=None,  # type: Optional[Event]
     bitrate=_J1939_DEFAULT_BITRATE,  # type: int
     busload=_J1939_DEFAULT_BUSLOAD,  # type: float
@@ -313,8 +301,8 @@ def j1939_scan_dm(
     # type: (...) -> Dict[str, DmScanResult]
     """Probe *target_da* for all (or a selected subset of) Diagnostic Message PGNs.
 
-    Iterates over the DM names in *pgns* (or all entries in
-    :data:`J1939_DM_PGNS` when *pgns* is ``None``), calling
+    Iterates over the DM names in *dms* (or all entries in
+    :data:`J1939_DM_PGNS` when *dms* is ``None``), calling
     :func:`j1939_scan_dm_pgn` for each one and collecting the results.
 
     If *reset_handler* is provided it is called between each pair of DM PGN
@@ -326,13 +314,10 @@ def j1939_scan_dm(
 
     :param sock: raw CAN socket to use for sending / sniffing
     :param target_da: destination address of the ECU to probe (0x00–0xFD)
-    :param pgns: list of DM names to scan; must be keys of
+    :param dms: list of DM names to scan; must be keys of
                  :data:`J1939_DM_PGNS`.  Default is all eight entries.
     :param src_addr: source address used in outgoing probes (default 0xFE)
     :param sniff_time: per-PGN listen time in seconds (default 1.0)
-    :param noise_ids: set of source addresses to skip; when *target_da* is in
-                      this set (and *force* is False) all probes are skipped
-    :param force: if True, probe even if *target_da* is in *noise_ids*
     :param stop_event: optional :class:`threading.Event` to abort early
     :param bitrate: CAN bus bitrate in bit/s (default 250000 for J1939)
     :param busload: maximum fraction of bus capacity the scanner may consume
@@ -366,10 +351,10 @@ def j1939_scan_dm(
         ...     reconnect_handler=reconnect,
         ... )
     """
-    if pgns is None:
-        pgns = list(J1939_DM_PGNS.keys())
+    if dms is None:
+        dms = list(J1939_DM_PGNS.keys())
 
-    for name in pgns:
+    for name in dms:
         if name not in J1939_DM_PGNS:
             raise ValueError(
                 "Unknown DM name {!r}; valid names: {}".format(
@@ -379,9 +364,9 @@ def j1939_scan_dm(
 
     results = {}  # type: Dict[str, DmScanResult]
     active_sock = sock  # may be replaced if reconnect_handler is used
-    num_pgns = len(pgns)
+    num_pgns = len(dms)
 
-    for i, dm_name in enumerate(pgns):
+    for i, dm_name in enumerate(dms):
         if stop_event is not None and stop_event.is_set():
             break
         results[dm_name] = j1939_scan_dm_pgn(
@@ -391,8 +376,6 @@ def j1939_scan_dm(
             dm_name=dm_name,
             src_addr=src_addr,
             sniff_time=sniff_time,
-            noise_ids=noise_ids,
-            force=force,
             stop_event=stop_event,
             bitrate=bitrate,
             busload=busload,
