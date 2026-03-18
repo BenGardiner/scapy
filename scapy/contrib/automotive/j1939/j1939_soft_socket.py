@@ -101,11 +101,11 @@ J1939_TP_DT_MAX_SN = 255
 J1939_TP_DT_PAYLOAD = 7
 
 # TP.CM control bytes
-TP_CM_RTS = 0x10        # Request to Send
-TP_CM_CTS = 0x11        # Clear to Send
+TP_CM_RTS = 0x10  # Request to Send
+TP_CM_CTS = 0x11  # Clear to Send
 TP_CM_EndOfMsgACK = 0x13  # End of Message Acknowledgment
-TP_CM_BAM = 0x20        # Broadcast Announce Message
-TP_Conn_Abort = 0xFF    # Connection Abort
+TP_CM_BAM = 0x20  # Broadcast Announce Message
+TP_Conn_Abort = 0xFF  # Connection Abort
 
 #: Value for the "max packets per CTS" field in a TP.CM_RTS frame that
 #: indicates no limit on how many TP.DT frames the receiver may request per CTS
@@ -149,26 +149,26 @@ J1939_NULL_ADDRESS = 0xFE
 J1939_ADDR_CLAIM_TIMEOUT = 0.250
 
 # Address-claim state machine states
-J1939_ADDR_STATE_UNCLAIMED = 0     # address claiming not enabled
-J1939_ADDR_STATE_CLAIMING = 1      # 250 ms window in progress
-J1939_ADDR_STATE_CLAIMED = 2       # address successfully claimed
+J1939_ADDR_STATE_UNCLAIMED = 0  # address claiming not enabled
+J1939_ADDR_STATE_CLAIMING = 1  # 250 ms window in progress
+J1939_ADDR_STATE_CLAIMED = 2  # address successfully claimed
 J1939_ADDR_STATE_CANNOT_CLAIM = 3  # lost arbitration; SA = 0xFE
 
 # ---------------------------------------------------------------------------
 # State machine states (RX)
 # ---------------------------------------------------------------------------
 J1939_RX_IDLE = 0
-J1939_RX_BAM_WAIT_DATA = 1     # BAM: received TP.CM_BAM, waiting for TP.DT
-J1939_RX_CMDT_WAIT_DATA = 2    # CMDT: sent CTS, waiting for TP.DT
+J1939_RX_BAM_WAIT_DATA = 1  # BAM: received TP.CM_BAM, waiting for TP.DT
+J1939_RX_CMDT_WAIT_DATA = 2  # CMDT: sent CTS, waiting for TP.DT
 
 # ---------------------------------------------------------------------------
 # State machine states (TX)
 # ---------------------------------------------------------------------------
 J1939_TX_IDLE = 0
-J1939_TX_BAM_SENDING = 1       # BAM: sending TP.DT frames
-J1939_TX_CMDT_WAIT_CTS = 2     # CMDT: sent RTS, waiting for CTS
-J1939_TX_CMDT_SENDING = 3      # CMDT: sending TP.DT frames permitted by CTS
-J1939_TX_CMDT_WAIT_ACK = 4     # CMDT: sent all DT, waiting for EndOfMsgACK
+J1939_TX_BAM_SENDING = 1  # BAM: sending TP.DT frames
+J1939_TX_CMDT_WAIT_CTS = 2  # CMDT: sent RTS, waiting for CTS
+J1939_TX_CMDT_SENDING = 3  # CMDT: sending TP.DT frames permitted by CTS
+J1939_TX_CMDT_WAIT_ACK = 4  # CMDT: sent all DT, waiting for EndOfMsgACK
 
 
 def _j1939_can_id(priority, pf, da, sa):
@@ -215,6 +215,7 @@ class J1939(Packet):
     :param args: Arguments for Packet init (e.g. raw bytes)
     :param kwargs: Keyword arguments for Packet init
     """
+
     name = "J1939"
     fields_desc = []  # type: ignore[var-annotated]
 
@@ -222,10 +223,10 @@ class J1939(Packet):
 
     def __init__(self, *args, **kwargs):
         # type: (Any, Any) -> None
-        self.pgn = kwargs.pop("pgn", 0)        # type: int
+        self.pgn = kwargs.pop("pgn", 0)  # type: int
         self.src_addr = kwargs.pop("src_addr", 0)  # type: int
         self.dst_addr = kwargs.pop("dst_addr", J1939_GLOBAL_ADDRESS)  # type: int
-        self.data = kwargs.pop("data", b"")    # type: bytes
+        self.data = kwargs.pop("data", b"")  # type: bytes
         Packet.__init__(self, *args, **kwargs)
 
     def do_dissect(self, s):
@@ -250,10 +251,12 @@ class J1939(Packet):
         # type: (Any) -> bool
         if not isinstance(other, J1939):
             return False
-        return (self.pgn == other.pgn and
-                self.src_addr == other.src_addr and
-                self.dst_addr == other.dst_addr and
-                self.data == other.data)
+        return (
+            self.pgn == other.pgn
+            and self.src_addr == other.src_addr
+            and self.dst_addr == other.dst_addr
+            and self.data == other.data
+        )
 
 
 class J1939SoftSocket(SuperSocket):
@@ -307,21 +310,22 @@ class J1939SoftSocket(SuperSocket):
 
     def __init__(
         self,
-        can_socket=None,   # type: Optional[Union["CANSocket", str]]
-        src_addr=0x00,     # type: int
+        can_socket=None,  # type: Optional[Union["CANSocket", str]]
+        src_addr=0x00,  # type: int
         dst_addr=J1939_GLOBAL_ADDRESS,  # type: int
-        pgn=0,             # type: int
-        rx_pgn=None,       # type: Optional[int]
-        priority=6,        # type: int
-        bs=0,              # type: int
+        pgn=0,  # type: int
+        rx_pgn=None,  # type: Optional[int]
+        priority=6,  # type: int
+        bs=0,  # type: int
         listen_only=False,  # type: bool
-        basecls=J1939,     # type: Type[Packet]
-        name=None,         # type: Optional[int]
+        basecls=J1939,  # type: Type[Packet]
+        name=None,  # type: Optional[int]
         preferred_address=None,  # type: Optional[int]
     ):
         # type: (...) -> None
         if LINUX and isinstance(can_socket, str):
             from scapy.contrib.cansocket_native import NativeCANSocket
+
             can_socket = NativeCANSocket(can_socket)
         elif isinstance(can_socket, str):
             raise Scapy_Exception("Provide a CANSocket object instead of a string")
@@ -361,7 +365,7 @@ class J1939SoftSocket(SuperSocket):
                 self.impl.close()
             self.closed = True
 
-    def recv_raw(self, x=0xffff):
+    def recv_raw(self, x=0xFFFF):
         # type: (int) -> Tuple[Optional[Type[Packet]], Optional[bytes], Optional[float]]
         """Receive a complete J1939 message (potentially multi-packet)."""
         if not self.closed:
@@ -370,7 +374,7 @@ class J1939SoftSocket(SuperSocket):
                 return self.basecls, tup[0], float(tup[1])
         return self.basecls, None, None
 
-    def recv(self, x=0xffff, **kwargs):
+    def recv(self, x=0xFFFF, **kwargs):
         # type: (int, **Any) -> Optional[Packet]
         msg = super(J1939SoftSocket, self).recv(x, **kwargs)
         if msg is None:
@@ -388,17 +392,22 @@ class J1939SoftSocket(SuperSocket):
         # type: (List[Union[SuperSocket, ObjectPipe[Any]]], Optional[float]) -> List[Union[SuperSocket, ObjectPipe[Any]]]  # noqa: E501
         """Called during sendrecv() to wait for sockets to be ready."""
         obj_pipes = [  # type: ignore[var-annotated]
-            x.impl.rx_queue for x in sockets if
-            isinstance(x, J1939SoftSocket) and not x.closed]
+            x.impl.rx_queue
+            for x in sockets
+            if isinstance(x, J1939SoftSocket) and not x.closed
+        ]
         obj_pipes += [x for x in sockets if isinstance(x, ObjectPipe) and not x.closed]
 
         ready_pipes = select_objects(obj_pipes, remain)
 
         result = [  # type: ignore[var-annotated]
-            x for x in sockets if isinstance(x, J1939SoftSocket) and
-            not x.closed and x.impl.rx_queue in ready_pipes]
-        result += [x for x in sockets if isinstance(x, ObjectPipe) and
-                   x in ready_pipes]
+            x
+            for x in sockets
+            if isinstance(x, J1939SoftSocket)
+            and not x.closed
+            and x.impl.rx_queue in ready_pipes
+        ]
+        result += [x for x in sockets if isinstance(x, ObjectPipe) and x in ready_pipes]
         return result
 
 
@@ -414,7 +423,8 @@ class TimeoutScheduler:
       Copyright (C) Enrico Pozzobon <enricopozzobon@gmail.com>
       SPDX-License-Identifier: GPL-2.0-only
     """
-    GRACE = .1
+
+    GRACE = 0.1
     _mutex = RLock()
     _event = Event()
     _thread = None  # type: Optional[Thread]
@@ -534,7 +544,8 @@ class TimeoutScheduler:
 
     class Handle:
         """A handle for a scheduled timeout."""
-        __slots__ = ['_when', '_cb']
+
+        __slots__ = ["_when", "_cb"]
 
         def __init__(self, when, cb):
             # type: (float, Optional[Union[Callable[[], None], bool]]) -> None
@@ -545,8 +556,7 @@ class TimeoutScheduler:
             # type: () -> bool
             """Cancel this timeout. Returns False if already executed."""
             if self._cb is None:
-                raise Scapy_Exception(
-                    "cancel() called on previously cancelled Handle")
+                raise Scapy_Exception("cancel() called on previously cancelled Handle")
             with TimeoutScheduler._mutex:
                 if isinstance(self._cb, bool):
                     return False
@@ -610,15 +620,15 @@ class J1939SocketImplementation:
 
     def __init__(
         self,
-        can_socket,        # type: "CANSocket"
-        src_addr=0x00,     # type: int
+        can_socket,  # type: "CANSocket"
+        src_addr=0x00,  # type: int
         dst_addr=J1939_GLOBAL_ADDRESS,  # type: int
-        pgn=0,             # type: int
-        rx_pgn=0,          # type: int
-        priority=6,        # type: int
-        bs=0,              # type: int
+        pgn=0,  # type: int
+        rx_pgn=0,  # type: int
+        priority=6,  # type: int
+        bs=0,  # type: int
         listen_only=False,  # type: bool
-        name=None,         # type: Optional[int]
+        name=None,  # type: Optional[int]
         preferred_address=None,  # type: Optional[int]
     ):
         # type: (...) -> None
@@ -639,40 +649,40 @@ class J1939SocketImplementation:
 
         # Receive state machine
         self.rx_state = J1939_RX_IDLE
-        self.rx_pgn_active = 0       # PGN of message being received
-        self.rx_src_addr = 0         # SA of sender
-        self.rx_dst_addr = 0         # DA of message being received
-        self.rx_total_size = 0       # total bytes expected
-        self.rx_total_packets = 0    # total TP.DT packets expected
-        self.rx_buf = b""            # accumulation buffer
-        self.rx_sn = 1               # next expected sequence number
-        self.rx_ts = 0.0             # type: Union[float, EDecimal]
-        self.rx_start_time = 0.0     # time when current TP transfer started
-        self.rx_bs = bs              # configured block size
-        self.rx_bs_count = 0         # packets received in current block
-        self.rx_next_packet = 1      # next packet number for CMDT CTS
+        self.rx_pgn_active = 0  # PGN of message being received
+        self.rx_src_addr = 0  # SA of sender
+        self.rx_dst_addr = 0  # DA of message being received
+        self.rx_total_size = 0  # total bytes expected
+        self.rx_total_packets = 0  # total TP.DT packets expected
+        self.rx_buf = b""  # accumulation buffer
+        self.rx_sn = 1  # next expected sequence number
+        self.rx_ts = 0.0  # type: Union[float, EDecimal]
+        self.rx_start_time = 0.0  # time when current TP transfer started
+        self.rx_bs = bs  # configured block size
+        self.rx_bs_count = 0  # packets received in current block
+        self.rx_next_packet = 1  # next packet number for CMDT CTS
 
         # Transmit state machine
         self.tx_state = J1939_TX_IDLE
-        self.tx_buf = b""            # message to send
+        self.tx_buf = b""  # message to send
         self.tx_total_size = 0
         self.tx_total_packets = 0
-        self.tx_pgn = 0              # PGN of message being sent
-        self.tx_dst_addr = 0         # DA of message being sent
-        self.tx_sn = 1               # current sequence number
-        self.tx_idx = 0              # index into tx_buf (bytes sent so far)
+        self.tx_pgn = 0  # PGN of message being sent
+        self.tx_dst_addr = 0  # DA of message being sent
+        self.tx_sn = 1  # current sequence number
+        self.tx_idx = 0  # index into tx_buf (bytes sent so far)
         self.tx_packets_to_send = 0  # packets permitted by last CTS
-        self.tx_packets_sent = 0     # packets sent in current CTS block
-        self.tx_gap = 0.0            # inter-frame gap (seconds)
+        self.tx_packets_sent = 0  # packets sent in current CTS block
+        self.tx_gap = 0.0  # inter-frame gap (seconds)
 
         # Protocol timeout values (seconds)
-        self.tp_dt_timeout = 0.750   # T1: timeout waiting for next TP.DT (750 ms)
-        self.tp_cm_timeout = 1.250   # T2/T3: timeout waiting for CTS or ACK (1250 ms)
-        self.bam_dt_gap = 0.050      # inter-frame gap for BAM TP.DT (50 ms)
+        self.tp_dt_timeout = 0.750  # T1: timeout waiting for next TP.DT (750 ms)
+        self.tp_cm_timeout = 1.250  # T2/T3: timeout waiting for CTS or ACK (1250 ms)
+        self.bam_dt_gap = 0.050  # inter-frame gap for BAM TP.DT (50 ms)
 
         # Timer handles (all None-initialised; cancelled in close())
-        self.rx_timeout_handle = None    # type: Optional[TimeoutScheduler.Handle]
-        self.tx_timeout_handle = None    # type: Optional[TimeoutScheduler.Handle]
+        self.rx_timeout_handle = None  # type: Optional[TimeoutScheduler.Handle]
+        self.tx_timeout_handle = None  # type: Optional[TimeoutScheduler.Handle]
         self.address_claim_handle = None  # type: Optional[TimeoutScheduler.Handle]
 
         # Miscellaneous state
@@ -686,10 +696,10 @@ class J1939SocketImplementation:
 
         # Background polling (5 ms default poll rate)
         self.rx_tx_poll_rate = 0.005
-        self.rx_handle = TimeoutScheduler.schedule(
-            self.rx_tx_poll_rate, self.can_recv)
+        self.rx_handle = TimeoutScheduler.schedule(self.rx_tx_poll_rate, self.can_recv)
         self.tx_handle = TimeoutScheduler.schedule(
-            self.rx_tx_poll_rate, self._send_poll)
+            self.rx_tx_poll_rate, self._send_poll
+        )
 
         # J1939-81 initial address claim broadcast
         self.address_state = J1939_ADDR_STATE_UNCLAIMED
@@ -697,7 +707,8 @@ class J1939SocketImplementation:
             self.address_state = J1939_ADDR_STATE_CLAIMING
             self._send_address_claimed(self.preferred_address)
             self.address_claim_handle = TimeoutScheduler.schedule(
-                J1939_ADDR_CLAIM_TIMEOUT, self._address_claim_timer_fired)
+                J1939_ADDR_CLAIM_TIMEOUT, self._address_claim_timer_fired
+            )
 
     # ------------------------------------------------------------------
     # Destructor / close
@@ -711,8 +722,11 @@ class J1939SocketImplementation:
         # type: () -> None
         """Stop background threads and release resources."""
         self.closed = True
-        for handle in (self.rx_timeout_handle, self.tx_timeout_handle,
-                       self.address_claim_handle):
+        for handle in (
+            self.rx_timeout_handle,
+            self.tx_timeout_handle,
+            self.address_claim_handle,
+        ):
             if handle is not None:
                 try:
                     handle.cancel()
@@ -744,11 +758,13 @@ class J1939SocketImplementation:
         """Send an Address Claimed message (PGN 0xEE00) broadcast with our NAME."""
         if self.name is None:
             return
-        can_id = _j1939_can_id(self.priority, J1939_PF_ADDRESS_CLAIMED,
-                               J1939_GLOBAL_ADDRESS, sa)
+        can_id = _j1939_can_id(
+            self.priority, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, sa
+        )
         data = struct.pack("<Q", self.name)
-        log_j1939.debug("Sending Address Claimed from SA=0x%02X NAME=0x%016X",
-                        sa, self.name)
+        log_j1939.debug(
+            "Sending Address Claimed from SA=0x%02X NAME=0x%016X", sa, self.name
+        )
         self._can_send(can_id, data)
 
     def _send_cannot_claim(self):
@@ -756,8 +772,12 @@ class J1939SocketImplementation:
         """Send a Cannot Claim message (PGN 0xEE00 from SA=0xFE) with our NAME."""
         if self.name is None:
             return
-        can_id = _j1939_can_id(self.priority, J1939_PF_ADDRESS_CLAIMED,
-                               J1939_GLOBAL_ADDRESS, J1939_NULL_ADDRESS)
+        can_id = _j1939_can_id(
+            self.priority,
+            J1939_PF_ADDRESS_CLAIMED,
+            J1939_GLOBAL_ADDRESS,
+            J1939_NULL_ADDRESS,
+        )
         data = struct.pack("<Q", self.name)
         log_j1939.warning("Sending Cannot Claim (SA=0xFE) NAME=0x%016X", self.name)
         self._can_send(can_id, data)
@@ -774,8 +794,9 @@ class J1939SocketImplementation:
             return
         if self.address_state == J1939_ADDR_STATE_CLAIMING:
             self.address_state = J1939_ADDR_STATE_CLAIMED
-            log_j1939.info("Address 0x%02X claimed successfully",
-                           self.preferred_address)
+            log_j1939.info(
+                "Address 0x%02X claimed successfully", self.preferred_address
+            )
         self.address_claim_handle = None
 
     def _on_address_claimed(self, data, sa, da):
@@ -805,21 +826,30 @@ class J1939SocketImplementation:
         if received_name == self.name:
             log_j1939.warning(
                 "Address Claimed from SA=0x%02X with identical NAME=0x%016X; "
-                "ignoring (configuration error)", sa, received_name)
+                "ignoring (configuration error)",
+                sa,
+                received_name,
+            )
             return
         if self.name < received_name:
             # We win — re-broadcast our claim.
             log_j1939.debug(
                 "Address conflict on SA=0x%02X: our NAME=0x%016X < "
                 "theirs=0x%016X, re-broadcasting our claim",
-                sa, self.name, received_name)
+                sa,
+                self.name,
+                received_name,
+            )
             self._send_address_claimed(self.preferred_address)
         else:
             # We lose — enter Cannot Claim state.
             log_j1939.warning(
                 "Address conflict on SA=0x%02X: our NAME=0x%016X > "
                 "theirs=0x%016X, cannot claim address",
-                sa, self.name, received_name)
+                sa,
+                self.name,
+                received_name,
+            )
             if self.address_claim_handle is not None:
                 try:
                     self.address_claim_handle.cancel()
@@ -847,13 +877,17 @@ class J1939SocketImplementation:
         if self.address_state == J1939_ADDR_STATE_CLAIMED:
             log_j1939.debug(
                 "Request for PGN_ADDRESS_CLAIMED from SA=0x%02X; "
-                "responding with Address Claimed", sa)
+                "responding with Address Claimed",
+                sa,
+            )
             self._send_address_claimed(self.preferred_address)
         else:
             log_j1939.debug(
                 "Request for PGN_ADDRESS_CLAIMED from SA=0x%02X; "
                 "responding with Cannot Claim (state=%d)",
-                sa, self.address_state)
+                sa,
+                self.address_state,
+            )
             self._send_cannot_claim()
 
     # ------------------------------------------------------------------
@@ -890,8 +924,11 @@ class J1939SocketImplementation:
         else:
             ps = pgn & 0xFF
         return (
-            ((self.priority & 0x7) << 26) | (dp << 24) |
-            (pf << 16) | (ps << 8) | (sa & 0xFF)
+            ((self.priority & 0x7) << 26)
+            | (dp << 24)
+            | (pf << 16)
+            | (ps << 8)
+            | (sa & 0xFF)
         )
 
     # ------------------------------------------------------------------
@@ -910,16 +947,17 @@ class J1939SocketImplementation:
                     break
         except Exception:
             if not self.closed:
-                log_j1939.warning("Error in can_recv: %s",
-                                  traceback.format_exc())
+                log_j1939.warning("Error in can_recv: %s", traceback.format_exc())
         if not self.closed and not self.can_socket.closed:
             # Determine poll_time from J1939 TP state only.
             # Avoid calling select() here — on slow serial interfaces
             # (slcan), each select() triggers a mux() call that reads
             # N frames at ~2.5ms each, wasting time that could be spent
             # processing frames already in the rx_queue.
-            if self.rx_state in (J1939_RX_BAM_WAIT_DATA, J1939_RX_CMDT_WAIT_DATA) or \
-                    self.tx_state == J1939_TX_CMDT_WAIT_CTS:
+            if (
+                self.rx_state in (J1939_RX_BAM_WAIT_DATA, J1939_RX_CMDT_WAIT_DATA)
+                or self.tx_state == J1939_TX_CMDT_WAIT_CTS
+            ):
                 poll_time = 0.0
             else:
                 poll_time = self.rx_tx_poll_rate
@@ -971,7 +1009,10 @@ class J1939SocketImplementation:
                 if not self.filter_warning_emitted and conf.verb >= 2:
                     log_j1939.warning(
                         "Ignoring CAN frame with unexpected PGN 0x%05X "
-                        "(expected 0x%05X)", pgn, self.rx_pgn)
+                        "(expected 0x%05X)",
+                        pgn,
+                        self.rx_pgn,
+                    )
                     self.filter_warning_emitted = True
                 return
             # Check destination
@@ -1041,7 +1082,8 @@ class J1939SocketImplementation:
         self.rx_start_time = TimeoutScheduler._time()
 
         self.rx_timeout_handle = TimeoutScheduler.schedule(
-            self.tp_dt_timeout, self._rx_timeout_handler)
+            self.tp_dt_timeout, self._rx_timeout_handler
+        )
 
     def _recv_rts(self, data, sa, da, ts):
         # type: (bytes, int, int, float) -> None
@@ -1088,7 +1130,8 @@ class J1939SocketImplementation:
             self._send_cts(sa, pgn, packets_this_block, self.rx_next_packet)
 
         self.rx_timeout_handle = TimeoutScheduler.schedule(
-            self.tp_dt_timeout, self._rx_timeout_handler)
+            self.tp_dt_timeout, self._rx_timeout_handler
+        )
 
     def _recv_cts(self, data, sa, da, ts=None):
         # type: (bytes, int, int, Optional[float]) -> None
@@ -1117,7 +1160,8 @@ class J1939SocketImplementation:
         if packets_to_send == 0:
             # Hold — sender must wait for another CTS
             self.tx_timeout_handle = TimeoutScheduler.schedule(
-                self.tp_cm_timeout, self._tx_timeout_handler)
+                self.tp_cm_timeout, self._tx_timeout_handler
+            )
             return
 
         self.tx_packets_to_send = packets_to_send
@@ -1129,7 +1173,8 @@ class J1939SocketImplementation:
 
         # Start sending TP.DT frames
         self.tx_timeout_handle = TimeoutScheduler.schedule(
-            self.tx_gap, self._tx_timer_handler)
+            self.tx_gap, self._tx_timer_handler
+        )
 
     def _recv_eom_ack(self, data, sa, da):
         # type: (bytes, int, int) -> None
@@ -1153,7 +1198,9 @@ class J1939SocketImplementation:
         """Handle a received TP.Conn_Abort frame."""
         log_j1939.warning(
             "TP.Conn_Abort received from SA=0x%02X, reason=0x%02X",
-            sa, data[1] if len(data) > 1 else 0xFF)
+            sa,
+            data[1] if len(data) > 1 else 0xFF,
+        )
         # Reset both TX and RX state machines
         if self.rx_timeout_handle is not None:
             try:
@@ -1193,7 +1240,11 @@ class J1939SocketImplementation:
         if sn != self.rx_sn:
             log_j1939.warning(
                 "TP.DT sequence number mismatch (expected %d, got %d) "
-                "from SA=0x%02X — aborting", self.rx_sn, sn, sa)
+                "from SA=0x%02X — aborting",
+                self.rx_sn,
+                sn,
+                sa,
+            )
             if self.rx_state == J1939_RX_CMDT_WAIT_DATA and not self.listen_only:
                 self._send_abort(sa, self.rx_pgn_active, TP_ABORT_TIMEOUT)
             self.rx_state = J1939_RX_IDLE
@@ -1211,14 +1262,18 @@ class J1939SocketImplementation:
 
         if packets_received >= self.rx_total_packets:
             # All packets received — trim to actual message size
-            msg = self.rx_buf[:self.rx_total_size]
+            msg = self.rx_buf[: self.rx_total_size]
             log_j1939.debug(
                 "J1939 TP reassembly complete: %d bytes from SA=0x%02X PGN=0x%05X",
-                len(msg), self.rx_src_addr, self.rx_pgn_active)
+                len(msg),
+                self.rx_src_addr,
+                self.rx_pgn_active,
+            )
 
             if self.rx_state == J1939_RX_CMDT_WAIT_DATA and not self.listen_only:
-                self._send_eom_ack(sa, self.rx_pgn_active,
-                                   self.rx_total_size, self.rx_total_packets)
+                self._send_eom_ack(
+                    sa, self.rx_pgn_active, self.rx_total_size, self.rx_total_packets
+                )
 
             self.last_rx_sa = self.rx_src_addr
             self.rx_state = J1939_RX_IDLE
@@ -1226,20 +1281,22 @@ class J1939SocketImplementation:
             return
 
         # Not done yet — send CTS for the next block (CMDT only)
-        if (self.rx_state == J1939_RX_CMDT_WAIT_DATA and
-                self.rx_bs > 0 and
-                self.rx_bs_count >= self.rx_bs and
-                not self.listen_only):
+        if (
+            self.rx_state == J1939_RX_CMDT_WAIT_DATA
+            and self.rx_bs > 0
+            and self.rx_bs_count >= self.rx_bs
+            and not self.listen_only
+        ):
             remaining = self.rx_total_packets - packets_received
             packets_next = min(self.rx_bs, remaining)
             self.rx_next_packet = packets_received + 1
             self.rx_bs_count = 0
-            self._send_cts(sa, self.rx_pgn_active, packets_next,
-                           self.rx_next_packet)
+            self._send_cts(sa, self.rx_pgn_active, packets_next, self.rx_next_packet)
 
         # Reschedule inactivity timeout
         self.rx_timeout_handle = TimeoutScheduler.schedule(
-            self.tp_dt_timeout, self._rx_timeout_handler)
+            self.tp_dt_timeout, self._rx_timeout_handler
+        )
 
     def _rx_timeout_handler(self):
         # type: () -> None
@@ -1258,14 +1315,17 @@ class J1939SocketImplementation:
             total_wait = TimeoutScheduler._time() - self.rx_start_time
             if total_wait < self.tp_dt_timeout * TP_DT_TIMEOUT_EXTENSION_FACTOR:
                 self.rx_timeout_handle = TimeoutScheduler.schedule(
-                    self.tp_dt_timeout, self._rx_timeout_handler)
+                    self.tp_dt_timeout, self._rx_timeout_handler
+                )
                 return
             log_j1939.warning(
                 "J1939 TP RX timeout (state=%d, received %d bytes of %d)",
-                self.rx_state, len(self.rx_buf), self.rx_total_size)
+                self.rx_state,
+                len(self.rx_buf),
+                self.rx_total_size,
+            )
             if self.rx_state == J1939_RX_CMDT_WAIT_DATA and not self.listen_only:
-                self._send_abort(self.rx_src_addr, self.rx_pgn_active,
-                                 TP_ABORT_TIMEOUT)
+                self._send_abort(self.rx_src_addr, self.rx_pgn_active, TP_ABORT_TIMEOUT)
             self.rx_state = J1939_RX_IDLE
 
     # ------------------------------------------------------------------
@@ -1276,28 +1336,31 @@ class J1939SocketImplementation:
         # type: (int, int, int, int) -> None
         """Send a TP.CM_CTS frame to ``da``."""
         pgn_bytes = struct.pack("<I", pgn)[:3]
-        data = struct.pack("BBB", TP_CM_CTS, num_packets, next_packet) + \
-            b"\xFF\xFF" + pgn_bytes
+        data = (
+            struct.pack("BBB", TP_CM_CTS, num_packets, next_packet)
+            + b"\xff\xff"
+            + pgn_bytes
+        )
         self._can_send(self._tp_cm_can_id(da), data)
 
     def _send_eom_ack(self, da, pgn, total_size, num_packets):
         # type: (int, int, int, int) -> None
         """Send a TP.CM_EndOfMsgACK frame to ``da``."""
         pgn_bytes = struct.pack("<I", pgn)[:3]
-        data = (struct.pack("B", TP_CM_EndOfMsgACK) +
-                struct.pack("<H", total_size) +
-                struct.pack("B", num_packets) +
-                b"\xFF" +
-                pgn_bytes)
+        data = (
+            struct.pack("B", TP_CM_EndOfMsgACK)
+            + struct.pack("<H", total_size)
+            + struct.pack("B", num_packets)
+            + b"\xff"
+            + pgn_bytes
+        )
         self._can_send(self._tp_cm_can_id(da), data)
 
     def _send_abort(self, da, pgn, reason):
         # type: (int, int, int) -> None
         """Send a TP.Conn_Abort frame to ``da``."""
         pgn_bytes = struct.pack("<I", pgn)[:3]
-        data = (struct.pack("BB", TP_Conn_Abort, reason) +
-                b"\xFF\xFF\xFF" +
-                pgn_bytes)
+        data = struct.pack("BB", TP_Conn_Abort, reason) + b"\xff\xff\xff" + pgn_bytes
         self._can_send(self._tp_cm_can_id(da), data)
 
     def begin_send(self, payload, pgn, da):
@@ -1320,7 +1383,9 @@ class J1939SocketImplementation:
         if length > J1939_TP_MAX_DLEN:
             log_j1939.warning(
                 "Payload too large for J1939 TP (%d bytes, max %d)",
-                length, J1939_TP_MAX_DLEN)
+                length,
+                J1939_TP_MAX_DLEN,
+            )
             return
 
         if length <= J1939_MAX_SF_DLEN:
@@ -1342,33 +1407,46 @@ class J1939SocketImplementation:
 
         if da == J1939_GLOBAL_ADDRESS:
             # BAM
-            log_j1939.debug("Starting BAM transfer: %d bytes, %d packets, PGN=0x%05X",
-                            length, num_packets, pgn)
-            bam_data = (struct.pack("B", TP_CM_BAM) +
-                        struct.pack("<H", length) +
-                        struct.pack("B", num_packets) +
-                        b"\xFF" +
-                        pgn_bytes)
+            log_j1939.debug(
+                "Starting BAM transfer: %d bytes, %d packets, PGN=0x%05X",
+                length,
+                num_packets,
+                pgn,
+            )
+            bam_data = (
+                struct.pack("B", TP_CM_BAM)
+                + struct.pack("<H", length)
+                + struct.pack("B", num_packets)
+                + b"\xff"
+                + pgn_bytes
+            )
             self._can_send(self._tp_cm_can_id(J1939_GLOBAL_ADDRESS), bam_data)
             self.tx_state = J1939_TX_BAM_SENDING
             # Schedule first TP.DT after BAM inter-frame gap
             self.tx_timeout_handle = TimeoutScheduler.schedule(
-                self.bam_dt_gap, self._tx_timer_handler)
+                self.bam_dt_gap, self._tx_timer_handler
+            )
         else:
             # CMDT — send RTS
             log_j1939.debug(
-                "Starting CMDT RTS: %d bytes, %d packets, "
-                "PGN=0x%05X, DA=0x%02X",
-                length, num_packets, pgn, da)
-            rts_data = (struct.pack("B", TP_CM_RTS) +
-                        struct.pack("<H", length) +
-                        struct.pack("B", num_packets) +
-                        struct.pack("B", TP_CM_MAX_PACKETS_NO_LIMIT) +
-                        pgn_bytes)
+                "Starting CMDT RTS: %d bytes, %d packets, " "PGN=0x%05X, DA=0x%02X",
+                length,
+                num_packets,
+                pgn,
+                da,
+            )
+            rts_data = (
+                struct.pack("B", TP_CM_RTS)
+                + struct.pack("<H", length)
+                + struct.pack("B", num_packets)
+                + struct.pack("B", TP_CM_MAX_PACKETS_NO_LIMIT)
+                + pgn_bytes
+            )
             self._can_send(self._tp_cm_can_id(da), rts_data)
             self.tx_state = J1939_TX_CMDT_WAIT_CTS
             self.tx_timeout_handle = TimeoutScheduler.schedule(
-                self.tp_cm_timeout, self._tx_timeout_handler)
+                self.tp_cm_timeout, self._tx_timeout_handler
+            )
 
     def _send_next_dt(self):
         # type: () -> None
@@ -1376,10 +1454,10 @@ class J1939SocketImplementation:
         if self.tx_state not in (J1939_TX_BAM_SENDING, J1939_TX_CMDT_SENDING):
             return
 
-        payload_chunk = self.tx_buf[self.tx_idx:self.tx_idx + J1939_TP_DT_PAYLOAD]
+        payload_chunk = self.tx_buf[self.tx_idx : self.tx_idx + J1939_TP_DT_PAYLOAD]
         # Pad the last frame with 0xFF if needed
         if len(payload_chunk) < J1939_TP_DT_PAYLOAD:
-            payload_chunk = payload_chunk.ljust(J1939_TP_DT_PAYLOAD, b"\xFF")
+            payload_chunk = payload_chunk.ljust(J1939_TP_DT_PAYLOAD, b"\xff")
 
         dt_data = struct.pack("B", self.tx_sn) + payload_chunk
         self._can_send(self._tp_dt_can_id(self.tx_dst_addr), dt_data)
@@ -1401,7 +1479,8 @@ class J1939SocketImplementation:
                 return
             # Schedule the next TP.DT
             self.tx_timeout_handle = TimeoutScheduler.schedule(
-                self.bam_dt_gap, self._tx_timer_handler)
+                self.bam_dt_gap, self._tx_timer_handler
+            )
 
         elif self.tx_state == J1939_TX_CMDT_SENDING:
             self._send_next_dt()
@@ -1409,17 +1488,20 @@ class J1939SocketImplementation:
                 # All TP.DT sent — wait for EndOfMsgACK
                 self.tx_state = J1939_TX_CMDT_WAIT_ACK
                 self.tx_timeout_handle = TimeoutScheduler.schedule(
-                    self.tp_cm_timeout, self._tx_timeout_handler)
+                    self.tp_cm_timeout, self._tx_timeout_handler
+                )
                 return
             if self.tx_packets_sent >= self.tx_packets_to_send:
                 # Block complete — wait for next CTS
                 self.tx_state = J1939_TX_CMDT_WAIT_CTS
                 self.tx_timeout_handle = TimeoutScheduler.schedule(
-                    self.tp_cm_timeout, self._tx_timeout_handler)
+                    self.tp_cm_timeout, self._tx_timeout_handler
+                )
                 return
             # More frames to send in this block
             self.tx_timeout_handle = TimeoutScheduler.schedule(
-                self.tx_gap, self._tx_timer_handler)
+                self.tx_gap, self._tx_timer_handler
+            )
 
     def _tx_timeout_handler(self):
         # type: () -> None
@@ -1429,7 +1511,8 @@ class J1939SocketImplementation:
 
         if self.tx_state in (J1939_TX_CMDT_WAIT_CTS, J1939_TX_CMDT_WAIT_ACK):
             log_j1939.warning(
-                "J1939 CMDT TX timeout (state=%d) — aborting", self.tx_state)
+                "J1939 CMDT TX timeout (state=%d) — aborting", self.tx_state
+            )
             self._send_abort(self.tx_dst_addr, self.tx_pgn, TP_ABORT_TIMEOUT)
             self.tx_state = J1939_TX_IDLE
 
@@ -1445,11 +1528,11 @@ class J1939SocketImplementation:
                         self.begin_send(payload, pgn, da)
         except Exception:
             if not self.closed:
-                log_j1939.warning("Error in _send_poll: %s",
-                                  traceback.format_exc())
+                log_j1939.warning("Error in _send_poll: %s", traceback.format_exc())
         if not self.closed:
             self.tx_handle = TimeoutScheduler.schedule(
-                self.rx_tx_poll_rate, self._send_poll)
+                self.rx_tx_poll_rate, self._send_poll
+            )
         else:
             try:
                 self.tx_handle.cancel()
@@ -1470,7 +1553,8 @@ class J1939SocketImplementation:
         if self.name is not None and self.address_state != J1939_ADDR_STATE_CLAIMED:
             raise Scapy_Exception(
                 "J1939 address not yet claimed (state=%d); "
-                "cannot send application data" % self.address_state)
+                "cannot send application data" % self.address_state
+            )
         self.tx_queue.send((p, self.pgn, self.dst_addr))
 
     def recv(self, timeout=None):

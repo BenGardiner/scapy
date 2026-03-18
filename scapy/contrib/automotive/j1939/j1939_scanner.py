@@ -36,8 +36,8 @@ Technique 4 — TP.CM RTS Probing
 Technique 5 — UDS TesterPresent Probe
     Iterates through destination addresses 0x00–0xFD, sending a padded UDS
     TesterPresent request (SID 0x3E, sub-function 0x00, 5 x 0xFF padding)
-    over both J1939 Diagnostic Message A (PGN 0xDA00, PGN_DIAG_A) and
-    Diagnostic Message B (PGN 0xDB00, PGN_DIAG_B), once for every source
+    over both J1939 Diagnostic Message A (Physical) and
+    Diagnostic Message B (Functional), once for every source
     address in *src_addrs*.  Nodes that implement UDS reply with a positive
     response (SID 0x7E).
 
@@ -62,8 +62,8 @@ response it expects from an active CA in order to detect it.
 | rts_probe  | TP.CM_RTS (PF=0xEC, DA=ECU-SA)          | TP.CM_CTS (ctrl=0x11) **or**             |
 |            | sent to each DA                         | TP_Conn_Abort (ctrl=0xFF) from probed DA |
 +------------+-----------------------------------------+------------------------------------------+
-| uds        | UDS TesterPresent (PF=0xDA, DA=ECU-SA)  | UDS positive response 02 7E 00           |
-|            | AND (PF=0xDB, DA=ECU-SA)                | from probed DA                           |
+| uds        | Physical (PF=diag_pgn, DA=ECU-SA) AND   | UDS positive response 02 7E 00           |
+|            | Functional (PF=diag_pgn+1, DA=0xFF)     | from responding DA                       |
 |            | payload 02 3E 00 FF FF FF FF FF         |                                          |
 |            | once per SA in src_addrs                |                                          |
 +------------+-----------------------------------------+------------------------------------------+
@@ -143,10 +143,10 @@ J1939_PF_DIAG_B = 0xDB
 
 #: UDS TesterPresent request payload: length=2, SID=0x3E, subfunction=0x00,
 #: followed by 5 padding bytes (0xFF) to fill an 8-byte CAN frame.
-_UDS_TESTER_PRESENT_REQ = b'\x02\x3e\x00\xff\xff\xff\xff\xff'
+_UDS_TESTER_PRESENT_REQ = b"\x02\x3e\x00\xff\xff\xff\xff\xff"
 
 #: Expected UDS positive response for TesterPresent (SID=0x7E, length=2)
-_UDS_TESTER_PRESENT_RESP = b'\x02\x7e\x00'
+_UDS_TESTER_PRESENT_RESP = b"\x02\x7e\x00"
 
 #: All valid CA scan method names
 SCAN_METHODS = ("addr_claim", "ecu_id", "unicast", "rts_probe", "uds")
@@ -204,8 +204,7 @@ def _inter_probe_delay(bitrate, busload, tx_dlc, rx_dlc, sniff_time):
     :raises ValueError: when *busload* is not in (0, 1.0]
     """
     if not 0.0 < busload <= 1.0:
-        raise ValueError(
-            "busload must be in (0, 1.0]; got {!r}".format(busload))
+        raise ValueError("busload must be in (0, 1.0]; got {!r}".format(busload))
     bits = _can_frame_bits(tx_dlc) + _can_frame_bits(rx_dlc)
     min_cycle = bits / (bitrate * busload)
     return max(0.0, min_cycle - sniff_time)
@@ -213,10 +212,11 @@ def _inter_probe_delay(bitrate, busload, tx_dlc, rx_dlc, sniff_time):
 
 # --- Passive scan — background noise detection
 
+
 def j1939_scan_passive(
-    sock,                  # type: SuperSocket
-    listen_time=2.0,       # type: float
-    stop_event=None,       # type: Optional[Event]
+    sock,  # type: SuperSocket
+    listen_time=2.0,  # type: float
+    stop_event=None,  # type: Optional[Event]
 ):
     # type: (...) -> Set[int]
     """Passively listen to the bus and return the set of observed source addresses.
@@ -243,22 +243,24 @@ def j1939_scan_passive(
         seen.add(sa)
 
     sock.sniff(prn=_rx, timeout=listen_time, store=False)
-    log_j1939.debug("passive: observed %d SA(s): %s",
-                    len(seen), [hex(s) for s in sorted(seen)])
+    log_j1939.debug(
+        "passive: observed %d SA(s): %s", len(seen), [hex(s) for s in sorted(seen)]
+    )
     return seen
 
 
 # --- Technique 1 – Global Address Claim Request
 
+
 def j1939_scan_addr_claim(
-    sock,                                   # type: SuperSocket
-    src_addrs=None,                         # type: Optional[List[int]]
-    listen_time=1.0,                        # type: float
-    noise_ids=None,                         # type: Optional[Set[int]]
-    force=False,                            # type: bool
-    stop_event=None,                        # type: Optional[Event]
-    bitrate=_J1939_DEFAULT_BITRATE,         # type: int
-    busload=_J1939_DEFAULT_BUSLOAD,         # type: float
+    sock,  # type: SuperSocket
+    src_addrs=None,  # type: Optional[List[int]]
+    listen_time=1.0,  # type: float
+    noise_ids=None,  # type: Optional[Set[int]]
+    force=False,  # type: bool
+    stop_event=None,  # type: Optional[Event]
+    bitrate=_J1939_DEFAULT_BITRATE,  # type: int
+    busload=_J1939_DEFAULT_BUSLOAD,  # type: float
 ):
     # type: (...) -> Dict[int, CAN]
     """Enumerate CAs via a global Request for Address Claimed (PGN 60928).
@@ -288,12 +290,13 @@ def j1939_scan_addr_claim(
         src_addrs = J1939_NULL_ADDRESSES
     payload = _build_request_payload(PGN_ADDRESS_CLAIMED)
     for _sa in src_addrs:
-        can_id = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_REQUEST,
-                               J1939_GLOBAL_ADDRESS, _sa)
+        can_id = _j1939_can_id(
+            _SCAN_PRIORITY, J1939_PF_REQUEST, J1939_GLOBAL_ADDRESS, _sa
+        )
         sock.send(CAN(identifier=can_id, flags="extended", data=payload))
         log_j1939.debug(
-            "addr_claim: broadcast request sent SA=0x%02X (CAN-ID=0x%08X)",
-            _sa, can_id)
+            "addr_claim: broadcast request sent SA=0x%02X (CAN-ID=0x%08X)", _sa, can_id
+        )
 
     found = {}  # type: Dict[int, CAN]
 
@@ -317,15 +320,16 @@ def j1939_scan_addr_claim(
 
 # --- Technique 2 – Global ECU ID Request
 
+
 def j1939_scan_ecu_id(
-    sock,                                   # type: SuperSocket
-    src_addrs=None,                         # type: Optional[List[int]]
-    listen_time=1.0,                        # type: float
-    noise_ids=None,                         # type: Optional[Set[int]]
-    force=False,                            # type: bool
-    stop_event=None,                        # type: Optional[Event]
-    bitrate=_J1939_DEFAULT_BITRATE,         # type: int
-    busload=_J1939_DEFAULT_BUSLOAD,         # type: float
+    sock,  # type: SuperSocket
+    src_addrs=None,  # type: Optional[List[int]]
+    listen_time=1.0,  # type: float
+    noise_ids=None,  # type: Optional[Set[int]]
+    force=False,  # type: bool
+    stop_event=None,  # type: Optional[Event]
+    bitrate=_J1939_DEFAULT_BITRATE,  # type: int
+    busload=_J1939_DEFAULT_BUSLOAD,  # type: float
 ):
     # type: (...) -> Dict[int, CAN]
     """Enumerate CAs via a global Request for ECU Identification (PGN 64965).
@@ -352,12 +356,13 @@ def j1939_scan_ecu_id(
         src_addrs = J1939_NULL_ADDRESSES
     payload = _build_request_payload(PGN_ECU_ID)
     for _sa in src_addrs:
-        can_id = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_REQUEST,
-                               J1939_GLOBAL_ADDRESS, _sa)
+        can_id = _j1939_can_id(
+            _SCAN_PRIORITY, J1939_PF_REQUEST, J1939_GLOBAL_ADDRESS, _sa
+        )
         sock.send(CAN(identifier=can_id, flags="extended", data=payload))
         log_j1939.debug(
-            "ecu_id: broadcast request sent SA=0x%02X (CAN-ID=0x%08X)",
-            _sa, can_id)
+            "ecu_id: broadcast request sent SA=0x%02X (CAN-ID=0x%08X)", _sa, can_id
+        )
 
     found = {}  # type: Dict[int, CAN]
 
@@ -390,16 +395,17 @@ def j1939_scan_ecu_id(
 
 # --- Technique 3 – Unicast Ping Sweep
 
+
 def j1939_scan_unicast(
-    sock,                                   # type: SuperSocket
-    scan_range=_SCAN_ADDR_RANGE,            # type: Iterable[int]
-    src_addrs=None,                         # type: Optional[List[int]]
-    sniff_time=0.1,                         # type: float
-    noise_ids=None,                         # type: Optional[Set[int]]
-    force=False,                            # type: bool
-    stop_event=None,                        # type: Optional[Event]
-    bitrate=_J1939_DEFAULT_BITRATE,         # type: int
-    busload=_J1939_DEFAULT_BUSLOAD,         # type: float
+    sock,  # type: SuperSocket
+    scan_range=_SCAN_ADDR_RANGE,  # type: Iterable[int]
+    src_addrs=None,  # type: Optional[List[int]]
+    sniff_time=0.1,  # type: float
+    noise_ids=None,  # type: Optional[Set[int]]
+    force=False,  # type: bool
+    stop_event=None,  # type: Optional[Event]
+    bitrate=_J1939_DEFAULT_BITRATE,  # type: int
+    busload=_J1939_DEFAULT_BUSLOAD,  # type: float
 ):
     # type: (...) -> Dict[int, CAN]
     """Enumerate CAs by sending unicast Address Claim Requests to each DA.
@@ -466,8 +472,9 @@ def j1939_scan_unicast(
 
         # Pace the probe rate: len(src_addrs) request frames (DLC 3) + response (DLC 8)
         _tx_bits = len(src_addrs) * _can_frame_bits(3)
-        _extra = max(0.0, (_tx_bits + _can_frame_bits(8)) / (bitrate * busload)
-                     - sniff_time)
+        _extra = max(
+            0.0, (_tx_bits + _can_frame_bits(8)) / (bitrate * busload) - sniff_time
+        )
         if _extra > 0.0:
             time.sleep(_extra)
 
@@ -476,16 +483,17 @@ def j1939_scan_unicast(
 
 # --- Technique 4 – TP.CM RTS Probing
 
+
 def j1939_scan_rts_probe(
-    sock,                                   # type: SuperSocket
-    scan_range=_SCAN_ADDR_RANGE,            # type: Iterable[int]
-    src_addrs=None,                         # type: Optional[List[int]]
-    sniff_time=0.1,                         # type: float
-    noise_ids=None,                         # type: Optional[Set[int]]
-    force=False,                            # type: bool
-    stop_event=None,                        # type: Optional[Event]
-    bitrate=_J1939_DEFAULT_BITRATE,         # type: int
-    busload=_J1939_DEFAULT_BUSLOAD,         # type: float
+    sock,  # type: SuperSocket
+    scan_range=_SCAN_ADDR_RANGE,  # type: Iterable[int]
+    src_addrs=None,  # type: Optional[List[int]]
+    sniff_time=0.1,  # type: float
+    noise_ids=None,  # type: Optional[Set[int]]
+    force=False,  # type: bool
+    stop_event=None,  # type: Optional[Event]
+    bitrate=_J1939_DEFAULT_BITRATE,  # type: int
+    busload=_J1939_DEFAULT_BUSLOAD,  # type: float
 ):
     # type: (...) -> Dict[int, CAN]
     """Enumerate CAs by sending minimal TP.CM_RTS frames to each DA.
@@ -531,19 +539,20 @@ def j1939_scan_rts_probe(
         #   byte 3: total packets = 2
         #   byte 4: max packets per CTS = 0xFF (no limit)
         #   bytes 5-7: PGN being transferred (probe PGN = 0x0000FF)
-        rts_payload = struct.pack("<BHBBBBB",
-                                  TP_CM_RTS,  # 0x10
-                                  9,          # total message size (LE 2-byte)
-                                  2,          # total number of TP.DT packets
-                                  0xFF,       # max packets per CTS
-                                  0xFF,       # PGN byte 1 (probe value)
-                                  0x00,       # PGN byte 2
-                                  0x00)       # PGN byte 3
+        rts_payload = struct.pack(
+            "<BHBBBBB",
+            TP_CM_RTS,  # 0x10
+            9,  # total message size (LE 2-byte)
+            2,  # total number of TP.DT packets
+            0xFF,  # max packets per CTS
+            0xFF,  # PGN byte 1 (probe value)
+            0x00,  # PGN byte 2
+            0x00,
+        )  # PGN byte 3
         for _sa in src_addrs:
             # CAN-ID: priority=7, PF=0xEC (TP.CM), DA=da, SA=_sa
             can_id = _j1939_can_id(7, J1939_TP_CM_PF, da, _sa)
-            sock.send(CAN(identifier=can_id, flags="extended",
-                          data=rts_payload))
+            sock.send(CAN(identifier=can_id, flags="extended", data=rts_payload))
         log_j1939.debug("rts_probe: probing DA=0x%02X", da)
 
         _da = da
@@ -560,16 +569,17 @@ def j1939_scan_rts_probe(
                 d = bytes(pkt.data)
                 if d and d[0] in (TP_CM_CTS, TP_Conn_Abort):
                     log_j1939.debug(
-                        "rts_probe: response (ctrl=0x%02X) from SA=0x%02X",
-                        d[0], sa)
+                        "rts_probe: response (ctrl=0x%02X) from SA=0x%02X", d[0], sa
+                    )
                     found[_da] = pkt
 
         sock.sniff(prn=_rx, timeout=sniff_time, store=False)
 
         # Pace: len(src_addrs) RTS probes (DLC 8) + one expected response (DLC 8)
         _tx_bits = len(src_addrs) * _can_frame_bits(8)
-        _extra = max(0.0, (_tx_bits + _can_frame_bits(8)) / (bitrate * busload)
-                     - sniff_time)
+        _extra = max(
+            0.0, (_tx_bits + _can_frame_bits(8)) / (bitrate * busload) - sniff_time
+        )
         if _extra > 0.0:
             time.sleep(_extra)
 
@@ -578,26 +588,33 @@ def j1939_scan_rts_probe(
 
 # --- Technique 5 – UDS TesterPresent Probe
 
+
 def j1939_scan_uds(
-    sock,                                   # type: SuperSocket
-    scan_range=_SCAN_ADDR_RANGE,            # type: Iterable[int]
-    src_addrs=None,                         # type: Optional[List[int]]
-    sniff_time=0.1,                         # type: float
-    noise_ids=None,                         # type: Optional[Set[int]]
-    force=False,                            # type: bool
-    stop_event=None,                        # type: Optional[Event]
-    bitrate=_J1939_DEFAULT_BITRATE,         # type: int
-    busload=_J1939_DEFAULT_BUSLOAD,         # type: float
+    sock,  # type: SuperSocket
+    scan_range=_SCAN_ADDR_RANGE,  # type: Iterable[int]
+    src_addrs=None,  # type: Optional[List[int]]
+    sniff_time=0.1,  # type: float
+    noise_ids=None,  # type: Optional[Set[int]]
+    force=False,  # type: bool
+    stop_event=None,  # type: Optional[Event]
+    bitrate=_J1939_DEFAULT_BITRATE,  # type: int
+    busload=_J1939_DEFAULT_BUSLOAD,  # type: float
+    skip_functional=False,  # type: bool
+    broadcast_listen_time=1.0,  # type: float
+    diag_pgn=J1939_PF_DIAG_A,  # type: int
 ):
     # type: (...) -> Dict[int, CAN]
     """Enumerate CAs by sending a UDS TesterPresent request to each DA.
 
-    For each destination address *da* in *scan_range* and each source address
-    in *src_addrs*, sends a padded UDS TesterPresent request over both
-    Diagnostic Message A (PGN 0xDA00, PF=0xDA) and Diagnostic Message B
-    (PGN 0xDB00, PF=0xDB).  A node that implements UDS replies with a
-    positive response frame whose first three payload bytes are ``02 7E 00``.
-    Only well-formed positive responses are recorded.
+    First, if *skip_functional* is False, sends a broadcast UDS TesterPresent
+    request over Diagnostic Message B (PF=diag_pgn | 0x01, DA=0xFF).
+    Any responding source addresses are recorded.
+
+    Then, for each destination address *da* in *scan_range* and each source
+    address in *src_addrs*, sends a padded UDS TesterPresent request over
+    Diagnostic Message A (PF=diag_pgn).  A node that implements UDS replies
+    with a positive response frame whose first three payload bytes are
+    ``02 7E 00``.  Only well-formed positive responses are recorded.
 
     The inter-probe gap is automatically paced so that the scanner contributes
     at most *busload* × *bitrate* bits per second to the bus.
@@ -616,27 +633,62 @@ def j1939_scan_uds(
     :param bitrate: CAN bus bitrate in bit/s (default 250000 for J1939)
     :param busload: maximum fraction of bus capacity the scanner may consume
                     (default 0.05 = 5 %)
+    :param skip_functional: if True, skip the broadcast functional scan
+    :param broadcast_listen_time: seconds to wait for responses after the
+                                  broadcast functional probe
+    :param diag_pgn: PF byte for UDS diagnostic messages (default 0xDA).
+                     Functional addressing uses ``diag_pgn | 0x01``.
     :returns: dict mapping responder source address (int) to the CAN reply
     """
     if src_addrs is None:
         src_addrs = J1939_NULL_ADDRESSES
     found = {}  # type: Dict[int, CAN]
 
+    if not skip_functional:
+        for _sa in src_addrs:
+            # diag_pgn | 0x01 is functional addressing PF (e.g. 0xDB)
+            can_id_f = _j1939_can_id(
+                _SCAN_PRIORITY, diag_pgn | 0x01, J1939_GLOBAL_ADDRESS, _sa
+            )
+            sock.send(
+                CAN(identifier=can_id_f, flags="extended", data=_UDS_TESTER_PRESENT_REQ)
+            )
+        log_j1939.debug(
+            "uds: broadcast functional probe sent (PF=0x%02X)", diag_pgn | 0x01
+        )
+
+        def _rx_functional(pkt):
+            # type: (CAN) -> None
+            if not (pkt.flags & _CAN_EXTENDED_FLAG):
+                return
+            if stop_event is not None and stop_event.is_set():
+                return
+            _, _, _, sa = _j1939_decode_can_id(pkt.identifier)
+            if sa not in found:
+                if not force and noise_ids is not None and sa in noise_ids:
+                    return
+                data = bytes(pkt.data)
+                if data[:3] == _UDS_TESTER_PRESENT_RESP:
+                    log_j1939.debug("uds: functional response from SA=0x%02X", sa)
+                    found[sa] = pkt
+
+        sock.sniff(prn=_rx_functional, timeout=broadcast_listen_time, store=False)
+
     for da in scan_range:
         if stop_event is not None and stop_event.is_set():
             break
+        if da in found:
+            continue
         if not force and noise_ids is not None and da in noise_ids:
             log_j1939.debug("uds: skipping noise DA=0x%02X", da)
             continue
         for _sa in src_addrs:
-            can_id_a = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_DIAG_A, da, _sa)
-            sock.send(CAN(identifier=can_id_a, flags="extended",
-                          data=_UDS_TESTER_PRESENT_REQ))
-            can_id_b = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_DIAG_B, da, _sa)
-            sock.send(CAN(identifier=can_id_b, flags="extended",
-                          data=_UDS_TESTER_PRESENT_REQ))
-        log_j1939.debug(
-            "uds: probing DA=0x%02X on PGN_DIAG_A and PGN_DIAG_B", da)
+            # diag_pgn is physical addressing PF (e.g. 0xDA)
+            can_id_a = _j1939_can_id(_SCAN_PRIORITY, diag_pgn, da, _sa)
+            sock.send(
+                CAN(identifier=can_id_a, flags="extended", data=_UDS_TESTER_PRESENT_REQ)
+            )
+        log_j1939.debug("uds: physical probe DA=0x%02X on PF=0x%02X", da, diag_pgn)
 
         # Capture the loop variable explicitly to avoid closure capture issues
         _da = da
@@ -654,10 +706,11 @@ def j1939_scan_uds(
 
         sock.sniff(prn=_rx, timeout=sniff_time, store=False)
 
-        # Pace: 2 probes per src_addr (Diag A + Diag B), all DLC=8, + 1 response
-        _tx_bits = 2 * len(src_addrs) * _can_frame_bits(8)
-        _extra = max(0.0, (_tx_bits + _can_frame_bits(8)) / (bitrate * busload)
-                     - sniff_time)
+        # Pace: 1 probe per src_addr (Physical), DLC=8, + 1 response
+        _tx_bits = len(src_addrs) * _can_frame_bits(8)
+        _extra = max(
+            0.0, (_tx_bits + _can_frame_bits(8)) / (bitrate * busload) - sniff_time
+        )
         if _extra > 0.0:
             time.sleep(_extra)
 
@@ -666,20 +719,23 @@ def j1939_scan_uds(
 
 # --- Top-level combined scanner
 
+
 def j1939_scan(
-    sock,                                   # type: SuperSocket
-    scan_range=_SCAN_ADDR_RANGE,            # type: Iterable[int]
-    methods=None,                           # type: Optional[List[str]]
-    src_addrs=None,                         # type: Optional[List[int]]
-    sniff_time=0.1,                         # type: float
-    broadcast_listen_time=1.0,              # type: float
-    noise_listen_time=1.0,                  # type: float
-    noise_ids=None,                         # type: Optional[Set[int]]
-    force=False,                            # type: bool
-    stop_event=None,                        # type: Optional[Event]
-    verbose=False,                          # type: bool
-    bitrate=_J1939_DEFAULT_BITRATE,         # type: int
-    busload=_J1939_DEFAULT_BUSLOAD,         # type: float
+    sock,  # type: SuperSocket
+    scan_range=_SCAN_ADDR_RANGE,  # type: Iterable[int]
+    methods=None,  # type: Optional[List[str]]
+    src_addrs=None,  # type: Optional[List[int]]
+    sniff_time=0.1,  # type: float
+    broadcast_listen_time=1.0,  # type: float
+    noise_listen_time=1.0,  # type: float
+    noise_ids=None,  # type: Optional[Set[int]]
+    force=False,  # type: bool
+    stop_event=None,  # type: Optional[Event]
+    verbose=False,  # type: bool
+    bitrate=_J1939_DEFAULT_BITRATE,  # type: int
+    busload=_J1939_DEFAULT_BUSLOAD,  # type: float
+    skip_functional=False,  # type: bool
+    diag_pgn=J1939_PF_DIAG_A,  # type: int
 ):
     # type: (...) -> Dict[int, Dict[str, object]]
     """Scan for J1939 Controller Applications using one or more techniques.
@@ -726,6 +782,8 @@ def j1939_scan(
                     attribute is not available.
     :param busload: maximum scanner bus-load fraction passed to unicast / RTS /
                     UDS methods (default 0.05 = 5 %)
+    :param skip_functional: passed to :func:`j1939_scan_uds`
+    :param diag_pgn: passed to :func:`j1939_scan_uds`
     :returns: dict mapping SA (int) to
               ``{"methods": List[str], "packets": List[CAN]}``
 
@@ -741,8 +799,8 @@ def j1939_scan(
     for m in methods:
         if m not in SCAN_METHODS:
             raise ValueError(
-                "Unknown scan method {!r}; valid methods: {}".format(
-                    m, SCAN_METHODS))
+                "Unknown scan method {!r}; valid methods: {}".format(m, SCAN_METHODS)
+            )
 
     if src_addrs is None:
         src_addrs = J1939_NULL_ADDRESSES
@@ -762,10 +820,14 @@ def j1939_scan(
         if stop_event is not None and stop_event.is_set():
             return {}
         noise_ids = j1939_scan_passive(
-            sock, listen_time=noise_listen_time, stop_event=stop_event)
+            sock, listen_time=noise_listen_time, stop_event=stop_event
+        )
         if verbose and noise_ids:
-            log_j1939.info("j1939_scan: %d noise SA(s) detected, will skip: %s",
-                           len(noise_ids), [hex(s) for s in sorted(noise_ids)])
+            log_j1939.info(
+                "j1939_scan: %d noise SA(s) detected, will skip: %s",
+                len(noise_ids),
+                [hex(s) for s in sorted(noise_ids)],
+            )
 
     results = {}  # type: Dict[int, Dict[str, object]]
     scan_range_list = list(scan_range)
@@ -776,88 +838,107 @@ def j1939_scan(
             if sa not in results:
                 if verbose:
                     log_j1939.info(
-                        "j1939_scan: found SA=0x%02X via %s", sa, method_name)
+                        "j1939_scan: found SA=0x%02X via %s", sa, method_name
+                    )
                 results[sa] = {"methods": [method_name], "packets": [pkt]}
             else:
                 if verbose:
                     log_j1939.info(
-                        "j1939_scan: SA=0x%02X also detected via %s",
-                        sa, method_name)
+                        "j1939_scan: SA=0x%02X also detected via %s", sa, method_name
+                    )
                 cast(List[str], results[sa]["methods"]).append(method_name)
                 cast(List[CAN], results[sa]["packets"]).append(pkt)
 
     if "addr_claim" in methods:
         if stop_event is not None and stop_event.is_set():
             return results
-        _merge(j1939_scan_addr_claim(
-            sock,
-            src_addrs=src_addrs,
-            listen_time=broadcast_listen_time,
-            noise_ids=noise_ids,
-            force=force,
-            stop_event=stop_event,
-            bitrate=bitrate,
-            busload=busload,
-        ), "addr_claim")
+        _merge(
+            j1939_scan_addr_claim(
+                sock,
+                src_addrs=src_addrs,
+                listen_time=broadcast_listen_time,
+                noise_ids=noise_ids,
+                force=force,
+                stop_event=stop_event,
+                bitrate=bitrate,
+                busload=busload,
+            ),
+            "addr_claim",
+        )
 
     if "ecu_id" in methods:
         if stop_event is not None and stop_event.is_set():
             return results
-        _merge(j1939_scan_ecu_id(
-            sock,
-            src_addrs=src_addrs,
-            listen_time=broadcast_listen_time,
-            noise_ids=noise_ids,
-            force=force,
-            stop_event=stop_event,
-            bitrate=bitrate,
-            busload=busload,
-        ), "ecu_id")
+        _merge(
+            j1939_scan_ecu_id(
+                sock,
+                src_addrs=src_addrs,
+                listen_time=broadcast_listen_time,
+                noise_ids=noise_ids,
+                force=force,
+                stop_event=stop_event,
+                bitrate=bitrate,
+                busload=busload,
+            ),
+            "ecu_id",
+        )
 
     if "unicast" in methods:
         if stop_event is not None and stop_event.is_set():
             return results
-        _merge(j1939_scan_unicast(
-            sock,
-            scan_range=scan_range_list,
-            src_addrs=src_addrs,
-            sniff_time=sniff_time,
-            noise_ids=noise_ids,
-            force=force,
-            stop_event=stop_event,
-            bitrate=bitrate,
-            busload=busload,
-        ), "unicast")
+        _merge(
+            j1939_scan_unicast(
+                sock,
+                scan_range=scan_range_list,
+                src_addrs=src_addrs,
+                sniff_time=sniff_time,
+                noise_ids=noise_ids,
+                force=force,
+                stop_event=stop_event,
+                bitrate=bitrate,
+                busload=busload,
+            ),
+            "unicast",
+        )
 
     if "rts_probe" in methods:
         if stop_event is not None and stop_event.is_set():
             return results
-        _merge(j1939_scan_rts_probe(
-            sock,
-            scan_range=scan_range_list,
-            src_addrs=src_addrs,
-            sniff_time=sniff_time,
-            noise_ids=noise_ids,
-            force=force,
-            stop_event=stop_event,
-            bitrate=bitrate,
-            busload=busload,
-        ), "rts_probe")
+        _merge(
+            j1939_scan_rts_probe(
+                sock,
+                scan_range=scan_range_list,
+                src_addrs=src_addrs,
+                sniff_time=sniff_time,
+                noise_ids=noise_ids,
+                force=force,
+                stop_event=stop_event,
+                bitrate=bitrate,
+                busload=busload,
+            ),
+            "rts_probe",
+        )
 
     if "uds" in methods:
         if stop_event is not None and stop_event.is_set():
             return results
-        _merge(j1939_scan_uds(
-            sock,
-            scan_range=scan_range_list,
-            src_addrs=src_addrs,
-            sniff_time=sniff_time,
-            noise_ids=noise_ids,
-            force=force,
-            stop_event=stop_event,
-            bitrate=bitrate,
-            busload=busload,
-        ), "uds")
+        _merge(
+            j1939_scan_uds(
+                sock,
+                scan_range=scan_range_list,
+                src_addrs=src_addrs,
+                sniff_time=sniff_time,
+                noise_ids=noise_ids,
+                force=force,
+                stop_event=stop_event,
+                bitrate=bitrate,
+                busload=busload,
+                skip_functional=skip_functional,
+                broadcast_listen_time=broadcast_listen_time,
+                diag_pgn=diag_pgn,
+            ),
+            "uds",
+        )
 
     return results
 

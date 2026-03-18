@@ -106,18 +106,19 @@ _DM_SCAN_PRIORITY = 6
 #: Ordered mapping from DM name (str) to PGN number (int).
 #: All entries are PDU2 (PF byte >= 0xF0) broadcast-capable messages.
 J1939_DM_PGNS = {
-    "DM1": 0xFECA,   # 65226 - Active Diagnostic Trouble Codes
-    "DM2": 0xFECB,   # 65227 - Previously Active DTCs
-    "DM3": 0xFECC,   # 65228 - DTC Clear/Reset for Previously Active DTCs
-    "DM4": 0xFECD,   # 65229 - Freeze Frame Parameters
-    "DM5": 0xFECE,   # 65230 - Diagnostic Readiness 1
-    "DM6": 0xFECF,   # 65231 - Emission-Related Pending DTCs
+    "DM1": 0xFECA,  # 65226 - Active Diagnostic Trouble Codes
+    "DM2": 0xFECB,  # 65227 - Previously Active DTCs
+    "DM3": 0xFECC,  # 65228 - DTC Clear/Reset for Previously Active DTCs
+    "DM4": 0xFECD,  # 65229 - Freeze Frame Parameters
+    "DM5": 0xFECE,  # 65230 - Diagnostic Readiness 1
+    "DM6": 0xFECF,  # 65231 - Emission-Related Pending DTCs
     "DM11": 0xFED3,  # 65235 - DTC Clear/Reset for Active DTCs
     "DM12": 0xFED4,  # 65236 - Emission-Related Active DTCs
 }
 
 
 # --- Result container
+
 
 class DmScanResult(object):
     """Result record for a single DM PGN probe sent by :func:`j1939_scan_dm_pgn`.
@@ -135,11 +136,11 @@ class DmScanResult(object):
 
     def __init__(
         self,
-        dm_name,      # type: str
-        pgn,          # type: int
-        supported,    # type: bool
+        dm_name,  # type: str
+        pgn,  # type: int
+        supported,  # type: bool
         packet=None,  # type: Optional[CAN]
-        error=None,   # type: Optional[str]
+        error=None,  # type: Optional[str]
     ):
         # type: (...) -> None
         self.dm_name = dm_name
@@ -151,10 +152,12 @@ class DmScanResult(object):
     def __repr__(self):
         # type: () -> str
         return "<DmScanResult dm={} pgn=0x{:04X} supported={} error={}>".format(
-            self.dm_name, self.pgn, self.supported, self.error)
+            self.dm_name, self.pgn, self.supported, self.error
+        )
 
 
 # --- Internal helpers
+
 
 def _pgn_matches(pf, ps, pgn):
     # type: (int, int, int) -> bool
@@ -168,18 +171,19 @@ def _pgn_matches(pf, ps, pgn):
 
 # --- Technique: unicast DM PGN probe
 
+
 def j1939_scan_dm_pgn(
-    sock,                                   # type: SuperSocket
-    target_da,                              # type: int
-    pgn,                                    # type: int
-    dm_name="Unknown",                      # type: str
-    src_addr=J1939_NULL_ADDRESS,            # type: int
-    sniff_time=1.0,                         # type: float
-    noise_ids=None,                         # type: Optional[Set[int]]
-    force=False,                            # type: bool
-    stop_event=None,                        # type: Optional[Event]
-    bitrate=_J1939_DEFAULT_BITRATE,         # type: int
-    busload=_J1939_DEFAULT_BUSLOAD,         # type: float
+    sock,  # type: SuperSocket
+    target_da,  # type: int
+    pgn,  # type: int
+    dm_name="Unknown",  # type: str
+    src_addr=J1939_NULL_ADDRESS,  # type: int
+    sniff_time=1.0,  # type: float
+    noise_ids=None,  # type: Optional[Set[int]]
+    force=False,  # type: bool
+    stop_event=None,  # type: Optional[Event]
+    bitrate=_J1939_DEFAULT_BITRATE,  # type: int
+    busload=_J1939_DEFAULT_BUSLOAD,  # type: float
 ):
     # type: (...) -> DmScanResult
     """Probe *target_da* for support of a single Diagnostic Message PGN.
@@ -219,8 +223,9 @@ def j1939_scan_dm_pgn(
     can_id = _j1939_can_id(_DM_SCAN_PRIORITY, J1939_PF_REQUEST, target_da, src_addr)
     payload = struct.pack("<I", pgn)[:3]
     sock.send(CAN(identifier=can_id, flags="extended", data=payload))
-    log_j1939.debug("dm_scan: probing DA=0x%02X PGN=0x%04X (%s)",
-                    target_da, pgn, dm_name)
+    log_j1939.debug(
+        "dm_scan: probing DA=0x%02X PGN=0x%04X (%s)", target_da, pgn, dm_name
+    )
 
     result = []  # type: List[DmScanResult]
 
@@ -236,17 +241,16 @@ def j1939_scan_dm_pgn(
         if sa != target_da:
             return
         if _pgn_matches(pf, ps, pgn):
-            log_j1939.debug("dm_scan: positive response SA=0x%02X PGN=0x%04X",
-                            sa, pgn)
+            log_j1939.debug("dm_scan: positive response SA=0x%02X PGN=0x%04X", sa, pgn)
             result.append(DmScanResult(dm_name, pgn, True, packet=pkt))
             return
         if pf == J1939_PF_ACK:
             data = bytes(pkt.data)
             if data and data[0] == _ACK_CTRL_NACK:
-                log_j1939.debug("dm_scan: NACK from SA=0x%02X PGN=0x%04X",
-                                sa, pgn)
-                result.append(DmScanResult(dm_name, pgn, False,
-                                           packet=pkt, error="NACK"))
+                log_j1939.debug("dm_scan: NACK from SA=0x%02X PGN=0x%04X", sa, pgn)
+                result.append(
+                    DmScanResult(dm_name, pgn, False, packet=pkt, error="NACK")
+                )
 
     sock.sniff(prn=_rx, timeout=sniff_time, store=False)
 
@@ -258,26 +262,26 @@ def j1939_scan_dm_pgn(
     if result:
         return result[0]
 
-    log_j1939.debug("dm_scan: timeout waiting for DA=0x%02X PGN=0x%04X",
-                    target_da, pgn)
+    log_j1939.debug("dm_scan: timeout waiting for DA=0x%02X PGN=0x%04X", target_da, pgn)
     return DmScanResult(dm_name, pgn, False, error="Timeout")
 
 
 # --- Top-level DM scanner
 
+
 def j1939_scan_dm(
-    sock,                                   # type: SuperSocket
-    target_da,                              # type: int
-    pgns=None,                              # type: Optional[List[str]]
-    src_addr=J1939_NULL_ADDRESS,            # type: int
-    sniff_time=1.0,                         # type: float
-    noise_ids=None,                         # type: Optional[Set[int]]
-    force=False,                            # type: bool
-    stop_event=None,                        # type: Optional[Event]
-    bitrate=_J1939_DEFAULT_BITRATE,         # type: int
-    busload=_J1939_DEFAULT_BUSLOAD,         # type: float
-    reset_handler=None,                     # type: Optional[Callable[[], None]]
-    reconnect_handler=None,                 # type: Optional[Callable[[], SuperSocket]]
+    sock,  # type: SuperSocket
+    target_da,  # type: int
+    pgns=None,  # type: Optional[List[str]]
+    src_addr=J1939_NULL_ADDRESS,  # type: int
+    sniff_time=1.0,  # type: float
+    noise_ids=None,  # type: Optional[Set[int]]
+    force=False,  # type: bool
+    stop_event=None,  # type: Optional[Event]
+    bitrate=_J1939_DEFAULT_BITRATE,  # type: int
+    busload=_J1939_DEFAULT_BUSLOAD,  # type: float
+    reset_handler=None,  # type: Optional[Callable[[], None]]
+    reconnect_handler=None,  # type: Optional[Callable[[], SuperSocket]]
 ):
     # type: (...) -> Dict[str, DmScanResult]
     """Probe *target_da* for all (or a selected subset of) Diagnostic Message PGNs.
@@ -342,7 +346,9 @@ def j1939_scan_dm(
         if name not in J1939_DM_PGNS:
             raise ValueError(
                 "Unknown DM name {!r}; valid names: {}".format(
-                    name, list(J1939_DM_PGNS.keys())))
+                    name, list(J1939_DM_PGNS.keys())
+                )
+            )
 
     results = {}  # type: Dict[str, DmScanResult]
     active_sock = sock  # may be replaced if reconnect_handler is used

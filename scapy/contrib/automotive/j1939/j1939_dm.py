@@ -62,7 +62,7 @@ from scapy.contrib.automotive.j1939.j1939_soft_socket import (
 # ---------------------------------------------------------------------------
 
 #: PGN for DM1 Active Diagnostic Trouble Codes
-PGN_DM1 = 0xFECA   # 65226
+PGN_DM1 = 0xFECA  # 65226
 
 #: PGN for DM13 Stop/Start Broadcast Command
 PGN_DM13 = 0xE000  # 57344
@@ -72,26 +72,26 @@ PGN_DM14 = 0xD900  # 55552
 
 # Lamp status encoding (2-bit values per lamp)
 _LAMP_STATUS = {
-    0b00: 'off',
-    0b01: 'on',
-    0b10: 'reserved',
-    0b11: 'not_available',
+    0b00: "off",
+    0b01: "on",
+    0b10: "reserved",
+    0b11: "not_available",
 }
 
 # DM14 command type encoding
 _DM14_COMMAND = {
-    0: 'erase',
-    1: 'read',
-    2: 'write',
-    3: 'reserved',
+    0: "erase",
+    1: "read",
+    2: "write",
+    3: "reserved",
 }
 
 # DM14 pointer type encoding
 _DM14_POINTER_TYPE = {
-    0: 'direct',
-    1: 'indirect',
-    2: 'copy',
-    3: 'reserved',
+    0: "direct",
+    1: "indirect",
+    2: "copy",
+    3: "reserved",
 }
 
 
@@ -124,10 +124,10 @@ class J1939_DTC(Packet):
         # Declared in big-endian (MSB-first) order for BitField processing.
         # do_dissect / do_build reverse the 4 bytes to convert between
         # J1939 little-endian wire format and Scapy's big-endian BitField.
-        BitField('OC', 0, 7),    # bits 31-25 (MSB side)
-        BitField('CM', 0, 1),    # bit  24
-        BitField('FMI', 0, 5),   # bits 23-19
-        BitField('SPN', 0, 19),  # bits 18-0  (LSB side)
+        BitField("OC", 0, 7),  # bits 31-25 (MSB side)
+        BitField("CM", 0, 1),  # bit  24
+        BitField("FMI", 0, 5),  # bits 23-19
+        BitField("SPN", 0, 19),  # bits 18-0  (LSB side)
     ]
 
     def do_dissect(self, s):
@@ -138,7 +138,7 @@ class J1939_DTC(Packet):
             # Scapy's BE BitField machinery sees the MSB first.
             super(J1939_DTC, self).do_dissect(s[:4][::-1])
             return s[4:]
-        return b''
+        return b""
 
     def do_build(self):
         # type: () -> bytes
@@ -149,7 +149,7 @@ class J1939_DTC(Packet):
     def extract_padding(self, s):
         # type: (bytes) -> Tuple[bytes, bytes]
         """No sub-layer payload; all remaining bytes returned as padding."""
-        return b'', s
+        return b"", s
 
 
 class J1939_DM1(Packet):
@@ -186,20 +186,20 @@ class J1939_DM1(Packet):
 
     fields_desc = [
         # Byte 0: Lamp on/off status (bits 7-6 = MIL, 5-4 = RSL, 3-2 = AWL, 1-0 = PL)
-        BitEnumField('mil_status', 3, 2, _LAMP_STATUS),
-        BitEnumField('rsl_status', 3, 2, _LAMP_STATUS),
-        BitEnumField('awl_status', 3, 2, _LAMP_STATUS),
-        BitEnumField('pl_status', 3, 2, _LAMP_STATUS),
+        BitEnumField("mil_status", 3, 2, _LAMP_STATUS),
+        BitEnumField("rsl_status", 3, 2, _LAMP_STATUS),
+        BitEnumField("awl_status", 3, 2, _LAMP_STATUS),
+        BitEnumField("pl_status", 3, 2, _LAMP_STATUS),
         # Byte 1: Lamp flash patterns (same 2-bit encoding)
-        BitEnumField('mil_flash', 3, 2, _LAMP_STATUS),
-        BitEnumField('rsl_flash', 3, 2, _LAMP_STATUS),
-        BitEnumField('awl_flash', 3, 2, _LAMP_STATUS),
-        BitEnumField('pl_flash', 3, 2, _LAMP_STATUS),
+        BitEnumField("mil_flash", 3, 2, _LAMP_STATUS),
+        BitEnumField("rsl_flash", 3, 2, _LAMP_STATUS),
+        BitEnumField("awl_flash", 3, 2, _LAMP_STATUS),
+        BitEnumField("pl_flash", 3, 2, _LAMP_STATUS),
     ]
 
     def __init__(self, *args, **kwargs):
         # type: (*Any, **Any) -> None
-        self.dtcs = kwargs.pop('dtcs', [])  # type: List[J1939_DTC]
+        self.dtcs = kwargs.pop("dtcs", [])  # type: List[J1939_DTC]
         Packet.__init__(self, *args, **kwargs)
 
     def do_dissect(self, s):
@@ -212,29 +212,31 @@ class J1939_DM1(Packet):
         while len(remain) >= 4:
             self.dtcs.append(J1939_DTC(remain[:4]))
             remain = remain[4:]
-        return b''
+        return b""
 
     def do_build(self):
         # type: () -> bytes
         """Build lamp status bytes + DTC bytes, padded to 8 bytes if needed."""
         lamp_bytes = super(J1939_DM1, self).do_build()
-        dtc_bytes = b''.join(bytes(dtc) for dtc in self.dtcs)
+        dtc_bytes = b"".join(bytes(dtc) for dtc in self.dtcs)
         result = lamp_bytes + dtc_bytes
         if len(result) < 8:
-            result += b'\xff' * (8 - len(result))
+            result += b"\xff" * (8 - len(result))
         return result
 
     def extract_padding(self, s):
         # type: (bytes) -> Tuple[bytes, bytes]
-        return b'', s
+        return b"", s
 
     def __repr__(self):
         # type: () -> str
         return (
             "<J1939_DM1 mil_status={} rsl_status={} awl_status={} "
             "pl_status={} dtcs={}>".format(
-                self.mil_status, self.rsl_status,
-                self.awl_status, self.pl_status,
+                self.mil_status,
+                self.rsl_status,
+                self.awl_status,
+                self.pl_status,
                 self.dtcs,
             )
         )
@@ -256,16 +258,16 @@ class J1939_DM13(Packet):
     #: PGN for DM13 Stop/Start Broadcast
     PGN = PGN_DM13
 
-    _hold_signal_enum = {0xFE: 'start', 0xFF: 'stop'}
+    _hold_signal_enum = {0xFE: "start", 0xFF: "stop"}
 
     fields_desc = [
-        ByteField('hold_signal', 0xFF),
-        StrFixedLenField('data', b'\xff' * 7, 7),
+        ByteField("hold_signal", 0xFF),
+        StrFixedLenField("data", b"\xff" * 7, 7),
     ]
 
     def extract_padding(self, s):
         # type: (bytes) -> Tuple[bytes, bytes]
-        return b'', s
+        return b"", s
 
 
 class J1939_DM14(Packet):
@@ -297,30 +299,31 @@ class J1939_DM14(Packet):
 
     fields_desc = [
         # Byte 0: control fields
-        BitField('reserved', 0b11, 2),
-        BitEnumField('command_type', 1, 2, _DM14_COMMAND),
-        BitEnumField('pointer_type', 0, 2, _DM14_POINTER_TYPE),
-        BitField('access_level', 0, 2),
+        BitField("reserved", 0b11, 2),
+        BitEnumField("command_type", 1, 2, _DM14_COMMAND),
+        BitEnumField("pointer_type", 0, 2, _DM14_POINTER_TYPE),
+        BitField("access_level", 0, 2),
         # Bytes 1-4: memory address (little-endian)
-        XLEIntField('address', 0),
+        XLEIntField("address", 0),
         # Byte 5: data length
-        ByteField('length', 0),
+        ByteField("length", 0),
         # Bytes 6-7: reserved
-        XShortField('reserved2', 0xFFFF),
+        XShortField("reserved2", 0xFFFF),
     ]
 
     def extract_padding(self, s):
         # type: (bytes) -> Tuple[bytes, bytes]
-        return b'', s
+        return b"", s
 
 
 # ---------------------------------------------------------------------------
 # Socket utility functions
 # ---------------------------------------------------------------------------
 
+
 def sniff_dm1(
-    interface="can0",   # type: str
-    timeout=10,         # type: float
+    interface="can0",  # type: str
+    timeout=10,  # type: float
 ):
     # type: (...) -> List[J1939_DM1]
     """Sniff DM1 Active DTC messages from the J1939 bus.
@@ -335,16 +338,17 @@ def sniff_dm1(
     """
     from scapy.sendrecv import sniff
     from scapy.contrib.automotive.j1939 import J1939Socket  # type: ignore[attr-defined]
+
     with J1939Socket(interface, rx_pgn=PGN_DM1) as sock:
         pkts = sniff(opened_socket=sock, timeout=timeout)
-    return [J1939_DM1(p.data) for p in pkts if hasattr(p, 'data')]
+    return [J1939_DM1(p.data) for p in pkts if hasattr(p, "data")]
 
 
 def send_dm14_request(
-    interface,       # type: str
-    dest_addr,       # type: int
+    interface,  # type: str
+    dest_addr,  # type: int
     memory_address,  # type: int
-    length=1,        # type: int
+    length=1,  # type: int
 ):
     # type: (...) -> None
     """Send a DM14 Memory Access Request to a specific ECU.
@@ -360,12 +364,15 @@ def send_dm14_request(
     if dest_addr == J1939_GLOBAL_ADDRESS:
         raise Scapy_Exception(
             "DM14 is a peer-to-peer message; "
-            "dst_addr must not be the broadcast address (0xFF)")
+            "dst_addr must not be the broadcast address (0xFF)"
+        )
     from scapy.contrib.automotive.j1939 import J1939Socket  # type: ignore[attr-defined]
+
     dm14 = J1939_DM14(address=memory_address, length=length)
     pkt = J1939(data=bytes(dm14), pgn=PGN_DM14)
-    with J1939Socket(interface, src_addr=0xFA, dst_addr=dest_addr,
-                     pgn=PGN_DM14) as sock:
+    with J1939Socket(
+        interface, src_addr=0xFA, dst_addr=dest_addr, pgn=PGN_DM14
+    ) as sock:
         sock.send(pkt)
 
 

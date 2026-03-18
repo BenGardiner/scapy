@@ -150,13 +150,14 @@ USE_J1939_KERNEL_MODULE = False
 
 if LINUX:
     try:
-        if conf.contribs['J1939']['use-j1939-kernel-module']:
+        if conf.contribs["J1939"]["use-j1939-kernel-module"]:
             USE_J1939_KERNEL_MODULE = True
     except KeyError:
         log_loading.info(
             "Specify 'conf.contribs['J1939'] = "
             "{'use-j1939-kernel-module': True}' "
-            "to enable usage of the Linux j1939 kernel module (Linux >= 5.4).")
+            "to enable usage of the Linux j1939 kernel module (Linux >= 5.4)."
+        )
 
     # Future: import J1939NativeSocket here when implemented
     # if USE_J1939_KERNEL_MODULE:

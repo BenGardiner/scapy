@@ -925,63 +925,120 @@ assert J1939_PF_DIAG_A == 0xDA
 assert PGN_DIAG_B == 0xDB00
 assert J1939_PF_DIAG_B == 0xDB
 
-= uds: sends both Diag-A and Diag-B probe frames per DA with 8-byte padded payload
+= uds: sends Functional (broadcast PF|0x01) and Physical (unicast PF) probe frames
 def test_uds_probe_frames():
     with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
         tx_sock.pair(monitor)
+        # scan_range=[0x20] with 1 src_addr should send 2 probes total
+        # 1 broadcast to 0xFF (PF=0xDB) and 1 unicast to 0x20 (PF=0xDA)
         j1939_scan_uds(tx_sock, scan_range=[0x20], sniff_time=0.0,
                        noise_ids=set(), src_addrs=[J1939_NULL_ADDRESS])
         pkts = monitor.sniff(count=2, timeout=0.2)
-        assert len(pkts) == 2, "Expected 2 probe frames (0xDA + 0xDB), got {}".format(len(pkts))
-        pfs = set()
-        for probe in pkts:
-            _, pf, ps, sa = _j1939_decode_can_id(probe.identifier)
-            assert probe.flags & 0x4, "Expected extended CAN frame"
-            assert ps == 0x20, "DA (ps) should be 0x20, got 0x{:02X}".format(ps)
-            assert sa == J1939_NULL_ADDRESS, \
-                "SA should be 0xFE (null), got 0x{:02X}".format(sa)
-            assert bytes(probe.data) == b'\x02\x3e\x00\xff\xff\xff\xff\xff', \
-                "Payload should be padded UDS TesterPresent, got {}".format(
-                    bytes(probe.data).hex())
-            pfs.add(pf)
-        assert {J1939_PF_DIAG_A, J1939_PF_DIAG_B} == pfs, \
-            "Expected probes on both PF=0xDA and PF=0xDB, got PFs: {}".format(
-                [hex(p) for p in pfs])
+        assert len(pkts) == 2, "Expected 2 probe frames (Broadcast + Unicast), got {}".format(len(pkts))
+        
+        # First probe: Broadcast (Functional)
+        _, pf, ps, sa = _j1939_decode_can_id(pkts[0].identifier)
+        assert pf == J1939_PF_DIAG_B, "First probe should be Functional (PF=0xDB)"
+        assert ps == J1939_GLOBAL_ADDRESS, "DA should be Global (0xFF)"
+        
+        # Second probe: Physical (Unicast)
+        _, pf, ps, sa = _j1939_decode_can_id(pkts[1].identifier)
+        assert pf == J1939_PF_DIAG_A, "Second probe should be Physical (PF=0xDA)"
+        assert ps == 0x20, "DA should be 0x20"
     cleanup_testsockets()
 
 test_uds_probe_frames()
 
-= uds: records SA when UDS positive response (02 7E 00) is received
+= uds: records SA when UDS positive response (02 7E 00) is received (Physical)
 def test_uds_positive_response():
     sock = TestSocket(CAN)
     # Inject a fake UDS TesterPresent positive response from SA=0x30
-    # Use PF=0xDA (Diag A) DA=0xFE, SA=0x30 – any extended frame with
-    # SA=0x30 whose first 3 data bytes are 02 7E 00 is accepted.
     resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_A, J1939_NULL_ADDRESS, 0x30)
     sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
                             data=b'\x02\x7e\x00')))
     found = j1939_scan_uds(sock, scan_range=[0x30], sniff_time=0.1,
-                           noise_ids=set())
+                           noise_ids=set(), skip_functional=True)
     assert 0x30 in found, "Expected SA=0x30, got: {}".format(
         [hex(k) for k in found])
     cleanup_testsockets()
 
 test_uds_positive_response()
 
-= uds: records SA when UDS positive response is from PGN 0xDB00 (Diag B)
+= uds: records SA when UDS positive response is from Functional PGN (0xDB00)
 def test_uds_positive_response_pgn_db():
     sock = TestSocket(CAN)
-    resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_B, J1939_NULL_ADDRESS, 0x3A)
+    # Response from SA=0x3A to Functional probe
+    resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_B, J1939_GLOBAL_ADDRESS, 0x3A)
     sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
                             data=b'\x02\x7e\x00')))
     found = j1939_scan_uds(sock, scan_range=[0x3A], sniff_time=0.1,
                            noise_ids=set())
     assert 0x3A in found, \
-        "Expected SA=0x3A (0xDB response), got: {}".format(
+        "Expected SA=0x3A (Functional response), got: {}".format(
             [hex(k) for k in found])
     cleanup_testsockets()
 
 test_uds_positive_response_pgn_db()
+
+= uds: unicast is skipped for SA found via functional scan
+def test_uds_skip_unicast_if_found():
+    with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
+        tx_sock.pair(monitor)
+        # Inject response for functional broadcast (PF=0xDB, DA=0xFF) from SA=0x55
+        resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_B, J1939_GLOBAL_ADDRESS, 0x55)
+        tx_sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                                    data=b'\x02\x7e\x00')))
+        
+        found = j1939_scan_uds(tx_sock, scan_range=[0x55], sniff_time=0.1,
+                               broadcast_listen_time=0.05,
+                               noise_ids=set(), src_addrs=[J1939_NULL_ADDRESS])
+        
+        assert 0x55 in found
+        # Sniff probes on monitor
+        pkts = monitor.sniff(count=10, timeout=0.2)
+        # Should only see 1 probe frame (the functional broadcast one)
+        assert len(pkts) == 1, "Expected only 1 probe (functional), got {}".format(len(pkts))
+        _, pf, ps, _ = _j1939_decode_can_id(pkts[0].identifier)
+        assert pf == J1939_PF_DIAG_B
+        assert ps == J1939_GLOBAL_ADDRESS
+    cleanup_testsockets()
+
+test_uds_skip_unicast_if_found()
+
+= uds: skip_functional=True avoids broadcast probes
+def test_uds_skip_functional():
+    with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
+        tx_sock.pair(monitor)
+        j1939_scan_uds(tx_sock, scan_range=[0x20], sniff_time=0.0,
+                       skip_functional=True,
+                       noise_ids=set(), src_addrs=[J1939_NULL_ADDRESS])
+        pkts = monitor.sniff(count=10, timeout=0.2)
+        # Should only see 1 probe frame (the physical unicast one)
+        assert len(pkts) == 1, "Expected only 1 probe (physical), got {}".format(len(pkts))
+        _, pf, ps, _ = _j1939_decode_can_id(pkts[0].identifier)
+        assert pf == J1939_PF_DIAG_A
+    cleanup_testsockets()
+
+test_uds_skip_functional()
+
+= uds: custom diag_pgn uses expected PF and PF|0x01
+def test_uds_custom_diag_pgn():
+    with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
+        tx_sock.pair(monitor)
+        custom_pgn = 0xD0
+        j1939_scan_uds(tx_sock, scan_range=[0x20], sniff_time=0.0,
+                       diag_pgn=custom_pgn,
+                       noise_ids=set(), src_addrs=[J1939_NULL_ADDRESS])
+        pkts = monitor.sniff(count=2, timeout=0.2)
+        assert len(pkts) == 2
+        
+        # Functional
+        assert _j1939_decode_can_id(pkts[0].identifier)[1] == custom_pgn | 0x01
+        # Physical
+        assert _j1939_decode_can_id(pkts[1].identifier)[1] == custom_pgn
+    cleanup_testsockets()
+
+test_uds_custom_diag_pgn()
 
 = uds: ignores frames with wrong UDS response SID
 def test_uds_wrong_response_ignored():
