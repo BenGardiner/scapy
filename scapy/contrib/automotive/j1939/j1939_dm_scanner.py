@@ -43,7 +43,6 @@ from typing import (
     Dict,
     List,
     Optional,
-    Set,
 )
 
 from scapy.layers.can import CAN
@@ -289,7 +288,7 @@ def j1939_scan_dm_pgn(
 def j1939_scan_dm(
     sock,  # type: SuperSocket
     target_da,  # type: int
-    dms=None,  # type: Optional[List[str]]
+    pgns=None,  # type: Optional[List[str]]
     src_addr=J1939_NULL_ADDRESS,  # type: int
     sniff_time=1.0,  # type: float
     stop_event=None,  # type: Optional[Event]
@@ -301,8 +300,8 @@ def j1939_scan_dm(
     # type: (...) -> Dict[str, DmScanResult]
     """Probe *target_da* for all (or a selected subset of) Diagnostic Message PGNs.
 
-    Iterates over the DM names in *dms* (or all entries in
-    :data:`J1939_DM_PGNS` when *dms* is ``None``), calling
+    Iterates over the DM names in *pgns* (or all entries in
+    :data:`J1939_DM_PGNS` when *pgns* is ``None``), calling
     :func:`j1939_scan_dm_pgn` for each one and collecting the results.
 
     If *reset_handler* is provided it is called between each pair of DM PGN
@@ -314,8 +313,8 @@ def j1939_scan_dm(
 
     :param sock: raw CAN socket to use for sending / sniffing
     :param target_da: destination address of the ECU to probe (0x00–0xFD)
-    :param dms: list of DM names to scan; must be keys of
-                 :data:`J1939_DM_PGNS`.  Default is all eight entries.
+    :param pgns: list of DM names to scan; must be keys of
+                 :data:`J1939_DM_PGNS`.  Default is all entries.
     :param src_addr: source address used in outgoing probes (default 0xFE)
     :param sniff_time: per-PGN listen time in seconds (default 1.0)
     :param stop_event: optional :class:`threading.Event` to abort early
@@ -351,10 +350,10 @@ def j1939_scan_dm(
         ...     reconnect_handler=reconnect,
         ... )
     """
-    if dms is None:
-        dms = list(J1939_DM_PGNS.keys())
+    if pgns is None:
+        pgns = list(J1939_DM_PGNS.keys())
 
-    for name in dms:
+    for name in pgns:
         if name not in J1939_DM_PGNS:
             raise ValueError(
                 "Unknown DM name {!r}; valid names: {}".format(
@@ -364,9 +363,9 @@ def j1939_scan_dm(
 
     results = {}  # type: Dict[str, DmScanResult]
     active_sock = sock  # may be replaced if reconnect_handler is used
-    num_pgns = len(dms)
+    num_pgns = len(pgns)
 
-    for i, dm_name in enumerate(dms):
+    for i, dm_name in enumerate(pgns):
         if stop_event is not None and stop_event.is_set():
             break
         results[dm_name] = j1939_scan_dm_pgn(
