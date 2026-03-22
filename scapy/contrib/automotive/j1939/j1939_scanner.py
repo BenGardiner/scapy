@@ -969,8 +969,10 @@ def j1939_scan(
         for sa, pkts in found.items():
             # For methods that use physical addressing (uds, xcp), the
             # scanner's source address is embedded as the DA field (ps) of
-            # the response CAN frame.  Extract it so callers can tell which
-            # scanner SA is required for further access.
+            # the response CAN frame.  Extract it from the first response
+            # packet so callers can tell which scanner SA is required for
+            # further access.  If the ECU responded to multiple scanner SAs
+            # in a single probe cycle the first response is used.
             src_addr = None  # type: Optional[int]
             if with_src_addr and pkts:
                 _, _, ps, _ = _j1939_decode_can_id(pkts[0].identifier)
