@@ -27,11 +27,13 @@ from scapy.contrib.automotive.j1939.j1939_scanner import (
     j1939_scan_uds,
     j1939_scan_xcp,
     J1939_NULL_ADDRESSES,
+    J1939_XCP_SRC_ADDRS,
     PGN_ECU_ID,
     PGN_DIAG_A,
     J1939_PF_DIAG_A,
     PGN_DIAG_B,
     J1939_PF_DIAG_B,
+    J1939_PF_XCP,
     SCAN_METHODS,
     _build_request_payload,
     _can_frame_bits,
@@ -67,6 +69,13 @@ assert set(SCAN_METHODS) == {"addr_claim", "ecu_id", "unicast", "rts_probe", "ud
 = J1939_NULL_ADDRESSES is [0xF1..0xF9] (9 diagnostic source addresses)
 assert J1939_NULL_ADDRESSES == list(range(0xF1, 0xFA))
 assert len(J1939_NULL_ADDRESSES) == 9
+
+= J1939_XCP_SRC_ADDRS is [0x3F, 0x5A] (two dedicated XCP diagnostic source addresses)
+assert J1939_XCP_SRC_ADDRS == [0x3F, 0x5A]
+assert len(J1939_XCP_SRC_ADDRS) == 2
+
+= J1939_PF_XCP is 0xEF (XCP Proprietary A PF byte)
+assert J1939_PF_XCP == 0xEF
 
 = _build_request_payload encodes PGN_ADDRESS_CLAIMED correctly
 # PGN 60928 = 0xEE00: LE 3 bytes = \x00 \xEE \x00
@@ -1257,8 +1266,8 @@ def test_xcp_probe_frames():
         assert len(pkts) == 1, \
             "Expected 1 XCP probe frame, got {}".format(len(pkts))
         _, pf, ps, sa = _j1939_decode_can_id(pkts[0].identifier)
-        assert pf == J1939_PF_DIAG_A, \
-            "XCP probe should use Physical PF=0xDA, got 0x{:02X}".format(pf)
+        assert pf == J1939_PF_XCP, \
+            "XCP probe should use Physical PF=0xEF, got 0x{:02X}".format(pf)
         assert ps == 0x20, \
             "DA should be 0x20, got 0x{:02X}".format(ps)
         assert bytes(pkts[0].data) == _XCP_CONNECT_REQ, \
@@ -1270,7 +1279,7 @@ test_xcp_probe_frames()
 = xcp: records SA when XCP positive response (byte 0 == 0xFF) is received
 def test_xcp_positive_response():
     sock = TestSocket(CAN)
-    resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_A, J1939_NULL_ADDRESS, 0x35)
+    resp_can_id = _j1939_can_id(6, J1939_PF_XCP, J1939_XCP_SRC_ADDRS[0], 0x35)
     sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
                             data=b'\xff\x00\x00\x00\x00\x00\x00\x00')))
     found = j1939_scan_xcp(sock, scan_range=[0x35], sniff_time=0.1,
@@ -1287,7 +1296,7 @@ test_xcp_positive_response()
 def test_xcp_wrong_response_ignored():
     sock = TestSocket(CAN)
     # 0xFE = XCP negative response (ERR_*)
-    resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_A, J1939_NULL_ADDRESS, 0x36)
+    resp_can_id = _j1939_can_id(6, J1939_PF_XCP, J1939_XCP_SRC_ADDRS[0], 0x36)
     sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
                             data=b'\xfe\x10\x00\x00\x00\x00\x00\x00')))
     found = j1939_scan_xcp(sock, scan_range=[0x36], sniff_time=0.1,
@@ -1301,7 +1310,7 @@ test_xcp_wrong_response_ignored()
 = xcp: noise_ids suppresses probing
 def test_xcp_noise_suppression():
     sock = TestSocket(CAN)
-    resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_A, J1939_NULL_ADDRESS, 0x37)
+    resp_can_id = _j1939_can_id(6, J1939_PF_XCP, J1939_XCP_SRC_ADDRS[0], 0x37)
     sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
                             data=b'\xff\x00\x00\x00\x00\x00\x00\x00')))
     found = j1939_scan_xcp(sock, scan_range=[0x37], sniff_time=0.1,
@@ -1332,7 +1341,8 @@ test_xcp_custom_diag_pgn()
 = j1939_scan: xcp technique is invoked and finds XCP-responding CAs
 def test_j1939_scan_xcp_technique():
     sock = TestSocket(CAN)
-    resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_A,
+    # Response simulates ECU 0x42 answering back to scanner SA J1939_NULL_ADDRESS
+    resp_can_id = _j1939_can_id(6, J1939_PF_XCP,
                                 J1939_NULL_ADDRESS, 0x42)
     sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
                             data=b'\xff\x00\x00\x00\x00\x00\x00\x00')))
@@ -1390,7 +1400,7 @@ test_j1939_scan_uds_src_addr_recorded()
 def test_j1939_scan_xcp_src_addr_recorded():
     sock = TestSocket(CAN)
     # XCP response from ECU 0x45 back to scanner src_addr=0xB5
-    resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_A, 0xB5, 0x45)
+    resp_can_id = _j1939_can_id(6, J1939_PF_XCP, 0xB5, 0x45)
     sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
                             data=b'\xff\x00\x00\x00\x00\x00\x00\x00')))
     found = j1939_scan(sock, methods=["xcp"], scan_range=[0x45],

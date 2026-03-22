@@ -159,6 +159,12 @@ _UDS_TESTER_PRESENT_REQ = b"\x02\x3e\x00\xff\xff\xff\xff\xff"
 #: Expected UDS positive response for TesterPresent (SID=0x7E, length=2)
 _UDS_TESTER_PRESENT_RESP = b"\x02\x7e\x00"
 
+#: PF byte for XCP Diagnostic Messages (Proprietary A, PDU1 peer-to-peer, PF=0xEF)
+J1939_PF_XCP = 0xEF
+
+#: Default source addresses used by the XCP scanner (two dedicated diagnostic SAs).
+J1939_XCP_SRC_ADDRS = [0x3F, 0x5A]
+
 #: XCP CONNECT command payload: command byte 0xFF, mode 0x00 (normal connection),
 #: followed by 6 padding bytes (0xFF) to fill an 8-byte CAN frame.
 _XCP_CONNECT_REQ = b"\xff\x00\xff\xff\xff\xff\xff\xff"
@@ -762,7 +768,7 @@ def j1939_scan_xcp(
     stop_event=None,  # type: Optional[Event]
     bitrate=_J1939_DEFAULT_BITRATE,  # type: int
     busload=_J1939_DEFAULT_BUSLOAD,  # type: float
-    diag_pgn=J1939_PF_DIAG_A,  # type: int
+    diag_pgn=J1939_PF_XCP,  # type: int
 ):
     # type: (...) -> Dict[int, List[CAN]]
     """Enumerate CAs by sending an XCP CONNECT command to each DA.
@@ -779,7 +785,7 @@ def j1939_scan_xcp(
     :param sock: raw CAN socket to use for sending / sniffing
     :param scan_range: iterable of destination addresses to probe
     :param src_addrs: list of source addresses to use in requests; defaults
-                      to :data:`J1939_NULL_ADDRESSES` ([0xF1..0xF9])
+                      to :data:`J1939_XCP_SRC_ADDRS` ([0x3F, 0x5A])
     :param sniff_time: seconds to wait for a response after each probe
     :param noise_ids: set of source addresses already known from background
                       traffic (see :func:`j1939_scan_passive`).  DAs whose
@@ -790,13 +796,13 @@ def j1939_scan_xcp(
     :param bitrate: CAN bus bitrate in bit/s (default 250000 for J1939)
     :param busload: maximum fraction of bus capacity the scanner may consume
                     (default 0.05 = 5 %)
-    :param diag_pgn: PF byte for XCP diagnostic messages (default 0xDA,
-                     same Diagnostic Message A used by UDS physical addressing)
+    :param diag_pgn: PF byte for XCP diagnostic messages (default 0xEF,
+                     Proprietary A peer-to-peer addressing)
     :returns: dict mapping responder source address (int) to a list of
               matching CAN replies
     """
     if src_addrs is None:
-        src_addrs = J1939_NULL_ADDRESSES
+        src_addrs = J1939_XCP_SRC_ADDRS
     found = {}  # type: Dict[int, List[CAN]]
 
     for da in scan_range:
@@ -1122,10 +1128,12 @@ __all__ = [
     "j1939_scan_uds",
     "j1939_scan_xcp",
     "J1939_NULL_ADDRESSES",
+    "J1939_XCP_SRC_ADDRS",
     "PGN_ECU_ID",
     "PGN_DIAG_A",
     "J1939_PF_DIAG_A",
     "PGN_DIAG_B",
     "J1939_PF_DIAG_B",
+    "J1939_PF_XCP",
     "SCAN_METHODS",
 ]
