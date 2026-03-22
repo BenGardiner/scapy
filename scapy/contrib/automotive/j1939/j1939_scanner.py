@@ -41,6 +41,13 @@ Technique 5 — UDS TesterPresent Probe
     address in *src_addrs*.  Nodes that implement UDS reply with a positive
     response (SID 0x7E).
 
+Technique 6 — XCP Connect Probe
+    Iterates through destination addresses 0x00–0xFD, sending an XCP CONNECT
+    command (command code 0xFF, mode 0x00, 6 x 0xFF padding) over J1939
+    Diagnostic Message A (Physical), once for every source address in
+    *src_addrs*.  Nodes that implement XCP reply with a positive response
+    (status byte 0xFF).
+
 Detection Matrix
 ----------------
 
@@ -65,6 +72,10 @@ response it expects from an active CA in order to detect it.
 | uds        | Physical (PF=diag_pgn, DA=ECU-SA) AND   | UDS positive response 02 7E 00           |
 |            | Functional (PF=diag_pgn+1, DA=0xFF)     | from responding DA                       |
 |            | payload 02 3E 00 FF FF FF FF FF         |                                          |
+|            | once per SA in src_addrs                |                                          |
++------------+-----------------------------------------+------------------------------------------+
+| xcp        | Physical (PF=diag_pgn, DA=ECU-SA)       | XCP positive response (byte 0 == 0xFF)   |
+|            | payload FF 00 FF FF FF FF FF FF         | from responding DA                       |
 |            | once per SA in src_addrs                |                                          |
 +------------+-----------------------------------------+------------------------------------------+
 
@@ -148,8 +159,15 @@ _UDS_TESTER_PRESENT_REQ = b"\x02\x3e\x00\xff\xff\xff\xff\xff"
 #: Expected UDS positive response for TesterPresent (SID=0x7E, length=2)
 _UDS_TESTER_PRESENT_RESP = b"\x02\x7e\x00"
 
+#: XCP CONNECT command payload: command byte 0xFF, mode 0x00 (normal connection),
+#: followed by 6 padding bytes (0xFF) to fill an 8-byte CAN frame.
+_XCP_CONNECT_REQ = b"\xff\x00\xff\xff\xff\xff\xff\xff"
+
+#: XCP positive response byte (status byte 0xFF = OK in XCP protocol)
+_XCP_POSITIVE_RESPONSE = 0xFF
+
 #: All valid CA scan method names
-SCAN_METHODS = ("addr_claim", "ecu_id", "unicast", "rts_probe", "uds")
+SCAN_METHODS = ("addr_claim", "ecu_id", "unicast", "rts_probe", "uds", "xcp")
 
 
 def _build_request_payload(pgn):
@@ -731,6 +749,96 @@ def j1939_scan_uds(
     return found
 
 
+# --- Technique 6 – XCP Connect Probe
+
+
+def j1939_scan_xcp(
+    sock,  # type: SuperSocket
+    scan_range=_SCAN_ADDR_RANGE,  # type: Iterable[int]
+    src_addrs=None,  # type: Optional[List[int]]
+    sniff_time=0.1,  # type: float
+    noise_ids=None,  # type: Optional[Set[int]]
+    force=False,  # type: bool
+    stop_event=None,  # type: Optional[Event]
+    bitrate=_J1939_DEFAULT_BITRATE,  # type: int
+    busload=_J1939_DEFAULT_BUSLOAD,  # type: float
+    diag_pgn=J1939_PF_DIAG_A,  # type: int
+):
+    # type: (...) -> Dict[int, List[CAN]]
+    """Enumerate CAs by sending an XCP CONNECT command to each DA.
+
+    For each destination address *da* in *scan_range* and each source address
+    in *src_addrs*, sends a padded XCP CONNECT request (command byte 0xFF,
+    mode 0x00, 6 x 0xFF padding) over Diagnostic Message A (PF=diag_pgn).
+    A node that implements XCP replies with a positive response frame whose
+    first byte is ``0xFF``.  Only well-formed positive responses are recorded.
+
+    The inter-probe gap is automatically paced so that the scanner contributes
+    at most *busload* × *bitrate* bits per second to the bus.
+
+    :param sock: raw CAN socket to use for sending / sniffing
+    :param scan_range: iterable of destination addresses to probe
+    :param src_addrs: list of source addresses to use in requests; defaults
+                      to :data:`J1939_NULL_ADDRESSES` ([0xF1..0xF9])
+    :param sniff_time: seconds to wait for a response after each probe
+    :param noise_ids: set of source addresses already known from background
+                      traffic (see :func:`j1939_scan_passive`).  DAs whose
+                      value appears in this set are not probed.
+    :param force: if True, probe all DAs in *scan_range* regardless of
+                  *noise_ids*
+    :param stop_event: optional :class:`threading.Event` to abort early
+    :param bitrate: CAN bus bitrate in bit/s (default 250000 for J1939)
+    :param busload: maximum fraction of bus capacity the scanner may consume
+                    (default 0.05 = 5 %)
+    :param diag_pgn: PF byte for XCP diagnostic messages (default 0xDA,
+                     same Diagnostic Message A used by UDS physical addressing)
+    :returns: dict mapping responder source address (int) to a list of
+              matching CAN replies
+    """
+    if src_addrs is None:
+        src_addrs = J1939_NULL_ADDRESSES
+    found = {}  # type: Dict[int, List[CAN]]
+
+    for da in scan_range:
+        if stop_event is not None and stop_event.is_set():
+            break
+        if not force and noise_ids is not None and da in noise_ids:
+            log_j1939.debug("xcp: skipping noise DA=0x%02X", da)
+            continue
+        for _sa in src_addrs:
+            can_id = _j1939_can_id(_SCAN_PRIORITY, diag_pgn, da, _sa)
+            sock.send(CAN(identifier=can_id, flags="extended", data=_XCP_CONNECT_REQ))
+        log_j1939.debug("xcp: probing DA=0x%02X on PF=0x%02X", da, diag_pgn)
+
+        # Capture the loop variable explicitly to avoid closure capture issues
+        _da = da
+
+        def _rx(pkt, _da=_da):
+            # type: (CAN, int) -> None
+            if not (pkt.flags & _CAN_EXTENDED_FLAG):
+                return
+            _, _, _, sa = _j1939_decode_can_id(pkt.identifier)
+            if sa == _da:
+                data = bytes(pkt.data)
+                if data and data[0] == _XCP_POSITIVE_RESPONSE:
+                    log_j1939.debug("xcp: response from SA=0x%02X", sa)
+                    if _da not in found:
+                        found[_da] = []
+                    found[_da].append(pkt)
+
+        sock.sniff(prn=_rx, timeout=sniff_time, store=False)
+
+        # Pace: 1 probe per src_addr (Physical), DLC=8, + 1 response
+        _tx_bits = len(src_addrs) * _can_frame_bits(8)
+        _extra = max(
+            0.0, (_tx_bits + _can_frame_bits(8)) / (bitrate * busload) - sniff_time
+        )
+        if _extra > 0.0:
+            time.sleep(_extra)
+
+    return found
+
+
 # --- Top-level combined scanner
 
 
@@ -762,6 +870,12 @@ def j1939_scan(
       technique will appear in all of their names.
     - ``"packets"`` (List[List[CAN]]): list of lists of CAN response frames,
       one inner list per entry in ``"methods"``, in the same order.
+    - ``"src_addrs"`` (List[Optional[int]]): list of scanner source addresses,
+      one entry per technique in ``"methods"``.  For techniques that use
+      physical addressing (``"uds"`` and ``"xcp"``), this records which
+      scanner source address produced the response — i.e. which SA must be
+      used for further access.  ``None`` is stored for techniques where the
+      scanner SA is not significant (broadcast methods).
 
     By default, before running any active probe the function performs a
     passive bus listen (via :func:`j1939_scan_passive`) for *noise_listen_time*
@@ -774,7 +888,7 @@ def j1939_scan(
     :param scan_range: DA range for unicast / RTS sweeps (default 0x00–0xFD)
     :param methods: list of method names to run; valid values are
                     ``"addr_claim"``, ``"ecu_id"``, ``"unicast"``,
-                    ``"rts_probe"``, ``"uds"``.  Default is all five.
+                    ``"rts_probe"``, ``"uds"``, ``"xcp"``.  Default is all six.
     :param src_addrs: list of source addresses to use in outgoing probes;
                       defaults to :data:`J1939_NULL_ADDRESSES` ([0xF1..0xF9])
     :param sniff_time: per-address listen time for unicast / RTS methods
@@ -789,23 +903,27 @@ def j1939_scan(
                   all addresses are probed and reported)
     :param stop_event: :class:`threading.Event` to abort the scan early
     :param verbose: if True, log discovered CAs to the console
-    :param bitrate: CAN bus bitrate in bit/s passed to unicast / RTS / UDS
+    :param bitrate: CAN bus bitrate in bit/s passed to unicast / RTS / UDS / XCP
                     methods.  When not specified the scanner tries to read the
                     ``bitrate`` attribute of *sock* automatically, and falls
                     back to ``_J1939_DEFAULT_BITRATE`` (250 kbps) if the
                     attribute is not available.
     :param busload: maximum scanner bus-load fraction passed to unicast / RTS /
-                    UDS methods (default 0.05 = 5 %)
+                    UDS / XCP methods (default 0.05 = 5 %)
     :param skip_functional: passed to :func:`j1939_scan_uds`
-    :param diag_pgn: passed to :func:`j1939_scan_uds`
+    :param diag_pgn: passed to :func:`j1939_scan_uds` and :func:`j1939_scan_xcp`
     :returns: dict mapping SA (int) to
-              ``{"methods": List[str], "packets": List[List[CAN]]}``
+              ``{"methods": List[str], "packets": List[List[CAN]],
+              "src_addrs": List[Optional[int]]}``
 
     Example::
 
         >>> found = j1939_scan(sock)
         >>> for sa, info in sorted(found.items()):
-        ...     print("SA=0x{:02X} via {}".format(sa, info["methods"]))
+        ...     for method, src_addr in zip(info["methods"], info["src_addrs"]):
+        ...         print("SA=0x{:02X} via {} (scanner SA={})".format(
+        ...               sa, method,
+        ...               "0x{:02X}".format(src_addr) if src_addr else "broadcast"))
     """
     if methods is None:
         methods = list(SCAN_METHODS)
@@ -846,15 +964,28 @@ def j1939_scan(
     results = {}  # type: Dict[int, Dict[str, object]]
     scan_range_list = list(scan_range)
 
-    def _merge(found, method_name):
-        # type: (Dict[int, List[CAN]], str) -> None
+    def _merge(found, method_name, with_src_addr=False):
+        # type: (Dict[int, List[CAN]], str, bool) -> None
         for sa, pkts in found.items():
+            # For methods that use physical addressing (uds, xcp), the
+            # scanner's source address is embedded as the DA field (ps) of
+            # the response CAN frame.  Extract it so callers can tell which
+            # scanner SA is required for further access.
+            src_addr = None  # type: Optional[int]
+            if with_src_addr and pkts:
+                _, _, ps, _ = _j1939_decode_can_id(pkts[0].identifier)
+                if ps != J1939_GLOBAL_ADDRESS:
+                    src_addr = ps
             if sa not in results:
                 if verbose:
                     log_j1939.info(
                         "j1939_scan: found SA=0x%02X via %s", sa, method_name
                     )
-                results[sa] = {"methods": [method_name], "packets": [pkts]}
+                results[sa] = {
+                    "methods": [method_name],
+                    "packets": [pkts],
+                    "src_addrs": [src_addr],
+                }
             else:
                 if verbose:
                     log_j1939.info(
@@ -862,6 +993,7 @@ def j1939_scan(
                     )
                 cast(List[str], results[sa]["methods"]).append(method_name)
                 cast(List[List[CAN]], results[sa]["packets"]).append(pkts)
+                cast(List, results[sa]["src_addrs"]).append(src_addr)
 
     if "addr_claim" in methods:
         if stop_event is not None and stop_event.is_set():
@@ -952,6 +1084,27 @@ def j1939_scan(
                 diag_pgn=diag_pgn,
             ),
             "uds",
+            with_src_addr=True,
+        )
+
+    if "xcp" in methods:
+        if stop_event is not None and stop_event.is_set():
+            return results
+        _merge(
+            j1939_scan_xcp(
+                sock,
+                scan_range=scan_range_list,
+                src_addrs=src_addrs,
+                sniff_time=sniff_time,
+                noise_ids=noise_ids,
+                force=force,
+                stop_event=stop_event,
+                bitrate=bitrate,
+                busload=busload,
+                diag_pgn=diag_pgn,
+            ),
+            "xcp",
+            with_src_addr=True,
         )
 
     return results
@@ -965,6 +1118,7 @@ __all__ = [
     "j1939_scan_unicast",
     "j1939_scan_rts_probe",
     "j1939_scan_uds",
+    "j1939_scan_xcp",
     "J1939_NULL_ADDRESSES",
     "PGN_ECU_ID",
     "PGN_DIAG_A",

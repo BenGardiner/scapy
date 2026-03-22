@@ -251,7 +251,7 @@ sock = TestSocket(CAN)
 resp_can_id = _j1939_can_id(6, 0xFE, 0xCA, 0x10)
 sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
                         data=b'\xff\xff' + b'\x00' * 6)))
-results = j1939_scan_dm(sock, target_da=0x10, pgns=["DM1"], sniff_time=0.1)
+results = j1939_scan_dm(sock, target_da=0x10, dms=["DM1"], sniff_time=0.1)
 assert results["DM1"].supported is True, "DM1 should be detected as supported"
 cleanup_testsockets()
 
@@ -259,7 +259,7 @@ cleanup_testsockets()
 def test_dm_scan_invalid_name():
     sock = TestSocket(CAN)
     try:
-        j1939_scan_dm(sock, target_da=0x00, pgns=["DM99"])
+        j1939_scan_dm(sock, target_da=0x00, dms=["DM99"])
         assert False, "Expected ValueError"
     except ValueError as e:
         assert "DM99" in str(e), "Error should mention the bad name"
@@ -275,7 +275,7 @@ def test_dm_scan_stop_event():
     with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
         tx_sock.pair(monitor)
         results = j1939_scan_dm(tx_sock, target_da=0x00,
-                                pgns=["DM1", "DM2", "DM3"],
+                                dms=["DM1", "DM2", "DM3"],
                                 stop_event=ev, sniff_time=0.05)
         probes = monitor.sniff(count=1, timeout=0.1)
         assert len(probes) == 0, "No probes should be sent when stop_event is set"
@@ -289,7 +289,7 @@ test_dm_scan_stop_event()
 
 = j1939_scan_dm: custom pgns subset scans only requested DMs
 sock = TestSocket(CAN)
-results = j1939_scan_dm(sock, target_da=0x00, pgns=["DM1", "DM5"],
+results = j1939_scan_dm(sock, target_da=0x00, dms=["DM1", "DM5"],
                         sniff_time=0.02)
 assert set(results.keys()) == {"DM1", "DM5"}, \
     "Expected only DM1 and DM5, got {}".format(set(results.keys()))
@@ -322,7 +322,7 @@ test_dm_pgn_invalid_busload()
 
 = scan_dm: bitrate and busload params propagate to scan_dm_pgn
 sock = TestSocket(CAN)
-results = j1939_scan_dm(sock, target_da=0x00, pgns=["DM1"],
+results = j1939_scan_dm(sock, target_da=0x00, dms=["DM1"],
                         bitrate=250000, busload=0.1, sniff_time=0.02)
 assert "DM1" in results
 assert results["DM1"].error == "Timeout"
@@ -346,7 +346,7 @@ def my_reset():
     call_log.append("reset")
 
 sock = TestSocket(CAN)
-results = j1939_scan_dm(sock, target_da=0x00, pgns=["DM1", "DM2"],
+results = j1939_scan_dm(sock, target_da=0x00, dms=["DM1", "DM2"],
                         reset_handler=my_reset, sniff_time=0.02)
 # Two PGNs → one reset call between them
 assert call_log == ["reset"], "Expected 1 reset call, got: {}".format(call_log)
@@ -359,7 +359,7 @@ def my_reset2():
     call_log2.append("reset")
 
 sock = TestSocket(CAN)
-results = j1939_scan_dm(sock, target_da=0x00, pgns=["DM1", "DM2", "DM3"],
+results = j1939_scan_dm(sock, target_da=0x00, dms=["DM1", "DM2", "DM3"],
                         reset_handler=my_reset2, sniff_time=0.02)
 # 3 PGNs → 2 reset calls
 assert len(call_log2) == 2, "Expected 2 reset calls, got: {}".format(call_log2)
@@ -372,7 +372,7 @@ def my_reset3():
     call_log3.append("reset")
 
 sock = TestSocket(CAN)
-results = j1939_scan_dm(sock, target_da=0x00, pgns=["DM1"],
+results = j1939_scan_dm(sock, target_da=0x00, dms=["DM1"],
                         reset_handler=my_reset3, sniff_time=0.02)
 assert call_log3 == [], "Expected no reset calls for single pgn"
 cleanup_testsockets()
@@ -392,7 +392,7 @@ def my_reconnect():
     return s
 
 sock = TestSocket(CAN)
-results = j1939_scan_dm(sock, target_da=0x00, pgns=["DM1", "DM2"],
+results = j1939_scan_dm(sock, target_da=0x00, dms=["DM1", "DM2"],
                         reset_handler=my_reset4, reconnect_handler=my_reconnect,
                         sniff_time=0.02)
 assert call_log4 == ["reset", "reconnect"], \
@@ -408,7 +408,7 @@ def my_reconnect_only():
     return TestSocket(CAN)
 
 sock = TestSocket(CAN)
-results = j1939_scan_dm(sock, target_da=0x00, pgns=["DM1", "DM2"],
+results = j1939_scan_dm(sock, target_da=0x00, dms=["DM1", "DM2"],
                         reconnect_handler=my_reconnect_only, sniff_time=0.02)
 assert reconnect_log == ["reconnect"], \
     "Expected 1 reconnect call, got: {}".format(reconnect_log)
@@ -416,7 +416,7 @@ cleanup_testsockets()
 
 = scan_dm: no reset/reconnect handlers → same behaviour as before
 sock = TestSocket(CAN)
-results = j1939_scan_dm(sock, target_da=0x00, pgns=["DM1"],
+results = j1939_scan_dm(sock, target_da=0x00, dms=["DM1"],
                         sniff_time=0.02)
 assert "DM1" in results
 cleanup_testsockets()

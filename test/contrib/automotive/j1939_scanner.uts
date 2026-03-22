@@ -25,6 +25,7 @@ from scapy.contrib.automotive.j1939.j1939_scanner import (
     j1939_scan_unicast,
     j1939_scan_rts_probe,
     j1939_scan_uds,
+    j1939_scan_xcp,
     J1939_NULL_ADDRESSES,
     PGN_ECU_ID,
     PGN_DIAG_A,
@@ -37,6 +38,8 @@ from scapy.contrib.automotive.j1939.j1939_scanner import (
     _inter_probe_delay,
     _J1939_DEFAULT_BITRATE,
     _J1939_DEFAULT_BUSLOAD,
+    _XCP_CONNECT_REQ,
+    _XCP_POSITIVE_RESPONSE,
 )
 from scapy.error import Scapy_Exception
 from test.testsocket import TestSocket, cleanup_testsockets
@@ -58,8 +61,8 @@ log_j1939_logger.addHandler(handler)
 assert PGN_ECU_ID == 64965
 assert PGN_ECU_ID == 0xFDC5
 
-= SCAN_METHODS contains all five technique names
-assert set(SCAN_METHODS) == {"addr_claim", "ecu_id", "unicast", "rts_probe", "uds"}
+= SCAN_METHODS contains all six technique names
+assert set(SCAN_METHODS) == {"addr_claim", "ecu_id", "unicast", "rts_probe", "uds", "xcp"}
 
 = J1939_NULL_ADDRESSES is [0xF1..0xF9] (9 diagnostic source addresses)
 assert J1939_NULL_ADDRESSES == list(range(0xF1, 0xFA))
@@ -1231,6 +1234,231 @@ test_j1939_scan_bitrate_from_socket()
 = uds: bitrate and busload params accepted without error
 sock = TestSocket(CAN)
 found = j1939_scan_uds(sock, scan_range=[], bitrate=250000, busload=0.05,
+                       sniff_time=0.02)
+assert found == {}
+cleanup_testsockets()
+
++ XCP scanner tests
+
+= xcp: _XCP_CONNECT_REQ has correct format (command byte 0xFF, mode 0x00, padded)
+assert _XCP_CONNECT_REQ == b'\xff\x00\xff\xff\xff\xff\xff\xff'
+assert len(_XCP_CONNECT_REQ) == 8
+assert _XCP_CONNECT_REQ[0] == 0xFF
+assert _XCP_CONNECT_REQ[1] == 0x00
+assert _XCP_POSITIVE_RESPONSE == 0xFF
+
+= xcp: probe frame sent with correct PF and DA
+def test_xcp_probe_frames():
+    with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
+        tx_sock.pair(monitor)
+        j1939_scan_xcp(tx_sock, scan_range=[0x20], sniff_time=0.0,
+                       noise_ids=set(), src_addrs=[J1939_NULL_ADDRESS])
+        pkts = monitor.sniff(count=1, timeout=0.2)
+        assert len(pkts) == 1, \
+            "Expected 1 XCP probe frame, got {}".format(len(pkts))
+        _, pf, ps, sa = _j1939_decode_can_id(pkts[0].identifier)
+        assert pf == J1939_PF_DIAG_A, \
+            "XCP probe should use Physical PF=0xDA, got 0x{:02X}".format(pf)
+        assert ps == 0x20, \
+            "DA should be 0x20, got 0x{:02X}".format(ps)
+        assert bytes(pkts[0].data) == _XCP_CONNECT_REQ, \
+            "XCP probe payload mismatch"
+    cleanup_testsockets()
+
+test_xcp_probe_frames()
+
+= xcp: records SA when XCP positive response (byte 0 == 0xFF) is received
+def test_xcp_positive_response():
+    sock = TestSocket(CAN)
+    resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_A, J1939_NULL_ADDRESS, 0x35)
+    sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                            data=b'\xff\x00\x00\x00\x00\x00\x00\x00')))
+    found = j1939_scan_xcp(sock, scan_range=[0x35], sniff_time=0.1,
+                           noise_ids=set())
+    assert 0x35 in found, \
+        "Expected SA=0x35 via XCP, got: {}".format([hex(k) for k in found])
+    assert isinstance(found[0x35], list)
+    assert len(found[0x35]) == 1
+    cleanup_testsockets()
+
+test_xcp_positive_response()
+
+= xcp: ignores frames where byte 0 is not 0xFF (not a positive response)
+def test_xcp_wrong_response_ignored():
+    sock = TestSocket(CAN)
+    # 0xFE = XCP negative response (ERR_*)
+    resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_A, J1939_NULL_ADDRESS, 0x36)
+    sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                            data=b'\xfe\x10\x00\x00\x00\x00\x00\x00')))
+    found = j1939_scan_xcp(sock, scan_range=[0x36], sniff_time=0.1,
+                           noise_ids=set())
+    assert 0x36 not in found, \
+        "SA=0x36 returned XCP negative response and must NOT be recorded"
+    cleanup_testsockets()
+
+test_xcp_wrong_response_ignored()
+
+= xcp: noise_ids suppresses probing
+def test_xcp_noise_suppression():
+    sock = TestSocket(CAN)
+    resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_A, J1939_NULL_ADDRESS, 0x37)
+    sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                            data=b'\xff\x00\x00\x00\x00\x00\x00\x00')))
+    found = j1939_scan_xcp(sock, scan_range=[0x37], sniff_time=0.1,
+                           noise_ids={0x37})
+    assert 0x37 not in found, \
+        "SA=0x37 is in noise_ids and must be suppressed"
+    cleanup_testsockets()
+
+test_xcp_noise_suppression()
+
+= xcp: custom diag_pgn uses that PF for probes
+def test_xcp_custom_diag_pgn():
+    with TestSocket(CAN) as tx_sock, TestSocket(CAN) as monitor:
+        tx_sock.pair(monitor)
+        custom_pgn = 0xEF
+        j1939_scan_xcp(tx_sock, scan_range=[0x20], sniff_time=0.0,
+                       diag_pgn=custom_pgn,
+                       noise_ids=set(), src_addrs=[J1939_NULL_ADDRESS])
+        pkts = monitor.sniff(count=1, timeout=0.2)
+        assert len(pkts) == 1
+        _, pf, _, _ = _j1939_decode_can_id(pkts[0].identifier)
+        assert pf == custom_pgn, \
+            "Expected PF=0x{:02X}, got 0x{:02X}".format(custom_pgn, pf)
+    cleanup_testsockets()
+
+test_xcp_custom_diag_pgn()
+
+= j1939_scan: xcp technique is invoked and finds XCP-responding CAs
+def test_j1939_scan_xcp_technique():
+    sock = TestSocket(CAN)
+    resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_A,
+                                J1939_NULL_ADDRESS, 0x42)
+    sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                            data=b'\xff\x00\x00\x00\x00\x00\x00\x00')))
+    found = j1939_scan(sock, methods=["xcp"], scan_range=[0x42],
+                       sniff_time=0.1, noise_ids=set())
+    assert 0x42 in found, \
+        "SA=0x42 should be found by xcp method, got: {}".format(
+            [hex(k) for k in found])
+    assert found[0x42]["methods"] == ["xcp"], \
+        "methods should be ['xcp'], got: {}".format(found[0x42]["methods"])
+    assert isinstance(found[0x42]["packets"], list)
+    assert len(found[0x42]["packets"]) == 1
+    assert isinstance(found[0x42]["packets"][0], list)
+    assert "src_addrs" in found[0x42], "'src_addrs' key missing from result"
+    cleanup_testsockets()
+
+test_j1939_scan_xcp_technique()
+
+= j1939_scan: src_addrs key present in results for all techniques
+def test_j1939_scan_src_addrs_key_present():
+    sock = TestSocket(CAN)
+    resp_can_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED,
+                                J1939_GLOBAL_ADDRESS, 0x43)
+    sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                            data=b'\x00' * 8)))
+    found = j1939_scan(sock, methods=["addr_claim"],
+                       broadcast_listen_time=0.1, noise_ids=set())
+    assert 0x43 in found
+    assert "src_addrs" in found[0x43], "'src_addrs' key missing from result"
+    assert len(found[0x43]["src_addrs"]) == len(found[0x43]["methods"])
+    cleanup_testsockets()
+
+test_j1939_scan_src_addrs_key_present()
+
+= j1939_scan: uds result carries scanner src_addr that produced the response
+def test_j1939_scan_uds_src_addr_recorded():
+    sock = TestSocket(CAN)
+    # UDS response from ECU 0x44 back to scanner src_addr=0xF1
+    resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_A, 0xF1, 0x44)
+    sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                            data=b'\x02\x7e\x00')))
+    found = j1939_scan(sock, methods=["uds"], scan_range=[0x44],
+                       sniff_time=0.1, noise_ids=set(), skip_functional=True,
+                       src_addrs=[0xF1])
+    assert 0x44 in found
+    uds_idx = found[0x44]["methods"].index("uds")
+    assert found[0x44]["src_addrs"][uds_idx] == 0xF1, \
+        "Expected src_addr=0xF1, got: 0x{:02X}".format(
+            found[0x44]["src_addrs"][uds_idx])
+    cleanup_testsockets()
+
+test_j1939_scan_uds_src_addr_recorded()
+
+= j1939_scan: xcp result carries scanner src_addr that produced the response
+def test_j1939_scan_xcp_src_addr_recorded():
+    sock = TestSocket(CAN)
+    # XCP response from ECU 0x45 back to scanner src_addr=0xB5
+    resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_A, 0xB5, 0x45)
+    sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                            data=b'\xff\x00\x00\x00\x00\x00\x00\x00')))
+    found = j1939_scan(sock, methods=["xcp"], scan_range=[0x45],
+                       sniff_time=0.1, noise_ids=set(),
+                       src_addrs=[0xB5])
+    assert 0x45 in found
+    xcp_idx = found[0x45]["methods"].index("xcp")
+    assert found[0x45]["src_addrs"][xcp_idx] == 0xB5, \
+        "Expected src_addr=0xB5, got: {}".format(
+            found[0x45]["src_addrs"][xcp_idx])
+    cleanup_testsockets()
+
+test_j1939_scan_xcp_src_addr_recorded()
+
+= j1939_scan: mock ECU responds UDS from SA 0xF1 and XCP from SA 0xB5 on PGN 0xEF/DA 0x33
+def test_j1939_scan_uds_and_xcp_src_addr_discrimination():
+    import threading
+    import time
+    sock = TestSocket(CAN)
+    _CUSTOM_PGN = 0xEF
+    _TARGET_DA = 0x33
+    _UDS_SRC = 0xF1
+    _XCP_SRC = 0xB5
+    # Pre-inject UDS response: ECU at DA=0x33 responds to UDS from SA=0xF1
+    uds_resp_id = _j1939_can_id(6, _CUSTOM_PGN, _UDS_SRC, _TARGET_DA)
+    sock.ins.send(bytes(CAN(identifier=uds_resp_id, flags="extended",
+                            data=b'\x02\x7e\x00')))
+    # Inject XCP response after UDS scan completes (~0.1 s)
+    def inject_xcp():
+        time.sleep(0.2)
+        xcp_resp_id = _j1939_can_id(6, _CUSTOM_PGN, _XCP_SRC, _TARGET_DA)
+        sock.ins.send(bytes(CAN(identifier=xcp_resp_id, flags="extended",
+                                data=b'\xff\x00\x00\x00\x00\x00\x00\x00')))
+    t = threading.Thread(target=inject_xcp)
+    t.start()
+    found = j1939_scan(
+        sock,
+        methods=["uds", "xcp"],
+        scan_range=[_TARGET_DA],
+        src_addrs=[_UDS_SRC, _XCP_SRC],
+        sniff_time=0.1,
+        noise_ids=set(),
+        skip_functional=True,
+        diag_pgn=_CUSTOM_PGN,
+    )
+    t.join()
+    assert _TARGET_DA in found, \
+        "ECU at DA=0x{:02X} not found, got: {}".format(
+            _TARGET_DA, [hex(k) for k in found])
+    assert "uds" in found[_TARGET_DA]["methods"], \
+        "UDS method missing from result"
+    assert "xcp" in found[_TARGET_DA]["methods"], \
+        "XCP method missing from result"
+    uds_idx = found[_TARGET_DA]["methods"].index("uds")
+    xcp_idx = found[_TARGET_DA]["methods"].index("xcp")
+    assert found[_TARGET_DA]["src_addrs"][uds_idx] == _UDS_SRC, \
+        "UDS: expected scanner SA=0x{:02X}, got: {}".format(
+            _UDS_SRC, found[_TARGET_DA]["src_addrs"][uds_idx])
+    assert found[_TARGET_DA]["src_addrs"][xcp_idx] == _XCP_SRC, \
+        "XCP: expected scanner SA=0x{:02X}, got: {}".format(
+            _XCP_SRC, found[_TARGET_DA]["src_addrs"][xcp_idx])
+    cleanup_testsockets()
+
+test_j1939_scan_uds_and_xcp_src_addr_discrimination()
+
+= xcp: bitrate and busload params accepted without error
+sock = TestSocket(CAN)
+found = j1939_scan_xcp(sock, scan_range=[], bitrate=250000, busload=0.05,
                        sniff_time=0.02)
 assert found == {}
 cleanup_testsockets()
