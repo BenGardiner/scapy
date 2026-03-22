@@ -159,10 +159,10 @@ _UDS_TESTER_PRESENT_REQ = b"\x02\x3e\x00\xff\xff\xff\xff\xff"
 #: Expected UDS positive response for TesterPresent (SID=0x7E, length=2)
 _UDS_TESTER_PRESENT_RESP = b"\x02\x7e\x00"
 
-#: PF byte for XCP Diagnostic Messages (Proprietary A, PDU1 peer-to-peer, PF=0xEF)
+#: PF byte for XCP Messages (Proprietary A, PDU1 peer-to-peer, PF=0xEF)
 J1939_PF_XCP = 0xEF
 
-#: Default source addresses used by the XCP scanner (two dedicated diagnostic SAs).
+#: Default source addresses used by the XCP scanner (two dedicated XCP SAs).
 J1939_XCP_SRC_ADDRS = [0x3F, 0x5A]
 
 #: XCP CONNECT command payload: command byte 0xFF, mode 0x00 (normal connection),
