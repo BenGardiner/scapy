@@ -420,3 +420,35 @@ results = j1939_scan_dm(sock, target_da=0x00, dms=["DM1"],
                         sniff_time=0.02)
 assert "DM1" in results
 cleanup_testsockets()
+
+
++ Send-then-sniff race condition regression tests
+~ conf
+
+= scan_dm_pgn: immediate ECU reply is captured (sniff-before-send regression)
+def test_dm_pgn_immediate_reply():
+    import threading
+    with TestSocket(CAN) as sock, TestSocket(CAN) as monitor:
+        sock.pair(monitor)
+        dm1_pgn = J1939_DM_PGNS["DM1"]
+        dm1_pf = (dm1_pgn >> 8) & 0xFF
+        dm1_ps = dm1_pgn & 0xFF
+        def simulate_ecu():
+            while True:
+                pkts = monitor.sniff(count=1, timeout=1.0)
+                if not pkts:
+                    break
+                p = pkts[0]
+                _, pf, ps, sa = _j1939_decode_can_id(p.identifier)
+                if pf == J1939_PF_REQUEST:
+                    resp_id = _j1939_can_id(6, dm1_pf, dm1_ps, ps)
+                    sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8)))
+        t = threading.Thread(target=simulate_ecu)
+        t.start()
+        result = j1939_scan_dm_pgn(sock, target_da=0x42, pgn=dm1_pgn,
+                                   dm_name="DM1", sniff_time=0.3)
+        t.join(timeout=2.0)
+        assert result.supported, "Immediate DM1 reply must be captured, got: {}".format(result)
+    cleanup_testsockets()
+
+test_dm_pgn_immediate_reply()

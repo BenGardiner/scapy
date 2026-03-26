@@ -1679,3 +1679,108 @@ found = j1939_scan_xcp(sock, scan_range=[], bitrate=250000, busload=0.05,
                        sniff_time=0.02)
 assert found == {}
 cleanup_testsockets()
+
+
++ Send-then-sniff race condition regression tests
+~ conf
+
+= unicast: immediate ECU reply is captured (sniff-before-send regression)
+def test_unicast_immediate_reply():
+    import threading
+    with TestSocket(CAN) as sock, TestSocket(CAN) as monitor:
+        sock.pair(monitor)
+        def simulate_ecu():
+            while True:
+                pkts = monitor.sniff(count=1, timeout=1.0)
+                if not pkts:
+                    break
+                p = pkts[0]
+                _, pf, ps, sa = _j1939_decode_can_id(p.identifier)
+                if pf == J1939_PF_REQUEST:
+                    resp_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, ps)
+                    sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8)))
+        t = threading.Thread(target=simulate_ecu)
+        t.start()
+        found = j1939_scan_unicast(sock, scan_range=[0x42], sniff_time=0.3, src_addrs=[0xF9])
+        t.join(timeout=2.0)
+        assert 0x42 in found, "Immediate ECU reply must be captured, got: {}".format([hex(k) for k in found])
+    cleanup_testsockets()
+
+test_unicast_immediate_reply()
+
+= rts_probe: immediate ECU reply is captured (sniff-before-send regression)
+def test_rts_probe_immediate_reply():
+    import threading
+    with TestSocket(CAN) as sock, TestSocket(CAN) as monitor:
+        sock.pair(monitor)
+        def simulate_ecu():
+            while True:
+                pkts = monitor.sniff(count=1, timeout=1.0)
+                if not pkts:
+                    break
+                p = pkts[0]
+                _, pf, ps, sa = _j1939_decode_can_id(p.identifier)
+                if pf == J1939_TP_CM_PF:
+                    cts_data = bytes([TP_CM_CTS, 0x01, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+                    resp_id = _j1939_can_id(7, J1939_TP_CM_PF, sa, ps)
+                    sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=cts_data)))
+        t = threading.Thread(target=simulate_ecu)
+        t.start()
+        found = j1939_scan_rts_probe(sock, scan_range=[0x42], sniff_time=0.3, src_addrs=[0xF9])
+        t.join(timeout=2.0)
+        assert 0x42 in found, "Immediate CTS reply must be captured, got: {}".format([hex(k) for k in found])
+    cleanup_testsockets()
+
+test_rts_probe_immediate_reply()
+
+= uds: immediate ECU reply is captured (sniff-before-send regression)
+def test_uds_immediate_reply():
+    import threading
+    with TestSocket(CAN) as sock, TestSocket(CAN) as monitor:
+        sock.pair(monitor)
+        def simulate_ecu():
+            while True:
+                pkts = monitor.sniff(count=1, timeout=1.0)
+                if not pkts:
+                    break
+                p = pkts[0]
+                _, pf, ps, sa = _j1939_decode_can_id(p.identifier)
+                if pf == J1939_PF_DIAG_A and ps != J1939_GLOBAL_ADDRESS:
+                    resp_data = b'\x02\x7e\x00' + b'\xff' * 5
+                    resp_id = _j1939_can_id(6, J1939_PF_DIAG_A, sa, ps)
+                    sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=resp_data)))
+        t = threading.Thread(target=simulate_ecu)
+        t.start()
+        found = j1939_scan_uds(sock, scan_range=[0x42], sniff_time=0.3,
+                               skip_functional=True, src_addrs=[0xF9])
+        t.join(timeout=2.0)
+        assert 0x42 in found, "Immediate UDS reply must be captured, got: {}".format([hex(k) for k in found])
+    cleanup_testsockets()
+
+test_uds_immediate_reply()
+
+= xcp: immediate ECU reply is captured (sniff-before-send regression)
+def test_xcp_immediate_reply():
+    import threading
+    with TestSocket(CAN) as sock, TestSocket(CAN) as monitor:
+        sock.pair(monitor)
+        def simulate_ecu():
+            while True:
+                pkts = monitor.sniff(count=1, timeout=1.0)
+                if not pkts:
+                    break
+                p = pkts[0]
+                _, pf, ps, sa = _j1939_decode_can_id(p.identifier)
+                if pf == J1939_PF_XCP:
+                    resp_data = bytes([_XCP_POSITIVE_RESPONSE]) + b'\x00' * 7
+                    resp_id = _j1939_can_id(6, J1939_PF_XCP, sa, ps)
+                    sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=resp_data)))
+        t = threading.Thread(target=simulate_ecu)
+        t.start()
+        found = j1939_scan_xcp(sock, scan_range=[0x42], sniff_time=0.3,
+                               src_addrs=[0x3F])
+        t.join(timeout=2.0)
+        assert 0x42 in found, "Immediate XCP reply must be captured, got: {}".format([hex(k) for k in found])
+    cleanup_testsockets()
+
+test_xcp_immediate_reply()
