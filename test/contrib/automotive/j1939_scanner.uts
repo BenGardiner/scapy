@@ -44,7 +44,7 @@ from scapy.contrib.automotive.j1939.j1939_scanner import (
     _XCP_POSITIVE_RESPONSE,
 )
 from scapy.error import Scapy_Exception
-from test.testsocket import TestSocket, cleanup_testsockets
+from test.testsocket import TestSocket, SlowTestSocket, cleanup_testsockets
 
 = Redirect logging
 import logging
@@ -1845,5 +1845,35 @@ def test_xcp_early_exit():
     assert 0x42 in found, "Expected SA=0x42, got: {}".format([hex(k) for k in found])
     assert elapsed < 2.0, "Sniff should exit early, took {:.1f}s (max 2.0s)".format(elapsed)
     cleanup_testsockets()
+
+test_xcp_early_exit()
+
+= unicast: multiple DAs found despite stale traffic (kernel buffer flush)
+~ slow_test
+def test_unicast_stale_frames():
+    import time
+    sock = SlowTestSocket(CAN, frame_delay=0.0002, mux_throttle=0.001)
+    target_das = [0x10, 0x20, 0x30]
+    for da in target_das:
+        stale_id = _j1939_can_id(6, 0xFE, 0x00, 0xEE)
+        for _ in range(30):
+            with sock._serial_lock:
+                sock._serial_buffer.append(
+                    bytes(CAN(identifier=stale_id, flags="extended", data=b'\xCC' * 8))
+                )
+        resp_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, da)
+        with sock._serial_lock:
+            sock._serial_buffer.append(
+                bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8))
+            )
+    found = j1939_scan_unicast(sock, scan_range=target_das,
+                               src_addrs=[0xF9], sniff_time=2.0)
+    found_das = [da for da in target_das if da in found]
+    assert len(found_das) == len(target_das), \
+        "Expected all DAs found despite stale traffic, got: {}".format(
+            [hex(d) for d in found_das])
+    cleanup_testsockets()
+
+test_unicast_stale_frames()
 
 test_xcp_early_exit()

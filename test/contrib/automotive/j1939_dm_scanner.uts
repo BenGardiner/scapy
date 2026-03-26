@@ -29,7 +29,7 @@ from scapy.contrib.automotive.j1939.j1939_scanner import (
     _J1939_DEFAULT_BUSLOAD,
     _inter_probe_delay,
 )
-from test.testsocket import TestSocket, cleanup_testsockets
+from test.testsocket import TestSocket, SlowTestSocket, cleanup_testsockets
 
 = Redirect logging
 import logging
@@ -471,3 +471,61 @@ def test_dm_pgn_early_exit():
     cleanup_testsockets()
 
 test_dm_pgn_early_exit()
+
+= scan_dm_pgn: response found despite stale frames (kernel buffer flush)
+~ slow_test
+def test_dm_pgn_stale_frames():
+    import time
+    sock = SlowTestSocket(CAN, frame_delay=0.0002, mux_throttle=0.001)
+    dm1_pgn = J1939_DM_PGNS["DM1"]
+    dm1_pf = (dm1_pgn >> 8) & 0xFF
+    dm1_ps = dm1_pgn & 0xFF
+    stale_id = _j1939_can_id(6, dm1_pf, dm1_ps, 0x99)
+    for _ in range(50):
+        with sock._serial_lock:
+            sock._serial_buffer.append(
+                bytes(CAN(identifier=stale_id, flags="extended", data=b'\xAA' * 8))
+            )
+    resp_id = _j1939_can_id(6, dm1_pf, dm1_ps, 0x42)
+    with sock._serial_lock:
+        sock._serial_buffer.append(
+            bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8))
+        )
+    result = j1939_scan_dm_pgn(sock, target_da=0x42, pgn=dm1_pgn,
+                               dm_name="DM1", sniff_time=2.0)
+    assert result.supported, "Expected DM1 supported despite stale frames, got: {}".format(result)
+    cleanup_testsockets()
+
+test_dm_pgn_stale_frames()
+
+= scan_dm: multiple DAs with stale traffic (simulates slow embedded system)
+~ slow_test
+def test_dm_multi_da_stale():
+    import time
+    sock = SlowTestSocket(CAN, frame_delay=0.0002, mux_throttle=0.001)
+    dm1_pgn = J1939_DM_PGNS["DM1"]
+    dm1_pf = (dm1_pgn >> 8) & 0xFF
+    dm1_ps = dm1_pgn & 0xFF
+    target_das = [0x10, 0x20, 0x30]
+    for da in target_das:
+        stale_id = _j1939_can_id(6, 0xFE, 0x00, 0xEE)
+        for _ in range(20):
+            with sock._serial_lock:
+                sock._serial_buffer.append(
+                    bytes(CAN(identifier=stale_id, flags="extended", data=b'\xBB' * 8))
+                )
+        resp_id = _j1939_can_id(6, dm1_pf, dm1_ps, da)
+        with sock._serial_lock:
+            sock._serial_buffer.append(
+                bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8))
+            )
+    results = {}
+    for da in target_das:
+        results[da] = j1939_scan_dm(sock, target_da=da, dms=["DM1"],
+                                    sniff_time=2.0)
+    found_das = [da for da in target_das if results[da]["DM1"].supported]
+    assert len(found_das) == len(target_das), \
+        "Expected all DAs found, got: {}".format([hex(d) for d in found_das])
+    cleanup_testsockets()
+
+test_dm_multi_da_stale()
