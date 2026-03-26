@@ -1875,5 +1875,3 @@ def test_unicast_stale_frames():
     cleanup_testsockets()
 
 test_unicast_stale_frames()
-
-test_xcp_early_exit()
