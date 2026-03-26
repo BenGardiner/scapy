@@ -239,10 +239,6 @@ def j1939_scan_dm_pgn(
 
     can_id = _j1939_can_id(_DM_SCAN_PRIORITY, J1939_PF_REQUEST, target_da, src_addr)
     payload = struct.pack("<I", pgn)[:3]
-    sock.send(CAN(identifier=can_id, flags="extended", data=payload))
-    log_j1939.debug(
-        "dm_scan: probing DA=0x%02X PGN=0x%04X (%s)", target_da, pgn, dm_name
-    )
 
     result = []  # type: List[DmScanResult]
 
@@ -269,7 +265,15 @@ def j1939_scan_dm_pgn(
                     DmScanResult(dm_name, pgn, False, packet=pkt, error="NACK")
                 )
 
-    sock.sniff(prn=_rx, timeout=sniff_time, store=False)
+    def _send_probe():
+        # type: () -> None
+        sock.send(CAN(identifier=can_id, flags="extended", data=payload))
+        log_j1939.debug(
+            "dm_scan: probing DA=0x%02X PGN=0x%04X (%s)", target_da, pgn, dm_name
+        )
+
+    sock.sniff(prn=_rx, timeout=sniff_time, store=False,
+               started_callback=_send_probe)
 
     # Pace the probe rate: request=3 bytes (DLC 3), response=8 bytes (DLC 8)
     _extra = _inter_probe_delay(bitrate, busload, 3, 8, sniff_time)

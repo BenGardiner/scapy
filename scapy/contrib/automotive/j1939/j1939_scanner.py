@@ -505,10 +505,6 @@ def j1939_scan_unicast(
             log_j1939.debug("unicast: skipping noise DA=0x%02X", da)
             continue
         payload = _build_request_payload(PGN_ADDRESS_CLAIMED)
-        for _sa in src_addrs:
-            can_id = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_REQUEST, da, _sa)
-            sock.send(CAN(identifier=can_id, flags="extended", data=payload))
-        log_j1939.debug("unicast: probing DA=0x%02X", da)
 
         # Capture the loop variable explicitly to avoid closure capture issues
         _da = da
@@ -530,7 +526,15 @@ def j1939_scan_unicast(
                     found[_da] = []
                 found[_da].append(pkt)
 
-        sock.sniff(prn=_rx, timeout=sniff_time, store=False)
+        def _send_probes(_da=_da):
+            # type: (int) -> None
+            for _sa in src_addrs:
+                can_id = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_REQUEST, _da, _sa)
+                sock.send(CAN(identifier=can_id, flags="extended", data=payload))
+            log_j1939.debug("unicast: probing DA=0x%02X", _da)
+
+        sock.sniff(prn=_rx, timeout=sniff_time, store=False,
+                   started_callback=_send_probes)
 
         # Pace the probe rate: len(src_addrs) request frames (DLC 3) + response (DLC 8)
         _tx_bits = len(src_addrs) * _can_frame_bits(3)
@@ -612,11 +616,6 @@ def j1939_scan_rts_probe(
             0x00,  # PGN byte 2
             0x00,
         )  # PGN byte 3
-        for _sa in src_addrs:
-            # CAN-ID: priority=7, PF=0xEC (TP.CM), DA=da, SA=_sa
-            can_id = _j1939_can_id(7, J1939_TP_CM_PF, da, _sa)
-            sock.send(CAN(identifier=can_id, flags="extended", data=rts_payload))
-        log_j1939.debug("rts_probe: probing DA=0x%02X", da)
 
         _da = da
 
@@ -641,7 +640,16 @@ def j1939_scan_rts_probe(
                         found[_da] = []
                     found[_da].append(pkt)
 
-        sock.sniff(prn=_rx, timeout=sniff_time, store=False)
+        def _send_probes(_da=_da):
+            # type: (int) -> None
+            for _sa in src_addrs:
+                # CAN-ID: priority=7, PF=0xEC (TP.CM), DA=da, SA=_sa
+                can_id = _j1939_can_id(7, J1939_TP_CM_PF, _da, _sa)
+                sock.send(CAN(identifier=can_id, flags="extended", data=rts_payload))
+            log_j1939.debug("rts_probe: probing DA=0x%02X", _da)
+
+        sock.sniff(prn=_rx, timeout=sniff_time, store=False,
+                   started_callback=_send_probes)
 
         # Pace: len(src_addrs) RTS probes (DLC 8) + one expected response (DLC 8)
         _tx_bits = len(src_addrs) * _can_frame_bits(8)
@@ -716,18 +724,6 @@ def j1939_scan_uds(
     found = {}  # type: Dict[int, List[CAN]]
 
     if not skip_functional:
-        for _sa in src_addrs:
-            # diag_pgn | 0x01 is functional addressing PF (e.g. 0xDB)
-            can_id_f = _j1939_can_id(
-                _SCAN_PRIORITY, diag_pgn | 0x01, J1939_GLOBAL_ADDRESS, _sa
-            )
-            for req in _UDS_TESTER_PRESENT_REQS:
-                sock.send(CAN(identifier=can_id_f, flags="extended", data=req))
-
-        log_j1939.debug(
-            "uds: broadcast functional probe sent (PF=0x%02X)", diag_pgn | 0x01
-        )
-
         def _rx_functional(pkt):
             # type: (CAN) -> None
             if not (pkt.flags & _CAN_EXTENDED_FLAG):
@@ -749,7 +745,21 @@ def j1939_scan_uds(
                         found[sa] = []
                     found[sa].append(pkt)
 
-        sock.sniff(prn=_rx_functional, timeout=broadcast_listen_time, store=False)
+        def _send_functional():
+            # type: () -> None
+            for _sa in src_addrs:
+                # diag_pgn | 0x01 is functional addressing PF (e.g. 0xDB)
+                can_id_f = _j1939_can_id(
+                    _SCAN_PRIORITY, diag_pgn | 0x01, J1939_GLOBAL_ADDRESS, _sa
+                )
+                for req in _UDS_TESTER_PRESENT_REQS:
+                    sock.send(CAN(identifier=can_id_f, flags="extended", data=req))
+            log_j1939.debug(
+                "uds: broadcast functional probe sent (PF=0x%02X)", diag_pgn | 0x01
+            )
+
+        sock.sniff(prn=_rx_functional, timeout=broadcast_listen_time, store=False,
+                   started_callback=_send_functional)
 
     for da in scan_range:
         if stop_event is not None and stop_event.is_set():
@@ -757,13 +767,6 @@ def j1939_scan_uds(
         if not force and noise_ids is not None and da in noise_ids:
             log_j1939.debug("uds: skipping noise DA=0x%02X", da)
             continue
-        for _sa in src_addrs:
-            # diag_pgn is physical addressing PF (e.g. 0xDA)
-            can_id_a = _j1939_can_id(_SCAN_PRIORITY, diag_pgn, da, _sa)
-            for req in _UDS_TESTER_PRESENT_REQS:
-                sock.send(CAN(identifier=can_id_a, flags="extended", data=req))
-
-        log_j1939.debug("uds: physical probe DA=0x%02X on PF=0x%02X", da, diag_pgn)
 
         # Capture the loop variable explicitly to avoid closure capture issues
         _da = da
@@ -783,7 +786,17 @@ def j1939_scan_uds(
                         found[_da] = []
                     found[_da].append(pkt)
 
-        sock.sniff(prn=_rx, timeout=sniff_time, store=False)
+        def _send_probes(_da=_da):
+            # type: (int) -> None
+            for _sa in src_addrs:
+                # diag_pgn is physical addressing PF (e.g. 0xDA)
+                can_id_a = _j1939_can_id(_SCAN_PRIORITY, diag_pgn, _da, _sa)
+                for req in _UDS_TESTER_PRESENT_REQS:
+                    sock.send(CAN(identifier=can_id_a, flags="extended", data=req))
+            log_j1939.debug("uds: physical probe DA=0x%02X on PF=0x%02X", _da, diag_pgn)
+
+        sock.sniff(prn=_rx, timeout=sniff_time, store=False,
+                   started_callback=_send_probes)
 
         # Pace: len(_UDS_TESTER_PRESENT_REQS) probes per src_addr (Physical),
         # DLC=8, + 1 response
@@ -853,10 +866,6 @@ def j1939_scan_xcp(
         if not force and noise_ids is not None and da in noise_ids:
             log_j1939.debug("xcp: skipping noise DA=0x%02X", da)
             continue
-        for _sa in src_addrs:
-            can_id = _j1939_can_id(_SCAN_PRIORITY, diag_pgn, da, _sa)
-            sock.send(CAN(identifier=can_id, flags="extended", data=_XCP_CONNECT_REQ))
-        log_j1939.debug("xcp: probing DA=0x%02X on PF=0x%02X", da, diag_pgn)
 
         # Capture the loop variable explicitly to avoid closure capture issues
         _da = da
@@ -876,7 +885,16 @@ def j1939_scan_xcp(
                         found[_da] = []
                     found[_da].append(pkt)
 
-        sock.sniff(prn=_rx, timeout=sniff_time, store=False)
+        def _send_probes(_da=_da):
+            # type: (int) -> None
+            for _sa in src_addrs:
+                can_id = _j1939_can_id(_SCAN_PRIORITY, diag_pgn, _da, _sa)
+                sock.send(CAN(identifier=can_id, flags="extended",
+                              data=_XCP_CONNECT_REQ))
+            log_j1939.debug("xcp: probing DA=0x%02X on PF=0x%02X", _da, diag_pgn)
+
+        sock.sniff(prn=_rx, timeout=sniff_time, store=False,
+                   started_callback=_send_probes)
 
         # Pace: 1 probe per src_addr (Physical), DLC=8, + 1 response
         _tx_bits = len(src_addrs) * _can_frame_bits(8)
