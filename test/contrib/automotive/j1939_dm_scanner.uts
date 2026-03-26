@@ -452,3 +452,22 @@ def test_dm_pgn_immediate_reply():
     cleanup_testsockets()
 
 test_dm_pgn_immediate_reply()
+
+= scan_dm_pgn: sniff exits early when response found (stop_filter)
+def test_dm_pgn_early_exit():
+    import time
+    sock = TestSocket(CAN)
+    dm1_pgn = J1939_DM_PGNS["DM1"]
+    dm1_pf = (dm1_pgn >> 8) & 0xFF
+    dm1_ps = dm1_pgn & 0xFF
+    resp_id = _j1939_can_id(6, dm1_pf, dm1_ps, 0x42)
+    sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8)))
+    t0 = time.monotonic()
+    result = j1939_scan_dm_pgn(sock, target_da=0x42, pgn=dm1_pgn,
+                               dm_name="DM1", sniff_time=5.0)
+    elapsed = time.monotonic() - t0
+    assert result.supported, "Expected DM1 supported, got: {}".format(result)
+    assert elapsed < 2.0, "Sniff should exit early, took {:.1f}s (max 2.0s)".format(elapsed)
+    cleanup_testsockets()
+
+test_dm_pgn_early_exit()

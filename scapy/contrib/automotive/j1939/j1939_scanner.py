@@ -534,7 +534,8 @@ def j1939_scan_unicast(
             log_j1939.debug("unicast: probing DA=0x%02X", _da)
 
         sock.sniff(prn=_rx, timeout=sniff_time, store=False,
-                   started_callback=_send_probes)
+                   started_callback=_send_probes,
+                   stop_filter=lambda _, _da=_da: _da in found)
 
         # Pace the probe rate: len(src_addrs) request frames (DLC 3) + response (DLC 8)
         _tx_bits = len(src_addrs) * _can_frame_bits(3)
@@ -649,7 +650,8 @@ def j1939_scan_rts_probe(
             log_j1939.debug("rts_probe: probing DA=0x%02X", _da)
 
         sock.sniff(prn=_rx, timeout=sniff_time, store=False,
-                   started_callback=_send_probes)
+                   started_callback=_send_probes,
+                   stop_filter=lambda _, _da=_da: _da in found)
 
         # Pace: len(src_addrs) RTS probes (DLC 8) + one expected response (DLC 8)
         _tx_bits = len(src_addrs) * _can_frame_bits(8)
@@ -796,7 +798,8 @@ def j1939_scan_uds(
             log_j1939.debug("uds: physical probe DA=0x%02X on PF=0x%02X", _da, diag_pgn)
 
         sock.sniff(prn=_rx, timeout=sniff_time, store=False,
-                   started_callback=_send_probes)
+                   started_callback=_send_probes,
+                   stop_filter=lambda _, _da=_da: _da in found)
 
         # Pace: len(_UDS_TESTER_PRESENT_REQS) probes per src_addr (Physical),
         # DLC=8, + 1 response
@@ -894,7 +897,8 @@ def j1939_scan_xcp(
             log_j1939.debug("xcp: probing DA=0x%02X on PF=0x%02X", _da, diag_pgn)
 
         sock.sniff(prn=_rx, timeout=sniff_time, store=False,
-                   started_callback=_send_probes)
+                   started_callback=_send_probes,
+                   stop_filter=lambda _, _da=_da: _da in found)
 
         # Pace: 1 probe per src_addr (Physical), DLC=8, + 1 response
         _tx_bits = len(src_addrs) * _can_frame_bits(8)

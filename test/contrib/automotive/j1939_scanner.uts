@@ -1624,8 +1624,6 @@ test_j1939_scan_xcp_multi_src_addr_recorded()
 
 = j1939_scan: mock ECU responds UDS from SA 0xF1 and XCP from SA 0xB5 on PGN 0xEF/DA 0x33
 def test_j1939_scan_uds_and_xcp_src_addr_discrimination():
-    import threading
-    import time
     sock = TestSocket(CAN)
     _CUSTOM_PGN = 0xEF
     _TARGET_DA = 0x33
@@ -1635,14 +1633,12 @@ def test_j1939_scan_uds_and_xcp_src_addr_discrimination():
     uds_resp_id = _j1939_can_id(6, _CUSTOM_PGN, _UDS_SRC, _TARGET_DA)
     sock.ins.send(bytes(CAN(identifier=uds_resp_id, flags="extended",
                             data=b'\x02\x7e\x00')))
-    # Inject XCP response after UDS scan completes (~0.1 s)
-    def inject_xcp():
-        time.sleep(0.2)
-        xcp_resp_id = _j1939_can_id(6, _CUSTOM_PGN, _XCP_SRC, _TARGET_DA)
-        sock.ins.send(bytes(CAN(identifier=xcp_resp_id, flags="extended",
-                                data=b'\xff\x00\x00\x00\x00\x00\x00\x00')))
-    t = threading.Thread(target=inject_xcp)
-    t.start()
+    # Pre-inject XCP response: ECU at DA=0x33 responds to XCP from SA=0xB5.
+    # The UDS sniff exits early (stop_filter) after reading the UDS response,
+    # leaving the XCP response in the buffer for the XCP scan.
+    xcp_resp_id = _j1939_can_id(6, _CUSTOM_PGN, _XCP_SRC, _TARGET_DA)
+    sock.ins.send(bytes(CAN(identifier=xcp_resp_id, flags="extended",
+                            data=b'\xff\x00\x00\x00\x00\x00\x00\x00')))
     found = j1939_scan(
         sock,
         methods=["uds", "xcp"],
@@ -1653,7 +1649,6 @@ def test_j1939_scan_uds_and_xcp_src_addr_discrimination():
         skip_functional=True,
         diag_pgn=_CUSTOM_PGN,
     )
-    t.join()
     assert _TARGET_DA in found, \
         "ECU at DA=0x{:02X} not found, got: {}".format(
             _TARGET_DA, [hex(k) for k in found])
@@ -1784,3 +1779,71 @@ def test_xcp_immediate_reply():
     cleanup_testsockets()
 
 test_xcp_immediate_reply()
+
+
++ Early exit (stop_filter) regression tests
+~ conf
+
+= unicast: sniff exits early when response found (stop_filter)
+def test_unicast_early_exit():
+    import time
+    sock = TestSocket(CAN)
+    resp_can_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x42)
+    sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended", data=b'\x00' * 8)))
+    t0 = time.monotonic()
+    found = j1939_scan_unicast(sock, scan_range=[0x42], sniff_time=5.0, src_addrs=[0xF9])
+    elapsed = time.monotonic() - t0
+    assert 0x42 in found, "Expected SA=0x42, got: {}".format([hex(k) for k in found])
+    assert elapsed < 2.0, "Sniff should exit early, took {:.1f}s (max 2.0s)".format(elapsed)
+    cleanup_testsockets()
+
+test_unicast_early_exit()
+
+= rts_probe: sniff exits early when response found (stop_filter)
+def test_rts_probe_early_exit():
+    import time
+    sock = TestSocket(CAN)
+    cts_data = bytes([TP_CM_CTS, 0x01, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+    resp_can_id = _j1939_can_id(7, J1939_TP_CM_PF, 0xF9, 0x42)
+    sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended", data=cts_data)))
+    t0 = time.monotonic()
+    found = j1939_scan_rts_probe(sock, scan_range=[0x42], sniff_time=5.0, src_addrs=[0xF9])
+    elapsed = time.monotonic() - t0
+    assert 0x42 in found, "Expected SA=0x42, got: {}".format([hex(k) for k in found])
+    assert elapsed < 2.0, "Sniff should exit early, took {:.1f}s (max 2.0s)".format(elapsed)
+    cleanup_testsockets()
+
+test_rts_probe_early_exit()
+
+= uds: sniff exits early when response found (stop_filter)
+def test_uds_early_exit():
+    import time
+    sock = TestSocket(CAN)
+    resp_can_id = _j1939_can_id(6, J1939_PF_DIAG_A, 0xF9, 0x42)
+    sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                            data=b'\x02\x7e\x00' + b'\xff' * 5)))
+    t0 = time.monotonic()
+    found = j1939_scan_uds(sock, scan_range=[0x42], sniff_time=5.0,
+                           skip_functional=True, src_addrs=[0xF9])
+    elapsed = time.monotonic() - t0
+    assert 0x42 in found, "Expected SA=0x42, got: {}".format([hex(k) for k in found])
+    assert elapsed < 2.0, "Sniff should exit early, took {:.1f}s (max 2.0s)".format(elapsed)
+    cleanup_testsockets()
+
+test_uds_early_exit()
+
+= xcp: sniff exits early when response found (stop_filter)
+def test_xcp_early_exit():
+    import time
+    sock = TestSocket(CAN)
+    resp_can_id = _j1939_can_id(6, J1939_PF_XCP, 0x3F, 0x42)
+    sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                            data=bytes([_XCP_POSITIVE_RESPONSE]) + b'\x00' * 7)))
+    t0 = time.monotonic()
+    found = j1939_scan_xcp(sock, scan_range=[0x42], sniff_time=5.0, src_addrs=[0x3F])
+    elapsed = time.monotonic() - t0
+    assert 0x42 in found, "Expected SA=0x42, got: {}".format([hex(k) for k in found])
+    assert elapsed < 2.0, "Sniff should exit early, took {:.1f}s (max 2.0s)".format(elapsed)
+    cleanup_testsockets()
+
+test_xcp_early_exit()

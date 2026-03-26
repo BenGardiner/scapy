@@ -273,7 +273,8 @@ def j1939_scan_dm_pgn(
         )
 
     sock.sniff(prn=_rx, timeout=sniff_time, store=False,
-               started_callback=_send_probe)
+               started_callback=_send_probe,
+               stop_filter=lambda _: bool(result))
 
     # Pace the probe rate: request=3 bytes (DLC 3), response=8 bytes (DLC 8)
     _extra = _inter_probe_delay(bitrate, busload, 3, 8, sniff_time)
