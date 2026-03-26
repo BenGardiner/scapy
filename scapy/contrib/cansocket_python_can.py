@@ -322,6 +322,13 @@ class PythonCANSocket(SuperSocket):
         :returns: an array of sockets that were selected and
             the function to be called next to get the packets (i.g. recv)
         """
+        # Move kernel-buffered CAN frames into the per-socket rx_queues
+        # BEFORE checking which sockets are ready.  The previous order
+        # (check, then multiplex) returned a stale ready-list that did
+        # not include sockets whose data had just been multiplexed,
+        # causing a one-iteration delay.
+        SocketsPool.multiplex_rx_packets()
+
         ready_sockets = \
             [s for s in sockets if isinstance(s, PythonCANSocket) and
              len(s.can_iface.rx_queue)]
@@ -333,7 +340,6 @@ class PythonCANSocket(SuperSocket):
             # yield this thread to avoid starvation
             time.sleep(0)
 
-        SocketsPool.multiplex_rx_packets()
         return cast(List[SuperSocket], ready_sockets)
 
     def close(self):

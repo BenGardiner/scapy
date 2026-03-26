@@ -60,6 +60,7 @@ from scapy.contrib.automotive.j1939.j1939_scanner import (
     _J1939_DEFAULT_BITRATE,
     _J1939_DEFAULT_BUSLOAD,
     _inter_probe_delay,
+    _pre_probe_flush,
 )
 
 # --- DM scanner constants
@@ -267,6 +268,7 @@ def j1939_scan_dm_pgn(
 
     def _send_probe():
         # type: () -> None
+        _pre_probe_flush(sock)
         sock.send(CAN(identifier=can_id, flags="extended", data=payload))
         log_j1939.debug(
             "dm_scan: probing DA=0x%02X PGN=0x%04X (%s)", target_da, pgn, dm_name
