@@ -46,6 +46,10 @@ from scapy.contrib.automotive.j1939.j1939_scanner import (
     _J1939_DEFAULT_BUSLOAD,
     _XCP_CONNECT_REQ,
     _XCP_POSITIVE_RESPONSE,
+    _J1939_PF_ACK,
+    _ACK_CTRL_NACK,
+    _ACK_CTRL_ACCESS_DENIED,
+    _ACK_CTRL_CANNOT_RESPOND,
 )
 from scapy.error import Scapy_Exception
 from test.testsocket import TestSocket, SlowTestSocket, cleanup_testsockets
@@ -406,14 +410,58 @@ assert isinstance(found[0x41], list)
 assert len(found[0x41]) == 1
 cleanup_testsockets()
 
-= rts_probe: ignores non-TP.CM responses
+= rts_probe: detects NACK on Acknowledgment PGN from probed node
+sock = TestSocket(CAN)
+# NACK response (SA=0x42, ctrl=0x01 NACK) directed to scanner SA 0xF9
+nack_can_id = _j1939_can_id(6, _J1939_PF_ACK, 0xF9, 0x42)
+sock.ins.send(bytes(CAN(identifier=nack_can_id, flags="extended",
+                        data=bytes([_ACK_CTRL_NACK, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00]))))
+found = j1939_scan_rts_probe(sock, scan_range=[0x42], sniff_time=0.1, src_addrs=[0xF9])
+assert 0x42 in found, "Expected SA=0x42 via NACK reply on ACK PGN"
+assert isinstance(found[0x42], list)
+assert len(found[0x42]) == 1
+cleanup_testsockets()
+
+= rts_probe: detects Access Denied on Acknowledgment PGN from probed node
+sock = TestSocket(CAN)
+# Access Denied response (SA=0x43, ctrl=0x02) directed to scanner SA 0xF9
+ack_can_id = _j1939_can_id(6, _J1939_PF_ACK, 0xF9, 0x43)
+sock.ins.send(bytes(CAN(identifier=ack_can_id, flags="extended",
+                        data=bytes([_ACK_CTRL_ACCESS_DENIED, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00]))))
+found = j1939_scan_rts_probe(sock, scan_range=[0x43], sniff_time=0.1, src_addrs=[0xF9])
+assert 0x43 in found, "Expected SA=0x43 via Access Denied reply on ACK PGN"
+assert len(found[0x43]) == 1
+cleanup_testsockets()
+
+= rts_probe: detects Cannot Respond on Acknowledgment PGN from probed node
+sock = TestSocket(CAN)
+# Cannot Respond (SA=0x44, ctrl=0x03) directed to scanner SA 0xF9
+ack_can_id = _j1939_can_id(6, _J1939_PF_ACK, 0xF9, 0x44)
+sock.ins.send(bytes(CAN(identifier=ack_can_id, flags="extended",
+                        data=bytes([_ACK_CTRL_CANNOT_RESPOND, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00]))))
+found = j1939_scan_rts_probe(sock, scan_range=[0x44], sniff_time=0.1, src_addrs=[0xF9])
+assert 0x44 in found, "Expected SA=0x44 via Cannot Respond reply on ACK PGN"
+assert len(found[0x44]) == 1
+cleanup_testsockets()
+
+= rts_probe: ignores positive ACK (ctrl=0x00) on Acknowledgment PGN
+sock = TestSocket(CAN)
+# Positive ACK (ctrl=0x00) should NOT be treated as presence confirmation
+ack_can_id = _j1939_can_id(6, _J1939_PF_ACK, 0xF9, 0x45)
+sock.ins.send(bytes(CAN(identifier=ack_can_id, flags="extended",
+                        data=bytes([0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00]))))
+found = j1939_scan_rts_probe(sock, scan_range=[0x45], sniff_time=0.1, src_addrs=[0xF9])
+assert len(found) == 0, "Positive ACK should not trigger RTS probe detection"
+cleanup_testsockets()
+
+= rts_probe: ignores non-TP.CM / non-ACK responses
 sock = TestSocket(CAN)
 # An Address Claimed frame from SA=0x45 should NOT trigger detection
 resp_can_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, 0xF9, 0x45)
 sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
                         data=b'\x00' * 8)))
 found = j1939_scan_rts_probe(sock, scan_range=[0x45], sniff_time=0.1, src_addrs=[0xF9])
-assert len(found) == 0, "rts_probe should only respond to TP.CM frames"
+assert len(found) == 0, "rts_probe should only respond to TP.CM or ACK frames"
 cleanup_testsockets()
 
 = rts_probe: RTS payload has correct format (8 bytes, ctrl=0x10)
@@ -523,6 +571,20 @@ assert found[0x30]["methods"] == ["unicast"]
 assert isinstance(found[0x30]["packets"], list)
 assert len(found[0x30]["packets"]) == 1
 assert isinstance(found[0x30]["packets"][0], list)
+cleanup_testsockets()
+
+= j1939_scan: rts_probe NACK on ACK PGN is detected and merged
+sock = TestSocket(CAN)
+# NACK response (SA=0x31, ctrl=0x01 NACK) directed to scanner SA 0xF9
+nack_can_id = _j1939_can_id(6, _J1939_PF_ACK, 0xF9, 0x31)
+sock.ins.send(bytes(CAN(identifier=nack_can_id, flags="extended",
+                        data=bytes([_ACK_CTRL_NACK, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00]))))
+found = j1939_scan(sock, methods=["rts_probe"], scan_range=[0x31], sniff_time=0.1,
+                   noise_ids=set(), src_addrs=[0xF9])
+assert 0x31 in found, "Expected SA=0x31 via NACK on ACK PGN through j1939_scan"
+assert found[0x31]["methods"] == ["rts_probe"]
+assert isinstance(found[0x31]["packets"], list)
+assert len(found[0x31]["packets"]) == 1
 cleanup_testsockets()
 
 

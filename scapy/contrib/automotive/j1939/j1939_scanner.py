@@ -30,8 +30,9 @@ Technique 3 — Unicast Ping Sweep
 
 Technique 4 — TP.CM RTS Probing
     Iterates through destination addresses 0x00–0xFD, sending a minimal
-    TP.CM_RTS frame to each.  Active nodes reply with CTS or Conn_Abort,
-    both of which confirm the node is present.
+    TP.CM_RTS frame to each.  Active nodes reply with CTS, Conn_Abort,
+    or a NACK on the Acknowledgment PGN (0xE800), all of which confirm
+    the node is present.
 
 Technique 5 — UDS TesterPresent Probe
     Iterates through destination addresses 0x00–0xFD, sending padded UDS
@@ -67,7 +68,8 @@ response it expects from an active CA in order to detect it.
 |            | for PGN 60928, addressed to each DA     | SA equals the probed DA                  |
 +------------+-----------------------------------------+------------------------------------------+
 | rts_probe  | TP.CM_RTS (PF=0xEC, DA=ECU-SA)          | TP.CM_CTS (ctrl=0x11) **or**             |
-|            | sent to each DA                         | TP_Conn_Abort (ctrl=0xFF) from probed DA |
+|            | sent to each DA                         | TP_Conn_Abort (ctrl=0xFF) **or**         |
+|            |                                         | NACK on ACK PGN (PF=0xE8) from probed DA|
 +------------+-----------------------------------------+------------------------------------------+
 | uds        | Physical (PF=diag_pgn, DA=ECU-SA) AND   | UDS response (positive 02 7E xx  |
 |            | Functional (PF=diag_pgn+1, DA=0xFF)     | or negative 03 7F 3E xx)         |
@@ -183,6 +185,16 @@ _XCP_CONNECT_REQ = b"\xff\x00\xff\xff\xff\xff\xff\xff"
 
 #: XCP positive response byte (status byte 0xFF = OK in XCP protocol)
 _XCP_POSITIVE_RESPONSE = 0xFF
+
+#: PDU Format byte for the Acknowledgment PGN (0xE800 / 59392; J1939-21 §5.4.4).
+#: ECUs that do not implement TP may respond to an RTS with a NACK on this PGN
+#: instead of a TP.CM Abort.
+_J1939_PF_ACK = 0xE8
+
+#: Acknowledgment control-byte values (J1939-21 §5.4.4, data byte 0).
+_ACK_CTRL_NACK = 0x01             # Negative Acknowledgment
+_ACK_CTRL_ACCESS_DENIED = 0x02    # Access Denied
+_ACK_CTRL_CANNOT_RESPOND = 0x03   # Cannot Respond
 
 #: All valid CA scan method names
 SCAN_METHODS = ("addr_claim", "ecu_id", "unicast", "rts_probe", "uds", "xcp")
@@ -749,8 +761,10 @@ def j1939_scan_rts_probe(
     For each destination address *da* in *scan_range*, sends a TP.CM_RTS
     (Connection Management – Request to Send) frame once per address in
     *src_addrs*.  An active node replies with either TP.CM_CTS (clear to
-    send) or ``TP_Conn_Abort`` (connection abort).  Both responses confirm
-    the node is present.
+    send), ``TP_Conn_Abort`` (connection abort), or a NACK on the
+    Acknowledgment PGN (0xE800).  All three responses confirm the node is
+    present.  Nodes that do not implement the Transport Protocol layer
+    typically respond with a NACK rather than a TP.CM Abort.
 
     The inter-probe gap is automatically paced so that the scanner contributes
     at most *busload* × *bitrate* bits per second to the bus.
@@ -809,19 +823,36 @@ def j1939_scan_rts_probe(
             _, pf, ps, sa = _j1939_decode_can_id(pkt.identifier)
             if sa != _da:
                 return
+            if ps not in src_addrs or sa == ps:
+                return
+            d = bytes(pkt.data)
+            if not d:
+                return
             # TP.CM response from the probed node (CTS or Abort)
-            if pf == J1939_TP_CM_PF and ps in src_addrs and sa != ps:
-                d = bytes(pkt.data)
-                if d and d[0] in (TP_CM_CTS, TP_Conn_Abort):
-                    log_j1939.debug(
-                        "rts_probe: response (ctrl=0x%02X) from SA=0x%02X to scanner SA=0x%02X",
-                        d[0],
-                        sa,
-                        ps,
-                    )
-                    if _da not in found:
-                        found[_da] = []
-                    found[_da].append(pkt)
+            if pf == J1939_TP_CM_PF and d[0] in (TP_CM_CTS, TP_Conn_Abort):
+                log_j1939.debug(
+                    "rts_probe: TP.CM response (ctrl=0x%02X) from SA=0x%02X"
+                    " to scanner SA=0x%02X",
+                    d[0], sa, ps,
+                )
+                if _da not in found:
+                    found[_da] = []
+                found[_da].append(pkt)
+            # Acknowledgment (NACK / Access Denied / Cannot Respond).
+            # Nodes that do not implement TP may respond with a NACK on the
+            # Acknowledgment PGN (0xE800) instead of a TP.CM Abort.
+            elif pf == _J1939_PF_ACK and d[0] in (
+                _ACK_CTRL_NACK, _ACK_CTRL_ACCESS_DENIED,
+                _ACK_CTRL_CANNOT_RESPOND,
+            ):
+                log_j1939.debug(
+                    "rts_probe: ACK response (ctrl=0x%02X) from SA=0x%02X"
+                    " to scanner SA=0x%02X",
+                    d[0], sa, ps,
+                )
+                if _da not in found:
+                    found[_da] = []
+                found[_da].append(pkt)
 
         def _send_probes(_da=_da):
             # type: (int) -> None
