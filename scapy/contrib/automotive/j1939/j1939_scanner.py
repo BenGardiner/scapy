@@ -93,6 +93,8 @@ Usage::
     ...           sa, info["methods"], len(info["packets"])))
 """
 
+import json
+import logging
 import struct
 import time
 from threading import Event
@@ -1166,8 +1168,9 @@ def j1939_scan(
     busload=_J1939_DEFAULT_BUSLOAD,  # type: float
     skip_functional=False,  # type: bool
     diag_pgn=None,  # type: Optional[int]
+    output_format=None,  # type: Optional[str]
 ):
-    # type: (...) -> Dict[int, Dict[str, object]]
+    # type: (...) -> Union[Dict[int, Dict[str, object]], str]
     """Scan for J1939 Controller Applications using one or more techniques.
 
     Runs each requested scan method and merges the results.  The returned
@@ -1214,7 +1217,11 @@ def j1939_scan(
     :param force: if True, disable noise filtering entirely (no passive pre-scan,
                   all addresses are probed and reported)
     :param stop_event: :class:`threading.Event` to abort the scan early
-    :param verbose: if True, log discovered CAs to the console
+    :param verbose: if True, set the ``log_j1939`` logger to
+                    :data:`logging.DEBUG` and log discovered CAs to the
+                    console.  Matches the verbose pattern used by
+                    :func:`~scapy.contrib.isotp.isotp_scanner.isotp_scan` and
+                    :class:`~scapy.contrib.automotive.xcp.scanner.XCPOnCANScanner`.
     :param bitrate: CAN bus bitrate in bit/s passed to unicast / RTS / UDS / XCP
                     methods.  When not specified the scanner tries to read the
                     ``bitrate`` attribute of *sock* automatically, and falls
@@ -1224,9 +1231,14 @@ def j1939_scan(
                     UDS / XCP methods (default 0.05 = 5 %)
     :param skip_functional: passed to :func:`j1939_scan_uds`
     :param diag_pgn: passed to :func:`j1939_scan_uds` and :func:`j1939_scan_xcp`
+    :param output_format: controls the return type.  ``None`` (default) returns
+                          the raw results dict.  ``"text"`` returns a
+                          human-readable string.  ``"json"`` returns a JSON
+                          string.
     :returns: dict mapping SA (int) to
               ``{"methods": List[str], "packets": List[List[CAN]],
-              "src_addrs": List[List[int]]}``
+              "src_addrs": List[List[int]]}``;
+              or a ``str`` when *output_format* is ``"text"`` or ``"json"``
 
     Example::
 
@@ -1237,6 +1249,8 @@ def j1939_scan(
         ...         print("SA=0x{:02X} via {} (scanner SA={})".format(
         ...               sa, method, s_sas if s_sas else "broadcast"))
     """
+    if verbose:
+        log_j1939.setLevel(logging.DEBUG)
     if methods is None:
         methods = list(SCAN_METHODS)
 
@@ -1436,7 +1450,63 @@ def j1939_scan(
             xcp_kwargs["diag_pgn"] = diag_pgn
         _merge(j1939_scan_xcp(**xcp_kwargs), "xcp", with_src_addr=True)
 
+    if output_format == "text":
+        return _generate_text_output(results)
+    if output_format == "json":
+        return _generate_json_output(results)
     return results
+
+
+def _generate_text_output(results):
+    # type: (Dict[int, Dict[str, object]]) -> str
+    """Format *results* as a human-readable string.
+
+    :param results: dict returned by :func:`j1939_scan`
+    :returns: multiline text summary
+    """
+    if not results:
+        return "No J1939 Controller Applications found."
+    lines = [
+        "Found {} J1939 Controller Application(s):".format(len(results))
+    ]
+    for sa in sorted(results):
+        info = results[sa]
+        methods = cast(List[str], info["methods"])
+        src_addrs = cast(List, info["src_addrs"])
+        lines.append(
+            "\nSA: 0x{:02X}".format(sa)
+        )
+        for method, s_addrs in zip(methods, src_addrs):
+            s_sas = ", ".join("0x{:02X}".format(s) for s in s_addrs)
+            lines.append(
+                "  Method: {}{}".format(
+                    method,
+                    " (scanner SA: {})".format(s_sas) if s_sas else "",
+                )
+            )
+    return "\n".join(lines)
+
+
+def _generate_json_output(results):
+    # type: (Dict[int, Dict[str, object]]) -> str
+    """Format *results* as a JSON string.
+
+    Packet objects are not JSON-serialisable and are omitted; the output
+    contains SA, methods, and src_addrs only.
+
+    :param results: dict returned by :func:`j1939_scan`
+    :returns: JSON string
+    """
+    out = []  # type: List[Dict[str, object]]
+    for sa in sorted(results):
+        info = results[sa]
+        entry = {
+            "sa": sa,
+            "methods": list(cast(List[str], info["methods"])),
+            "src_addrs": [list(s) for s in cast(List, info["src_addrs"])],
+        }  # type: Dict[str, object]
+        out.append(entry)
+    return json.dumps(out)
 
 
 __all__ = [

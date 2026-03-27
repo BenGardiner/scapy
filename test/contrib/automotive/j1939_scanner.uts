@@ -50,6 +50,8 @@ from scapy.contrib.automotive.j1939.j1939_scanner import (
     _ACK_CTRL_NACK,
     _ACK_CTRL_ACCESS_DENIED,
     _ACK_CTRL_CANNOT_RESPOND,
+    _generate_text_output,
+    _generate_json_output,
 )
 from scapy.error import Scapy_Exception
 from test.testsocket import TestSocket, SlowTestSocket, cleanup_testsockets
@@ -2081,3 +2083,126 @@ def test_addr_claim_factory():
     cleanup_testsockets()
 
 test_addr_claim_factory()
+
+
++ output_format parameter
+~ automotive_comm
+
+= j1939_scan: output_format=None returns raw dict (default)
+sock = TestSocket(CAN)
+resp_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x42)
+sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8)))
+found = j1939_scan(sock, methods=["addr_claim"], src_addrs=[0xF9],
+                   broadcast_listen_time=0.1, noise_ids=set())
+assert isinstance(found, dict), "Default output should be dict"
+assert 0x42 in found
+cleanup_testsockets()
+
+= j1939_scan: output_format="text" returns string with SA info
+sock = TestSocket(CAN)
+resp_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x42)
+sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8)))
+found = j1939_scan(sock, methods=["addr_claim"], src_addrs=[0xF9],
+                   broadcast_listen_time=0.1, noise_ids=set(),
+                   output_format="text")
+assert isinstance(found, str), "text output should be str"
+assert "0x42" in found.lower() or "0x42" in found, "SA should appear in text"
+assert "addr_claim" in found, "method name should appear in text"
+cleanup_testsockets()
+
+= j1939_scan: output_format="json" returns valid JSON string
+import json as _json
+sock = TestSocket(CAN)
+resp_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x42)
+sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8)))
+found = j1939_scan(sock, methods=["addr_claim"], src_addrs=[0xF9],
+                   broadcast_listen_time=0.1, noise_ids=set(),
+                   output_format="json")
+assert isinstance(found, str), "json output should be str"
+parsed = _json.loads(found)
+assert isinstance(parsed, list)
+assert len(parsed) == 1
+assert parsed[0]["sa"] == 0x42
+assert parsed[0]["methods"] == ["addr_claim"]
+cleanup_testsockets()
+
+= j1939_scan: output_format="text" with empty results
+sock = TestSocket(CAN)
+found = j1939_scan(sock, methods=["addr_claim"], src_addrs=[0xF9],
+                   broadcast_listen_time=0.02, noise_ids=set(),
+                   output_format="text")
+assert isinstance(found, str)
+assert "No J1939" in found
+cleanup_testsockets()
+
+= j1939_scan: output_format="json" with empty results
+sock = TestSocket(CAN)
+found = j1939_scan(sock, methods=["addr_claim"], src_addrs=[0xF9],
+                   broadcast_listen_time=0.02, noise_ids=set(),
+                   output_format="json")
+assert isinstance(found, str)
+parsed = _json.loads(found)
+assert parsed == []
+cleanup_testsockets()
+
+= _generate_text_output: formats multiple SAs
+results = {
+    0x10: {"methods": ["unicast", "rts_probe"],
+           "packets": [[], []], "src_addrs": [[0xF1], [0xF1]]},
+    0x20: {"methods": ["addr_claim"],
+           "packets": [[]], "src_addrs": [[]]},
+}
+text = _generate_text_output(results)
+assert "Found 2" in text
+assert "0x10" in text.lower() or "0x10" in text
+assert "0x20" in text.lower() or "0x20" in text
+assert "unicast" in text
+assert "rts_probe" in text
+assert "addr_claim" in text
+
+= _generate_json_output: contains SA, methods, src_addrs
+results = {
+    0x10: {"methods": ["unicast"],
+           "packets": [[]], "src_addrs": [[0xF1]]},
+}
+j = _generate_json_output(results)
+parsed = _json.loads(j)
+assert len(parsed) == 1
+assert parsed[0]["sa"] == 0x10
+assert parsed[0]["methods"] == ["unicast"]
+assert parsed[0]["src_addrs"] == [[0xF1]]
+
+
++ verbose log level control
+~ automotive_comm
+
+= j1939_scan: verbose=True sets log_j1939 to DEBUG
+def test_verbose_debug():
+    import logging
+    from scapy.contrib.automotive.j1939.j1939_soft_socket import log_j1939
+    old_level = log_j1939.level
+    sock = TestSocket(CAN)
+    j1939_scan(sock, methods=["addr_claim"], src_addrs=[0xF9],
+               broadcast_listen_time=0.02, noise_ids=set(),
+               verbose=True)
+    assert log_j1939.level == logging.DEBUG, "Expected DEBUG(10), got {}".format(log_j1939.level)
+    log_j1939.setLevel(old_level)
+    cleanup_testsockets()
+
+test_verbose_debug()
+
+= j1939_scan: verbose=False does not change log level
+def test_verbose_false():
+    import logging
+    from scapy.contrib.automotive.j1939.j1939_soft_socket import log_j1939
+    old_level = log_j1939.level
+    log_j1939.setLevel(logging.WARNING)
+    sock = TestSocket(CAN)
+    j1939_scan(sock, methods=["addr_claim"], src_addrs=[0xF9],
+               broadcast_listen_time=0.02, noise_ids=set(),
+               verbose=False)
+    assert log_j1939.level == logging.WARNING, "Expected WARNING(30), got {}".format(log_j1939.level)
+    log_j1939.setLevel(old_level)
+    cleanup_testsockets()
+
+test_verbose_false()

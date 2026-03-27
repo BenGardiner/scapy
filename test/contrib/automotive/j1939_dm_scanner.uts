@@ -567,3 +567,83 @@ def test_dm_pgn_factory():
     cleanup_testsockets()
 
 test_dm_pgn_factory()
+
+
++ reconnect_handler retry logic
+
+= scan_dm: reconnect_handler retries on failure and succeeds
+def test_reconnect_retry_success():
+    fail_count = [0]
+    def failing_reconnect():
+        fail_count[0] += 1
+        if fail_count[0] < 3:
+            raise OSError("simulated reconnect failure")
+        return TestSocket(CAN)
+    sock = TestSocket(CAN)
+    results = j1939_scan_dm(sock, target_da=0x00, dms=["DM1", "DM2"],
+                            reconnect_handler=failing_reconnect,
+                            reconnect_retries=5, sniff_time=0.02)
+    assert "DM1" in results and "DM2" in results
+    assert fail_count[0] == 3, "Expected 3 attempts (2 fail + 1 success), got {}".format(fail_count[0])
+    cleanup_testsockets()
+
+test_reconnect_retry_success()
+
+= scan_dm: reconnect_handler raises after exhausting retries
+def test_reconnect_retry_exhausted():
+    def always_fail():
+        raise OSError("always fails")
+    sock = TestSocket(CAN)
+    raised = False
+    try:
+        j1939_scan_dm(sock, target_da=0x00, dms=["DM1", "DM2"],
+                      reconnect_handler=always_fail,
+                      reconnect_retries=2, sniff_time=0.02)
+    except OSError:
+        raised = True
+    assert raised, "Should raise after exhausting retries"
+    cleanup_testsockets()
+
+test_reconnect_retry_exhausted()
+
+= scan_dm: reconnect_retries=1 means single attempt (no retry)
+def test_reconnect_retries_one():
+    call_count = [0]
+    def counting_reconnect():
+        call_count[0] += 1
+        if call_count[0] == 1:
+            raise OSError("fail")
+        return TestSocket(CAN)
+    sock = TestSocket(CAN)
+    raised = False
+    try:
+        j1939_scan_dm(sock, target_da=0x00, dms=["DM1", "DM2"],
+                      reconnect_handler=counting_reconnect,
+                      reconnect_retries=1, sniff_time=0.02)
+    except OSError:
+        raised = True
+    assert raised, "reconnect_retries=1 means single attempt, should raise"
+    assert call_count[0] == 1
+    cleanup_testsockets()
+
+test_reconnect_retries_one()
+
+= scan_dm: reconnect retry uses stop_event.wait for sleep
+def test_reconnect_retry_uses_stop_event():
+    from threading import Event
+    evt = Event()
+    fail_count = [0]
+    def failing_reconnect():
+        fail_count[0] += 1
+        if fail_count[0] < 2:
+            raise OSError("simulated failure")
+        return TestSocket(CAN)
+    sock = TestSocket(CAN)
+    results = j1939_scan_dm(sock, target_da=0x00, dms=["DM1", "DM2"],
+                            reconnect_handler=failing_reconnect,
+                            reconnect_retries=5, sniff_time=0.02,
+                            stop_event=evt)
+    assert fail_count[0] == 2
+    cleanup_testsockets()
+
+test_reconnect_retry_uses_stop_event()

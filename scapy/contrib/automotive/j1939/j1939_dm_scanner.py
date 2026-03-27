@@ -312,6 +312,7 @@ def j1939_scan_dm(
     busload=_J1939_DEFAULT_BUSLOAD,  # type: float
     reset_handler=None,  # type: Optional[Callable[[], None]]
     reconnect_handler=None,  # type: Optional[Callable[[], SuperSocket]]
+    reconnect_retries=5,  # type: int
 ):
     # type: (...) -> Dict[str, DmScanResult]
     """Probe *target_da* for all (or a selected subset of) Diagnostic Message PGNs.
@@ -326,6 +327,11 @@ def j1939_scan_dm(
     socket; subsequent probes will use the returned socket.  This mirrors the
     interface of :class:`~scapy.contrib.automotive.uds_scan.UDS_Scanner` where
     ``reset_handler`` and ``reconnect_handler`` serve the same role.
+
+    When *reconnect_handler* is provided the call is retried up to
+    *reconnect_retries* times (with a 1-second pause between attempts) if it
+    raises an exception.  This mirrors the retry logic in
+    :class:`~scapy.contrib.automotive.scanner.executor.AutomotiveTestCaseExecutor`.
 
     :param sock: raw CAN socket **or** zero-argument callable returning one
     :param target_da: destination address of the ECU to probe (0x00–0xFD)
@@ -345,6 +351,9 @@ def j1939_scan_dm(
                               Called after *reset_handler* when provided;
                               the returned socket is used for all subsequent
                               probes.
+    :param reconnect_retries: maximum number of attempts when calling
+                              *reconnect_handler* (default 5).  A 1-second
+                              pause is inserted between retries.
     :returns: dict mapping each DM name (str) to its :class:`DmScanResult`
 
     Example::
@@ -402,7 +411,23 @@ def j1939_scan_dm(
                 reset_handler()
             if reconnect_handler is not None:
                 log_j1939.debug("dm_scan: calling reconnect_handler")
-                active_sock = reconnect_handler()
+                for attempt in range(max(1, reconnect_retries)):
+                    try:
+                        active_sock = reconnect_handler()
+                        break
+                    except Exception:
+                        if attempt == reconnect_retries - 1:
+                            raise
+                        log_j1939.debug(
+                            "dm_scan: reconnect attempt %d/%d failed, "
+                            "retrying in 1 s",
+                            attempt + 1,
+                            reconnect_retries,
+                        )
+                        if stop_event is not None:
+                            stop_event.wait(1)
+                        else:
+                            time.sleep(1)
 
     return results
 
