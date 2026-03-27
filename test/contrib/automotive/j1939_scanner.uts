@@ -38,6 +38,10 @@ from scapy.contrib.automotive.j1939.j1939_scanner import (
     _build_request_payload,
     _can_frame_bits,
     _inter_probe_delay,
+    _j1939_sa_filter,
+    _open_sa_filtered_sock,
+    _resolve_probe_sock,
+    _resolve_broadcast_sock,
     _J1939_DEFAULT_BITRATE,
     _J1939_DEFAULT_BUSLOAD,
     _XCP_CONNECT_REQ,
@@ -1873,5 +1877,147 @@ def test_unicast_stale_frames():
         "Expected all DAs found despite stale traffic, got: {}".format(
             [hex(d) for d in found_das])
     cleanup_testsockets()
+
+test_unicast_stale_frames()
+
+
++ Socketcan filter helpers
+
+= _j1939_sa_filter: returns correct socketcan filter for target SA
+
+f = _j1939_sa_filter(0x42)
+assert len(f) == 1
+assert f[0]["can_id"] == 0x80000042, "got 0x{:08X}".format(f[0]["can_id"])
+assert f[0]["can_mask"] == 0x800000FF, "got 0x{:08X}".format(f[0]["can_mask"])
+
+= _j1939_sa_filter: edge cases SA=0x00 and SA=0xFF
+
+f0 = _j1939_sa_filter(0x00)
+assert f0[0]["can_id"] == 0x80000000
+assert f0[0]["can_mask"] == 0x800000FF
+fFF = _j1939_sa_filter(0xFF)
+assert fFF[0]["can_id"] == 0x800000FF
+assert fFF[0]["can_mask"] == 0x800000FF
+
+= _open_sa_filtered_sock: falls back to original socket for non-NativeCANSocket
+
+sock = TestSocket(CAN)
+rx_sock, close_rx = _open_sa_filtered_sock(sock, 0x42)
+assert rx_sock is sock, "Expected fallback to original socket"
+assert close_rx is False, "Expected close_rx=False for fallback"
+cleanup_testsockets()
+
+= _resolve_probe_sock: falls back for test sockets (non-NativeCANSocket)
+
+sock = TestSocket(CAN)
+send_sock, rx_sock, close_rx = _resolve_probe_sock(sock, 0x42)
+assert send_sock is sock, "Expected send_sock is original"
+assert rx_sock is sock, "Expected rx_sock is original (fallback)"
+assert close_rx is False
+cleanup_testsockets()
+
+= _resolve_probe_sock: callable creates a per-probe socket
+
+def _factory():
+    return TestSocket(CAN)
+
+send_sock, rx_sock, close_rx = _resolve_probe_sock(_factory, 0x42)
+assert close_rx is True, "Expected close_rx=True for factory-created socket"
+assert send_sock is rx_sock, "Factory path should use same socket for send and receive"
+rx_sock.close()
+cleanup_testsockets()
+
+= _resolve_broadcast_sock: falls back for test sockets
+
+sock = TestSocket(CAN)
+active_sock, close_sock = _resolve_broadcast_sock(sock)
+assert active_sock is sock
+assert close_sock is False
+cleanup_testsockets()
+
+= _resolve_broadcast_sock: callable creates a socket
+
+def _factory():
+    return TestSocket(CAN)
+
+active_sock, close_sock = _resolve_broadcast_sock(_factory)
+assert close_sock is True
+active_sock.close()
+cleanup_testsockets()
+
+
++ Factory (reconnect) API
+
+= unicast: callable factory produces same results as direct socket
+def test_unicast_factory():
+    def _factory():
+        return TestSocket(CAN)
+    sock = _factory()
+    resp_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x42)
+    sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8)))
+    found_direct = j1939_scan_unicast(sock, scan_range=[0x42],
+                                      src_addrs=[0xF9], sniff_time=0.1)
+    cleanup_testsockets()
+    factory_sock = _factory()
+    factory_sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8)))
+    def _factory_with_data():
+        return factory_sock
+    found_factory = j1939_scan_unicast(_factory_with_data, scan_range=[0x42],
+                                       src_addrs=[0xF9], sniff_time=0.1)
+    assert set(found_direct.keys()) == set(found_factory.keys()), \
+        "Factory should find same SAs: direct={} factory={}".format(
+            list(found_direct.keys()), list(found_factory.keys()))
+    cleanup_testsockets()
+
+test_unicast_factory()
+
+= dm_pgn: callable factory works for DM scanner
+def test_dm_pgn_factory():
+    from scapy.contrib.automotive.j1939.j1939_dm_scanner import (
+        j1939_scan_dm_pgn, J1939_DM_PGNS,
+    )
+    pgn = J1939_DM_PGNS["DM1"]
+    dm1_pf = (pgn >> 8) & 0xFF
+    dm1_ps = pgn & 0xFF
+    sock = TestSocket(CAN)
+    resp_id = _j1939_can_id(6, dm1_pf, dm1_ps, 0x42)
+    sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8)))
+    def _factory():
+        return sock
+    result = j1939_scan_dm_pgn(_factory, target_da=0x42, pgn=pgn,
+                               dm_name="DM1", sniff_time=0.5)
+    assert result.supported, "Factory should find DM1 supported"
+    assert result.dm_name == "DM1"
+    cleanup_testsockets()
+
+test_dm_pgn_factory()
+
+= rts_probe: callable factory works for RTS probe scanner
+def test_rts_factory():
+    sock = TestSocket(CAN)
+    cts_id = _j1939_can_id(7, J1939_TP_CM_PF, 0xF9, 0x42)
+    sock.ins.send(bytes(CAN(identifier=cts_id, flags="extended",
+                            data=bytes([TP_CM_CTS, 1, 1, 0xFF, 0xFF, 0x00, 0x00, 0xFF]))))
+    def _factory():
+        return sock
+    found = j1939_scan_rts_probe(_factory, scan_range=[0x42],
+                                 src_addrs=[0xF9], sniff_time=0.5)
+    assert 0x42 in found, "Factory RTS probe should find DA=0x42"
+    cleanup_testsockets()
+
+test_rts_factory()
+
+= addr_claim: callable factory works for broadcast scan
+def test_addr_claim_factory():
+    sock = TestSocket(CAN)
+    resp_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x42)
+    sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8)))
+    def _factory():
+        return sock
+    found = j1939_scan_addr_claim(_factory, src_addrs=[0xF9], listen_time=0.5)
+    assert 0x42 in found, "Factory addr_claim should find SA=0x42"
+    cleanup_testsockets()
+
+test_addr_claim_factory()
 
 test_unicast_stale_frames()

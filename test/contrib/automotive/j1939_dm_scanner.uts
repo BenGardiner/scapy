@@ -529,3 +529,41 @@ def test_dm_multi_da_stale():
     cleanup_testsockets()
 
 test_dm_multi_da_stale()
+
+
++ Factory (reconnect) API
+
+= j1939_scan_dm: callable factory works for DM scanner
+def test_dm_factory():
+    pgn = J1939_DM_PGNS["DM1"]
+    dm1_pf = (pgn >> 8) & 0xFF
+    dm1_ps = pgn & 0xFF
+    sock = TestSocket(CAN)
+    resp_id = _j1939_can_id(6, dm1_pf, dm1_ps, 0x42)
+    sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8)))
+    def _factory():
+        return sock
+    results = j1939_scan_dm(_factory, target_da=0x42, dms=["DM1"], sniff_time=0.5)
+    assert "DM1" in results
+    assert results["DM1"].supported, "Factory DM scan should find DM1 supported"
+    cleanup_testsockets()
+
+test_dm_factory()
+
+= j1939_scan_dm_pgn: callable factory works for individual DM PGN probe
+def test_dm_pgn_factory():
+    pgn = J1939_DM_PGNS["DM5"]
+    dm5_pf = (pgn >> 8) & 0xFF
+    dm5_ps = pgn & 0xFF
+    sock = TestSocket(CAN)
+    resp_id = _j1939_can_id(6, dm5_pf, dm5_ps, 0x10)
+    sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8)))
+    def _factory():
+        return sock
+    result = j1939_scan_dm_pgn(_factory, target_da=0x10, pgn=pgn,
+                               dm_name="DM5", sniff_time=0.5)
+    assert result.supported, "Factory DM PGN probe should find DM5"
+    assert result.dm_name == "DM5"
+    cleanup_testsockets()
+
+test_dm_pgn_factory()
