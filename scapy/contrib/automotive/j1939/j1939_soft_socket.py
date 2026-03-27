@@ -337,6 +337,11 @@ class J1939SoftSocket(SuperSocket):
         self.priority = priority
         self.basecls = basecls
 
+        # Per-message metadata stashed by recv_raw() for recv() to use
+        self._last_rx_pgn = 0  # type: int
+        self._last_rx_sa = 0  # type: int
+        self._last_rx_da = J1939_GLOBAL_ADDRESS  # type: int
+
         impl = J1939SocketImplementation(
             can_socket,
             src_addr=self.src_addr,
@@ -371,6 +376,10 @@ class J1939SoftSocket(SuperSocket):
         if not self.closed:
             tup = self.impl.recv()
             if tup is not None:
+                # Stash per-message metadata for recv() to pick up
+                self._last_rx_pgn = tup[2]
+                self._last_rx_sa = tup[3]
+                self._last_rx_da = tup[4]
                 return self.basecls, tup[0], float(tup[1])
         return self.basecls, None, None
 
@@ -380,11 +389,11 @@ class J1939SoftSocket(SuperSocket):
         if msg is None:
             return None
         if hasattr(msg, "pgn"):
-            msg.pgn = self.rx_pgn
+            msg.pgn = self._last_rx_pgn
         if hasattr(msg, "src_addr"):
-            msg.src_addr = self.impl.last_rx_sa
+            msg.src_addr = self._last_rx_sa
         if hasattr(msg, "dst_addr"):
-            msg.dst_addr = self.dst_addr
+            msg.dst_addr = self._last_rx_da
         return msg
 
     @staticmethod
@@ -690,7 +699,8 @@ class J1939SocketImplementation:
         self.last_rx_sa = 0  # last received SA (used by J1939SoftSocket.recv)
 
         # I/O queues
-        self.rx_queue = ObjectPipe[Tuple[bytes, Union[float, EDecimal]]]()
+        # rx_queue carries (payload, timestamp, pgn, sa, da) tuples
+        self.rx_queue = ObjectPipe[Tuple[bytes, Union[float, EDecimal], int, int, int]]()
         self.tx_queue = ObjectPipe[Tuple[bytes, int, int]]()
         # tx_queue carries (payload, pgn, dst_addr) tuples
 
@@ -1020,11 +1030,13 @@ class J1939SocketImplementation:
                 da = ps
                 if da != self.src_addr and da != J1939_GLOBAL_ADDRESS:
                     return
+            else:
+                da = J1939_GLOBAL_ADDRESS
             # Direct single-packet message
             data = bytes(p.data)
             if data:
                 self.last_rx_sa = sa
-                self.rx_queue.send((data, p.time))
+                self.rx_queue.send((data, p.time, pgn, sa, da))
 
     # ------------------------------------------------------------------
     # TP receive state machine
@@ -1277,7 +1289,8 @@ class J1939SocketImplementation:
 
             self.last_rx_sa = self.rx_src_addr
             self.rx_state = J1939_RX_IDLE
-            self.rx_queue.send((msg, self.rx_ts))
+            self.rx_queue.send((msg, self.rx_ts, self.rx_pgn_active,
+                                self.rx_src_addr, self.rx_dst_addr))
             return
 
         # Not done yet — send CTS for the next block (CMDT only)
@@ -1558,8 +1571,11 @@ class J1939SocketImplementation:
         self.tx_queue.send((p, self.pgn, self.dst_addr))
 
     def recv(self, timeout=None):
-        # type: (Optional[int]) -> Optional[Tuple[bytes, Union[float, EDecimal]]]
-        """Receive a reassembled J1939 message."""
+        # type: (Optional[int]) -> Optional[Tuple[bytes, Union[float, EDecimal], int, int, int]]
+        """Receive a reassembled J1939 message.
+
+        Returns ``(data, timestamp, pgn, src_addr, dst_addr)`` or None.
+        """
         return self.rx_queue.recv()
 
 

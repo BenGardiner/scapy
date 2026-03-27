@@ -106,7 +106,7 @@ def test_bam_rx_9bytes():
         s.impl.on_can_recv(CAN(identifier=dt_can_id, flags="extended", data=dt2_data))
         result = s.impl.rx_queue.recv()
         assert result is not None
-        msg, ts = result
+        msg, ts, rx_pgn, rx_sa, rx_da = result
         assert msg == b"\x01\x02\x03\x04\x05\x06\x07\x08\x09", "Got: {}".format(msg.hex())
 
 test_bam_rx_9bytes()
@@ -129,7 +129,7 @@ def test_bam_rx_14bytes():
         s.impl.on_can_recv(CAN(identifier=dt_can_id, flags="extended", data=dt2_data))
         result = s.impl.rx_queue.recv()
         assert result is not None
-        msg, ts = result
+        msg, ts, rx_pgn, rx_sa, rx_da = result
         assert msg == payload, "Got: {}".format(msg.hex())
 
 test_bam_rx_14bytes()
@@ -148,7 +148,7 @@ def test_bam_rx_wrong_pgn():
 
 test_bam_rx_wrong_pgn()
 
-= BAM receive -- rx_pgn=0 accepts any PGN
+= BAM receive -- rx_pgn=0 accepts any PGN and propagates actual PGN
 def test_bam_rx_any_pgn():
     pgn_to_send = 0xFECA
     pgn_bytes = struct.pack("<I", pgn_to_send)[:3]
@@ -163,6 +163,9 @@ def test_bam_rx_any_pgn():
         s.impl.on_can_recv(CAN(identifier=dt_can_id, flags="extended", data=dt2_data))
         result = s.impl.rx_queue.recv()
         assert result is not None
+        msg, ts, rx_pgn, rx_sa, rx_da = result
+        assert rx_pgn == 0xFECA, "BAM PGN should be 0xFECA, got 0x{:05X}".format(rx_pgn)
+        assert rx_sa == 0x80, "BAM SA should be 0x80, got 0x{:02X}".format(rx_sa)
 
 test_bam_rx_any_pgn()
 
@@ -322,7 +325,7 @@ def test_cmdt_rx_rts_cts_dt_ack():
         assert eom.data[0] == TP_CM_EndOfMsgACK
         result = s.impl.rx_queue.recv()
         assert result is not None
-        msg, ts = result
+        msg, ts, rx_pgn, rx_sa, rx_da = result
         assert msg == b"\x01\x02\x03\x04\x05\x06\x07\x08\x09"
 
 test_cmdt_rx_rts_cts_dt_ack()
@@ -354,7 +357,7 @@ def test_cmdt_rx_block_size():
         assert pkts[0].data[0] == TP_CM_EndOfMsgACK
         result = s.impl.rx_queue.recv()
         assert result is not None
-        msg, _ = result
+        msg, _, rx_pgn, rx_sa, rx_da = result
         assert msg == b"\xAA" * 7 + b"\xBB" * 7 + b"\xCC" * 7
 
 test_cmdt_rx_block_size()
@@ -415,10 +418,52 @@ def test_cmdt_rx_listen_only():
         assert len(pkts) == 0, "listen_only: expected no EndOfMsgACK"
         result = s.impl.rx_queue.recv()
         assert result is not None
-        msg, _ = result
+        msg, _, rx_pgn, rx_sa, rx_da = result
         assert msg == b"\x01\x02\x03\x04\x05\x06\x07\x08\x09"
 
 test_cmdt_rx_listen_only()
+
+= Single-frame receive: actual PGN propagated through rx_queue (not socket filter)
+def test_sf_pgn_propagation():
+    """When rx_pgn=0 (accept all), the received PGN must reflect the actual
+    CAN frame, not the socket's filter value."""
+    from scapy.contrib.automotive.j1939.j1939_soft_socket import _j1939_can_id, _pgn_from_can_id
+    pgn_a = 0xFECA  # PDU2 (PF=0xFE, GE=0xCA)
+    pgn_b = 0xF004  # PDU2 (PF=0xF0, GE=0x04)
+    can_id_a = _j1939_can_id(6, 0xFE, 0xCA, 0x33)  # SA=0x33
+    can_id_b = _j1939_can_id(6, 0xF0, 0x04, 0x44)  # SA=0x44
+    with J1939SoftSocket(TestSocket(CAN), src_addr=0x11, dst_addr=J1939_GLOBAL_ADDRESS, pgn=0) as s:
+        s.impl.on_can_recv(CAN(identifier=can_id_a, flags="extended", data=b"\x01\x02\x03"))
+        s.impl.on_can_recv(CAN(identifier=can_id_b, flags="extended", data=b"\x04\x05\x06"))
+        result_a = s.impl.rx_queue.recv()
+        assert result_a is not None
+        msg_a, _, pgn_a_rx, sa_a, da_a = result_a
+        assert pgn_a_rx == 0xFECA, "Expected PGN 0xFECA, got 0x{:05X}".format(pgn_a_rx)
+        assert sa_a == 0x33, "Expected SA 0x33, got 0x{:02X}".format(sa_a)
+        assert da_a == J1939_GLOBAL_ADDRESS, "PDU2 DA should be broadcast"
+        result_b = s.impl.rx_queue.recv()
+        assert result_b is not None
+        msg_b, _, pgn_b_rx, sa_b, da_b = result_b
+        assert pgn_b_rx == 0xF004, "Expected PGN 0xF004, got 0x{:05X}".format(pgn_b_rx)
+        assert sa_b == 0x44, "Expected SA 0x44, got 0x{:02X}".format(sa_b)
+
+test_sf_pgn_propagation()
+
+= End-to-end: recv() returns actual PGN, SA, DA for single-frame messages
+def test_e2e_recv_pgn():
+    """Verify that J1939SoftSocket.recv() propagates the actual PGN and
+    addressing from the CAN frame, not the socket's fixed configuration."""
+    pgn_val = 0xFECA
+    can_id = _j1939_can_id(6, 0xFE, 0xCA, 0x33)
+    with J1939SoftSocket(TestSocket(CAN), src_addr=0x11, dst_addr=J1939_GLOBAL_ADDRESS, pgn=0) as s:
+        s.impl.on_can_recv(CAN(identifier=can_id, flags="extended", data=b"\xDE\xAD"))
+        pkt = s.recv()
+        assert pkt is not None
+        assert pkt.pgn == 0xFECA, "recv() PGN should be 0xFECA, got 0x{:05X}".format(pkt.pgn)
+        assert pkt.src_addr == 0x33, "recv() src_addr should be 0x33, got 0x{:02X}".format(pkt.src_addr)
+        assert pkt.dst_addr == J1939_GLOBAL_ADDRESS
+
+test_e2e_recv_pgn()
 
 
 + J1939SoftSocket -- end-to-end via TestSocket
