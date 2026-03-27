@@ -61,6 +61,8 @@ from scapy.contrib.automotive.j1939.j1939_scanner import (
     _J1939_DEFAULT_BUSLOAD,
     _inter_probe_delay,
     _pre_probe_flush,
+    _resolve_probe_sock,
+    SockOrFactory,
 )
 
 # --- DM scanner constants
@@ -199,7 +201,7 @@ def _pgn_matches(pf, ps, pgn):
 
 
 def j1939_scan_dm_pgn(
-    sock,  # type: SuperSocket
+    sock,  # type: SockOrFactory
     target_da,  # type: int
     pgn,  # type: int
     dm_name="Unknown",  # type: str
@@ -223,7 +225,7 @@ def j1939_scan_dm_pgn(
     the outgoing probe frame (3-byte payload) and the expected response frame
     (8-byte payload).
 
-    :param sock: raw CAN socket to use for sending / sniffing
+    :param sock: raw CAN socket **or** zero-argument callable returning one
     :param target_da: destination address of the ECU to probe (0x00–0xFD)
     :param pgn: the Diagnostic Message PGN to request
     :param dm_name: human-readable DM name included in the returned result
@@ -242,6 +244,7 @@ def j1939_scan_dm_pgn(
     payload = struct.pack("<I", pgn)[:3]
 
     result = []  # type: List[DmScanResult]
+    send_sock, rx_sock, close_rx = _resolve_probe_sock(sock, target_da)
 
     def _rx(pkt):
         # type: (CAN) -> None
@@ -268,15 +271,19 @@ def j1939_scan_dm_pgn(
 
     def _send_probe():
         # type: () -> None
-        _pre_probe_flush(sock)
-        sock.send(CAN(identifier=can_id, flags="extended", data=payload))
+        _pre_probe_flush(rx_sock)
+        send_sock.send(CAN(identifier=can_id, flags="extended", data=payload))
         log_j1939.debug(
             "dm_scan: probing DA=0x%02X PGN=0x%04X (%s)", target_da, pgn, dm_name
         )
 
-    sock.sniff(prn=_rx, timeout=sniff_time, store=False,
-               started_callback=_send_probe,
-               stop_filter=lambda _: bool(result))
+    try:
+        rx_sock.sniff(prn=_rx, timeout=sniff_time, store=False,
+                      started_callback=_send_probe,
+                      stop_filter=lambda _: bool(result))
+    finally:
+        if close_rx:
+            rx_sock.close()
 
     # Pace the probe rate: request=3 bytes (DLC 3), response=8 bytes (DLC 8)
     _extra = _inter_probe_delay(bitrate, busload, 3, 8, sniff_time)
@@ -294,7 +301,7 @@ def j1939_scan_dm_pgn(
 
 
 def j1939_scan_dm(
-    sock,  # type: SuperSocket
+    sock,  # type: SockOrFactory
     target_da,  # type: int
     dms=None,  # type: Optional[List[str]]
     src_addr=0xF9,  # type: int
@@ -320,7 +327,7 @@ def j1939_scan_dm(
     interface of :class:`~scapy.contrib.automotive.uds_scan.UDS_Scanner` where
     ``reset_handler`` and ``reconnect_handler`` serve the same role.
 
-    :param sock: raw CAN socket to use for sending / sniffing
+    :param sock: raw CAN socket **or** zero-argument callable returning one
     :param target_da: destination address of the ECU to probe (0x00–0xFD)
     :param dms: list of DM names to scan; must be keys of
                  :data:`J1939_DM_PGNS`.  Default is all entries.

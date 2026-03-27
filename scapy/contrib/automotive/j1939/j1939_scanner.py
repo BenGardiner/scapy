@@ -97,11 +97,14 @@ from threading import Event
 
 # Typing imports
 from typing import (
+    Callable,
     Dict,
     Iterable,
     List,
     Optional,
     Set,
+    Tuple,
+    Union,
     cast,
 )
 
@@ -270,11 +273,139 @@ def _pre_probe_flush(sock):
         pass
 
 
+# --- Socketcan filter helpers
+
+#: CAN Extended Frame Format flag for socketcan ``CAN_RAW_FILTER`` entries.
+#: Set in the ``can_id`` field of ``struct can_filter`` so the kernel matches
+#: only 29-bit extended identifiers.  Value equals ``socket.CAN_EFF_FLAG``.
+_SOCKETCAN_EFF_FLAG = 0x80000000
+
+
+def _j1939_sa_filter(target_sa):
+    # type: (int) -> List[Dict[str, int]]
+    """Return socketcan ``can_filters`` matching extended frames with SA=*target_sa*.
+
+    In a 29-bit J1939 CAN identifier the source address (SA) occupies bits
+    7–0.  The returned filter passes only extended-format frames whose low
+    byte equals *target_sa*, dramatically reducing the number of frames
+    delivered to the socket's kernel receive buffer on a busy bus.
+
+    :param target_sa: source address to match (0x00–0xFF)
+    :returns: list with one ``can_filters`` dict suitable for
+              :class:`~scapy.contrib.cansocket_native.NativeCANSocket`
+    """
+    return [{
+        "can_id": _SOCKETCAN_EFF_FLAG | (target_sa & 0xFF),
+        "can_mask": _SOCKETCAN_EFF_FLAG | 0xFF,
+    }]
+
+
+def _open_sa_filtered_sock(sock, target_sa):
+    # type: (SuperSocket, int) -> Tuple[SuperSocket, bool]
+    """Try to open a CAN socket filtered to receive only SA=*target_sa*.
+
+    On Linux with :class:`~scapy.contrib.cansocket_native.NativeCANSocket`,
+    this creates a **new** raw PF_CAN socket on the same interface with a
+    hardware-level ``CAN_RAW_FILTER`` that passes only extended frames
+    whose source-address byte matches *target_sa*.  The kernel discards
+    non-matching frames before they enter the socket receive buffer,
+    preventing buffer overflow on resource-constrained embedded systems
+    with busy J1939 buses.
+
+    For any other socket type (``PythonCANSocket``, test sockets, etc.)
+    the function returns the original *sock* unchanged as a safe
+    fallback — the existing ``_pre_probe_flush`` mechanism handles
+    those cases.
+
+    :param sock: original CAN socket (used for sending)
+    :param target_sa: source address expected in response frames
+    :returns: ``(rx_sock, close_needed)`` — *rx_sock* is the socket to
+              use for ``sniff()``, and *close_needed* is ``True`` when
+              the caller must call ``rx_sock.close()`` after use.
+    """
+    channel = getattr(sock, "channel", None)
+    if channel is None:
+        return sock, False
+    try:
+        from scapy.contrib.cansocket_native import NativeCANSocket
+        if not isinstance(sock, NativeCANSocket):
+            return sock, False
+        rx = NativeCANSocket(
+            channel=channel,
+            can_filters=_j1939_sa_filter(target_sa),
+        )
+        return rx, True
+    except Exception:
+        return sock, False
+
+
+#: Type alias for the first parameter of all scan functions: either a live
+#: CAN socket or a zero-argument callable that creates a new one.
+SockOrFactory = Union[SuperSocket, Callable[[], SuperSocket]]
+
+
+def _resolve_probe_sock(sock_or_factory, target_sa):
+    # type: (SockOrFactory, int) -> Tuple[SuperSocket, SuperSocket, bool]
+    """Resolve a socket-or-factory into ``(send_sock, rx_sock, close_rx)``.
+
+    When *sock_or_factory* is **callable** (a socket factory), it is called
+    to create a fresh per-probe socket.  On
+    :class:`~scapy.contrib.cansocket_native.NativeCANSocket` the new socket
+    is transparently upgraded to one with a ``CAN_RAW_FILTER`` that passes
+    only extended frames whose source-address byte equals *target_sa*.
+    Both *send_sock* and *rx_sock* point to the same new socket; the
+    caller **must** close it via *close_rx=True*.
+
+    When *sock_or_factory* is a **SuperSocket**, the original socket is
+    used for sending and a separate filtered receive socket is opened if
+    possible; otherwise *rx_sock* equals *send_sock*.
+
+    :param sock_or_factory: CAN socket or zero-argument callable that
+                            returns a new CAN socket
+    :param target_sa: source address expected in response frames
+    :returns: ``(send_sock, rx_sock, close_rx)`` — the caller must call
+              ``rx_sock.close()`` after the probe iff *close_rx* is True.
+              *send_sock* is **never** closed by the caller.
+    """
+    if callable(sock_or_factory):
+        probe = sock_or_factory()
+        channel = getattr(probe, "channel", None)
+        if channel is not None:
+            try:
+                from scapy.contrib.cansocket_native import NativeCANSocket
+                if isinstance(probe, NativeCANSocket):
+                    probe.close()
+                    filtered = NativeCANSocket(
+                        channel=channel,
+                        can_filters=_j1939_sa_filter(target_sa),
+                    )
+                    return filtered, filtered, True
+            except Exception:
+                pass
+        return probe, probe, True
+    rx_sock, close_rx = _open_sa_filtered_sock(sock_or_factory, target_sa)
+    return sock_or_factory, rx_sock, close_rx
+
+
+def _resolve_broadcast_sock(sock_or_factory):
+    # type: (SockOrFactory) -> Tuple[SuperSocket, bool]
+    """Resolve a socket-or-factory for broadcast (non-filtered) use.
+
+    When *sock_or_factory* is callable, it is called once to create a
+    socket.  When it is a SuperSocket, it is returned as-is.
+
+    :returns: ``(sock, close_needed)``
+    """
+    if callable(sock_or_factory):
+        return sock_or_factory(), True
+    return sock_or_factory, False
+
+
 # --- Passive scan — background noise detection
 
 
 def j1939_scan_passive(
-    sock,  # type: SuperSocket
+    sock,  # type: SockOrFactory
     listen_time=2.0,  # type: float
     stop_event=None,  # type: Optional[Event]
 ):
@@ -286,34 +417,39 @@ def j1939_scan_passive(
     returned set can be passed as the ``noise_ids`` argument to the active
     scan functions so that already-known CAs are not re-probed or re-reported.
 
-    :param sock: raw CAN socket to listen on
+    :param sock: raw CAN socket **or** zero-argument callable returning one
     :param listen_time: seconds to collect background traffic
     :param stop_event: optional :class:`threading.Event` to abort early
     :returns: set of observed source addresses (integers)
     """
-    seen = set()  # type: Set[int]
+    active_sock, close_sock = _resolve_broadcast_sock(sock)
+    try:
+        seen = set()  # type: Set[int]
 
-    def _rx(pkt):
-        # type: (CAN) -> None
-        if stop_event is not None and stop_event.is_set():
-            return
-        if not (pkt.flags & _CAN_EXTENDED_FLAG):
-            return
-        _, _, _, sa = _j1939_decode_can_id(pkt.identifier)
-        seen.add(sa)
+        def _rx(pkt):
+            # type: (CAN) -> None
+            if stop_event is not None and stop_event.is_set():
+                return
+            if not (pkt.flags & _CAN_EXTENDED_FLAG):
+                return
+            _, _, _, sa = _j1939_decode_can_id(pkt.identifier)
+            seen.add(sa)
 
-    sock.sniff(prn=_rx, timeout=listen_time, store=False)
-    log_j1939.debug(
-        "passive: observed %d SA(s): %s", len(seen), [hex(s) for s in sorted(seen)]
-    )
-    return seen
+        active_sock.sniff(prn=_rx, timeout=listen_time, store=False)
+        log_j1939.debug(
+            "passive: observed %d SA(s): %s", len(seen), [hex(s) for s in sorted(seen)]
+        )
+        return seen
+    finally:
+        if close_sock:
+            active_sock.close()
 
 
 # --- Technique 1 – Global Address Claim Request
 
 
 def j1939_scan_addr_claim(
-    sock,  # type: SuperSocket
+    sock,  # type: SockOrFactory
     src_addrs=None,  # type: Optional[List[int]]
     listen_time=1.0,  # type: float
     noise_ids=None,  # type: Optional[Set[int]]
@@ -329,7 +465,7 @@ def j1939_scan_addr_claim(
     listens for Address Claimed replies.  Every J1939-81-compliant CA must
     respond.
 
-    :param sock: raw CAN socket to use for sending / sniffing
+    :param sock: raw CAN socket **or** zero-argument callable returning one
     :param src_addrs: list of source addresses to use in requests; defaults
                       to :data:`J1939_DIAGADAPTERS_ADDRESSES` ([0xF1..0xFD])
     :param listen_time: seconds to collect responses after sending each probe
@@ -349,51 +485,56 @@ def j1939_scan_addr_claim(
     payload = _build_request_payload(PGN_ADDRESS_CLAIMED)
     found = {}  # type: Dict[int, List[CAN]]
 
-    for _sa in src_addrs:
-        if stop_event is not None and stop_event.is_set():
-            break
-        can_id = _j1939_can_id(
-            _SCAN_PRIORITY, J1939_PF_REQUEST, J1939_GLOBAL_ADDRESS, _sa
-        )
-        _pre_probe_flush(sock)
-        sock.send(CAN(identifier=can_id, flags="extended", data=payload))
-        log_j1939.debug(
-            "addr_claim: broadcast request sent SA=0x%02X (CAN-ID=0x%08X)", _sa, can_id
-        )
-
-        def _rx(pkt):
-            # type: (CAN) -> None
-            if not (pkt.flags & _CAN_EXTENDED_FLAG):
-                return
+    active_sock, close_sock = _resolve_broadcast_sock(sock)
+    try:
+        for _sa in src_addrs:
             if stop_event is not None and stop_event.is_set():
-                return
-            _, pf, ps, sa = _j1939_decode_can_id(pkt.identifier)
-            if pf == J1939_PF_ADDRESS_CLAIMED and ps == J1939_GLOBAL_ADDRESS:
-                if not force and noise_ids is not None and sa in noise_ids:
-                    log_j1939.debug("addr_claim: suppressing noise SA=0x%02X", sa)
+                break
+            can_id = _j1939_can_id(
+                _SCAN_PRIORITY, J1939_PF_REQUEST, J1939_GLOBAL_ADDRESS, _sa
+            )
+            _pre_probe_flush(active_sock)
+            active_sock.send(CAN(identifier=can_id, flags="extended", data=payload))
+            log_j1939.debug(
+                "addr_claim: broadcast request sent SA=0x%02X (CAN-ID=0x%08X)", _sa, can_id
+            )
+
+            def _rx(pkt):
+                # type: (CAN) -> None
+                if not (pkt.flags & _CAN_EXTENDED_FLAG):
                     return
-                log_j1939.debug("addr_claim: response from SA=0x%02X", sa)
-                if sa not in found:
-                    found[sa] = []
-                # Record which scanner SA elicited this broadcast
-                setattr(pkt, "src_addrs", [_sa])
-                found[sa].append(pkt)
+                if stop_event is not None and stop_event.is_set():
+                    return
+                _, pf, ps, sa = _j1939_decode_can_id(pkt.identifier)
+                if pf == J1939_PF_ADDRESS_CLAIMED and ps == J1939_GLOBAL_ADDRESS:
+                    if not force and noise_ids is not None and sa in noise_ids:
+                        log_j1939.debug("addr_claim: suppressing noise SA=0x%02X", sa)
+                        return
+                    log_j1939.debug("addr_claim: response from SA=0x%02X", sa)
+                    if sa not in found:
+                        found[sa] = []
+                    # Record which scanner SA elicited this broadcast
+                    setattr(pkt, "src_addrs", [_sa])
+                    found[sa].append(pkt)
 
-        sock.sniff(prn=_rx, timeout=listen_time, store=False)
+            active_sock.sniff(prn=_rx, timeout=listen_time, store=False)
 
-        # Pace: 1 broadcast Request (DLC 3) + 1 typical response (DLC 8)
-        _extra = _inter_probe_delay(bitrate, busload, 3, 8, listen_time)
-        if _extra > 0.0:
-            time.sleep(_extra)
+            # Pace: 1 broadcast Request (DLC 3) + 1 typical response (DLC 8)
+            _extra = _inter_probe_delay(bitrate, busload, 3, 8, listen_time)
+            if _extra > 0.0:
+                time.sleep(_extra)
 
-    return found
+        return found
+    finally:
+        if close_sock:
+            active_sock.close()
 
 
 # --- Technique 2 – Global ECU ID Request
 
 
 def j1939_scan_ecu_id(
-    sock,  # type: SuperSocket
+    sock,  # type: SockOrFactory
     src_addrs=None,  # type: Optional[List[int]]
     listen_time=1.0,  # type: float
     noise_ids=None,  # type: Optional[Set[int]]
@@ -408,7 +549,7 @@ def j1939_scan_ecu_id(
     For each address in *src_addrs*, sends a broadcast Request frame and
     listens for BAM announce headers whose PGN field matches 64965.
 
-    :param sock: raw CAN socket to use for sending / sniffing
+    :param sock: raw CAN socket **or** zero-argument callable returning one
     :param src_addrs: list of source addresses to use in requests; defaults
                       to :data:`J1939_DIAGADAPTERS_ADDRESSES` ([0xF1..0xFD])
     :param listen_time: seconds to collect responses after sending each probe
@@ -426,60 +567,65 @@ def j1939_scan_ecu_id(
     payload = _build_request_payload(PGN_ECU_ID)
     found = {}  # type: Dict[int, List[CAN]]
 
-    for _sa in src_addrs:
-        if stop_event is not None and stop_event.is_set():
-            break
-        can_id = _j1939_can_id(
-            _SCAN_PRIORITY, J1939_PF_REQUEST, J1939_GLOBAL_ADDRESS, _sa
-        )
-        _pre_probe_flush(sock)
-        sock.send(CAN(identifier=can_id, flags="extended", data=payload))
-        log_j1939.debug(
-            "ecu_id: broadcast request sent SA=0x%02X (CAN-ID=0x%08X)", _sa, can_id
-        )
-
-        def _rx(pkt):
-            # type: (CAN) -> None
-            if not (pkt.flags & _CAN_EXTENDED_FLAG):
-                return
+    active_sock, close_sock = _resolve_broadcast_sock(sock)
+    try:
+        for _sa in src_addrs:
             if stop_event is not None and stop_event.is_set():
-                return
-            _, pf, ps, sa = _j1939_decode_can_id(pkt.identifier)
-            # We expect a BAM header (TP.CM, DA=0xFF) announcing PGN 64965
-            if pf != J1939_TP_CM_PF:
-                return
-            if ps != J1939_GLOBAL_ADDRESS:
-                return
-            data = bytes(pkt.data)
-            if len(data) < 8:
-                return
-            # BAM control byte = 0x20, PGN at bytes 5-7 (LE)
-            if data[0] == 0x20 and data[5:8] == payload:
-                if not force and noise_ids is not None and sa in noise_ids:
-                    log_j1939.debug("ecu_id: suppressing noise SA=0x%02X", sa)
+                break
+            can_id = _j1939_can_id(
+                _SCAN_PRIORITY, J1939_PF_REQUEST, J1939_GLOBAL_ADDRESS, _sa
+            )
+            _pre_probe_flush(active_sock)
+            active_sock.send(CAN(identifier=can_id, flags="extended", data=payload))
+            log_j1939.debug(
+                "ecu_id: broadcast request sent SA=0x%02X (CAN-ID=0x%08X)", _sa, can_id
+            )
+
+            def _rx(pkt):
+                # type: (CAN) -> None
+                if not (pkt.flags & _CAN_EXTENDED_FLAG):
                     return
-                log_j1939.debug("ecu_id: BAM from SA=0x%02X", sa)
-                if sa not in found:
-                    found[sa] = []
-                # Record which scanner SA elicited this broadcast
-                setattr(pkt, "src_addrs", [_sa])
-                found[sa].append(pkt)
+                if stop_event is not None and stop_event.is_set():
+                    return
+                _, pf, ps, sa = _j1939_decode_can_id(pkt.identifier)
+                # We expect a BAM header (TP.CM, DA=0xFF) announcing PGN 64965
+                if pf != J1939_TP_CM_PF:
+                    return
+                if ps != J1939_GLOBAL_ADDRESS:
+                    return
+                data = bytes(pkt.data)
+                if len(data) < 8:
+                    return
+                # BAM control byte = 0x20, PGN at bytes 5-7 (LE)
+                if data[0] == 0x20 and data[5:8] == payload:
+                    if not force and noise_ids is not None and sa in noise_ids:
+                        log_j1939.debug("ecu_id: suppressing noise SA=0x%02X", sa)
+                        return
+                    log_j1939.debug("ecu_id: BAM from SA=0x%02X", sa)
+                    if sa not in found:
+                        found[sa] = []
+                    # Record which scanner SA elicited this broadcast
+                    setattr(pkt, "src_addrs", [_sa])
+                    found[sa].append(pkt)
 
-        sock.sniff(prn=_rx, timeout=listen_time, store=False)
+            active_sock.sniff(prn=_rx, timeout=listen_time, store=False)
 
-        # Pace: 1 broadcast Request (DLC 3) + 1 typical BAM header (DLC 8)
-        _extra = _inter_probe_delay(bitrate, busload, 3, 8, listen_time)
-        if _extra > 0.0:
-            time.sleep(_extra)
+            # Pace: 1 broadcast Request (DLC 3) + 1 typical BAM header (DLC 8)
+            _extra = _inter_probe_delay(bitrate, busload, 3, 8, listen_time)
+            if _extra > 0.0:
+                time.sleep(_extra)
 
-    return found
+        return found
+    finally:
+        if close_sock:
+            active_sock.close()
 
 
 # --- Technique 3 – Unicast Ping Sweep
 
 
 def j1939_scan_unicast(
-    sock,  # type: SuperSocket
+    sock,  # type: SockOrFactory
     scan_range=_SCAN_ADDR_RANGE,  # type: Iterable[int]
     src_addrs=None,  # type: Optional[List[int]]
     sniff_time=0.1,  # type: float
@@ -506,7 +652,7 @@ def j1939_scan_unicast(
     at most *busload* × *bitrate* bits per second to the bus, counting both
     the outgoing probe frames and the expected response frame.
 
-    :param sock: raw CAN socket to use for sending / sniffing
+    :param sock: raw CAN socket **or** zero-argument callable returning one
     :param scan_range: iterable of destination addresses to probe
     :param src_addrs: list of source addresses to use in requests; defaults
                       to :data:`J1939_DIAGADAPTERS_ADDRESSES` ([0xF1..0xF9])
@@ -537,6 +683,7 @@ def j1939_scan_unicast(
 
         # Capture the loop variable explicitly to avoid closure capture issues
         _da = da
+        send_sock, rx_sock, close_rx = _resolve_probe_sock(sock, _da)
 
         def _rx(pkt, _da=_da):
             # type: (CAN, int) -> None
@@ -557,15 +704,19 @@ def j1939_scan_unicast(
 
         def _send_probes(_da=_da):
             # type: (int) -> None
-            _pre_probe_flush(sock)
+            _pre_probe_flush(rx_sock)
             for _sa in src_addrs:
                 can_id = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_REQUEST, _da, _sa)
-                sock.send(CAN(identifier=can_id, flags="extended", data=payload))
+                send_sock.send(CAN(identifier=can_id, flags="extended", data=payload))
             log_j1939.debug("unicast: probing DA=0x%02X", _da)
 
-        sock.sniff(prn=_rx, timeout=sniff_time, store=False,
-                   started_callback=_send_probes,
-                   stop_filter=lambda _, _da=_da: _da in found)
+        try:
+            rx_sock.sniff(prn=_rx, timeout=sniff_time, store=False,
+                          started_callback=_send_probes,
+                          stop_filter=lambda _, _da=_da: _da in found)
+        finally:
+            if close_rx:
+                rx_sock.close()
 
         # Pace the probe rate: len(src_addrs) request frames (DLC 3) + response (DLC 8)
         _tx_bits = len(src_addrs) * _can_frame_bits(3)
@@ -582,7 +733,7 @@ def j1939_scan_unicast(
 
 
 def j1939_scan_rts_probe(
-    sock,  # type: SuperSocket
+    sock,  # type: SockOrFactory
     scan_range=_SCAN_ADDR_RANGE,  # type: Iterable[int]
     src_addrs=None,  # type: Optional[List[int]]
     sniff_time=0.1,  # type: float
@@ -604,7 +755,7 @@ def j1939_scan_rts_probe(
     The inter-probe gap is automatically paced so that the scanner contributes
     at most *busload* × *bitrate* bits per second to the bus.
 
-    :param sock: raw CAN socket to use for sending / sniffing
+    :param sock: raw CAN socket **or** zero-argument callable returning one
     :param scan_range: iterable of destination addresses to probe
     :param src_addrs: list of source addresses to use in probes; defaults
                       to :data:`J1939_DIAGADAPTERS_ADDRESSES` ([0xF1..0xF9])
@@ -649,6 +800,7 @@ def j1939_scan_rts_probe(
         )  # PGN byte 3
 
         _da = da
+        send_sock, rx_sock, close_rx = _resolve_probe_sock(sock, _da)
 
         def _rx(pkt, _da=_da):
             # type: (CAN, int) -> None
@@ -673,16 +825,20 @@ def j1939_scan_rts_probe(
 
         def _send_probes(_da=_da):
             # type: (int) -> None
-            _pre_probe_flush(sock)
+            _pre_probe_flush(rx_sock)
             for _sa in src_addrs:
                 # CAN-ID: priority=7, PF=0xEC (TP.CM), DA=da, SA=_sa
                 can_id = _j1939_can_id(7, J1939_TP_CM_PF, _da, _sa)
-                sock.send(CAN(identifier=can_id, flags="extended", data=rts_payload))
+                send_sock.send(CAN(identifier=can_id, flags="extended", data=rts_payload))
             log_j1939.debug("rts_probe: probing DA=0x%02X", _da)
 
-        sock.sniff(prn=_rx, timeout=sniff_time, store=False,
-                   started_callback=_send_probes,
-                   stop_filter=lambda _, _da=_da: _da in found)
+        try:
+            rx_sock.sniff(prn=_rx, timeout=sniff_time, store=False,
+                          started_callback=_send_probes,
+                          stop_filter=lambda _, _da=_da: _da in found)
+        finally:
+            if close_rx:
+                rx_sock.close()
 
         # Pace: len(src_addrs) RTS probes (DLC 8) + one expected response (DLC 8)
         _tx_bits = len(src_addrs) * _can_frame_bits(8)
@@ -699,7 +855,7 @@ def j1939_scan_rts_probe(
 
 
 def j1939_scan_uds(
-    sock,  # type: SuperSocket
+    sock,  # type: SockOrFactory
     scan_range=_SCAN_ADDR_RANGE,  # type: Iterable[int]
     src_addrs=None,  # type: Optional[List[int]]
     sniff_time=0.1,  # type: float
@@ -730,7 +886,7 @@ def j1939_scan_uds(
     The inter-probe gap is automatically paced so that the scanner contributes
     at most *busload* × *bitrate* bits per second to the bus.
 
-    :param sock: raw CAN socket to use for sending / sniffing
+    :param sock: raw CAN socket **or** zero-argument callable returning one
     :param scan_range: iterable of destination addresses to probe
     :param src_addrs: list of source addresses to use in requests; defaults
                       to :data:`J1939_DIAGADAPTERS_ADDRESSES` ([0xF1..0xF9])
@@ -757,43 +913,48 @@ def j1939_scan_uds(
     found = {}  # type: Dict[int, List[CAN]]
 
     if not skip_functional:
-        def _rx_functional(pkt):
-            # type: (CAN) -> None
-            if not (pkt.flags & _CAN_EXTENDED_FLAG):
-                return
-            if stop_event is not None and stop_event.is_set():
-                return
-            _, pf, ps, sa = _j1939_decode_can_id(pkt.identifier)
-            if not force and noise_ids is not None and sa in noise_ids:
-                return
-            if pf == diag_pgn | 0x01 and ps in src_addrs:
-                data = bytes(pkt.data)
-                if data[:3] in _UDS_TESTER_PRESENT_RESPS:
-                    log_j1939.debug(
-                        "uds: functional response from SA=0x%02X to scanner SA=0x%02X",
-                        sa,
-                        ps,
+        func_sock, close_func = _resolve_broadcast_sock(sock)
+        try:
+            def _rx_functional(pkt):
+                # type: (CAN) -> None
+                if not (pkt.flags & _CAN_EXTENDED_FLAG):
+                    return
+                if stop_event is not None and stop_event.is_set():
+                    return
+                _, pf, ps, sa = _j1939_decode_can_id(pkt.identifier)
+                if not force and noise_ids is not None and sa in noise_ids:
+                    return
+                if pf == diag_pgn | 0x01 and ps in src_addrs:
+                    data = bytes(pkt.data)
+                    if data[:3] in _UDS_TESTER_PRESENT_RESPS:
+                        log_j1939.debug(
+                            "uds: functional response from SA=0x%02X to scanner SA=0x%02X",
+                            sa,
+                            ps,
+                        )
+                        if sa not in found:
+                            found[sa] = []
+                        found[sa].append(pkt)
+
+            def _send_functional():
+                # type: () -> None
+                _pre_probe_flush(func_sock)
+                for _sa in src_addrs:
+                    # diag_pgn | 0x01 is functional addressing PF (e.g. 0xDB)
+                    can_id_f = _j1939_can_id(
+                        _SCAN_PRIORITY, diag_pgn | 0x01, J1939_GLOBAL_ADDRESS, _sa
                     )
-                    if sa not in found:
-                        found[sa] = []
-                    found[sa].append(pkt)
-
-        def _send_functional():
-            # type: () -> None
-            _pre_probe_flush(sock)
-            for _sa in src_addrs:
-                # diag_pgn | 0x01 is functional addressing PF (e.g. 0xDB)
-                can_id_f = _j1939_can_id(
-                    _SCAN_PRIORITY, diag_pgn | 0x01, J1939_GLOBAL_ADDRESS, _sa
+                    for req in _UDS_TESTER_PRESENT_REQS:
+                        func_sock.send(CAN(identifier=can_id_f, flags="extended", data=req))
+                log_j1939.debug(
+                    "uds: broadcast functional probe sent (PF=0x%02X)", diag_pgn | 0x01
                 )
-                for req in _UDS_TESTER_PRESENT_REQS:
-                    sock.send(CAN(identifier=can_id_f, flags="extended", data=req))
-            log_j1939.debug(
-                "uds: broadcast functional probe sent (PF=0x%02X)", diag_pgn | 0x01
-            )
 
-        sock.sniff(prn=_rx_functional, timeout=broadcast_listen_time, store=False,
-                   started_callback=_send_functional)
+            func_sock.sniff(prn=_rx_functional, timeout=broadcast_listen_time, store=False,
+                            started_callback=_send_functional)
+        finally:
+            if close_func:
+                func_sock.close()
 
     for da in scan_range:
         if stop_event is not None and stop_event.is_set():
@@ -804,6 +965,7 @@ def j1939_scan_uds(
 
         # Capture the loop variable explicitly to avoid closure capture issues
         _da = da
+        send_sock, rx_sock, close_rx = _resolve_probe_sock(sock, _da)
 
         def _rx(pkt, _da=_da):
             # type: (CAN, int) -> None
@@ -822,17 +984,21 @@ def j1939_scan_uds(
 
         def _send_probes(_da=_da):
             # type: (int) -> None
-            _pre_probe_flush(sock)
+            _pre_probe_flush(rx_sock)
             for _sa in src_addrs:
                 # diag_pgn is physical addressing PF (e.g. 0xDA)
                 can_id_a = _j1939_can_id(_SCAN_PRIORITY, diag_pgn, _da, _sa)
                 for req in _UDS_TESTER_PRESENT_REQS:
-                    sock.send(CAN(identifier=can_id_a, flags="extended", data=req))
+                    send_sock.send(CAN(identifier=can_id_a, flags="extended", data=req))
             log_j1939.debug("uds: physical probe DA=0x%02X on PF=0x%02X", _da, diag_pgn)
 
-        sock.sniff(prn=_rx, timeout=sniff_time, store=False,
-                   started_callback=_send_probes,
-                   stop_filter=lambda _, _da=_da: _da in found)
+        try:
+            rx_sock.sniff(prn=_rx, timeout=sniff_time, store=False,
+                          started_callback=_send_probes,
+                          stop_filter=lambda _, _da=_da: _da in found)
+        finally:
+            if close_rx:
+                rx_sock.close()
 
         # Pace: len(_UDS_TESTER_PRESENT_REQS) probes per src_addr (Physical),
         # DLC=8, + 1 response
@@ -850,7 +1016,7 @@ def j1939_scan_uds(
 
 
 def j1939_scan_xcp(
-    sock,  # type: SuperSocket
+    sock,  # type: SockOrFactory
     scan_range=_SCAN_ADDR_RANGE,  # type: Iterable[int]
     src_addrs=None,  # type: Optional[List[int]]
     sniff_time=0.1,  # type: float
@@ -873,7 +1039,7 @@ def j1939_scan_xcp(
     The inter-probe gap is automatically paced so that the scanner contributes
     at most *busload* × *bitrate* bits per second to the bus.
 
-    :param sock: raw CAN socket to use for sending / sniffing
+    :param sock: raw CAN socket **or** zero-argument callable returning one
     :param scan_range: iterable of destination addresses to probe
     :param src_addrs: list of source addresses to use in requests; defaults
                       to :data:`J1939_XCP_SRC_ADDRS` ([0x3F, 0x5A])
@@ -905,6 +1071,7 @@ def j1939_scan_xcp(
 
         # Capture the loop variable explicitly to avoid closure capture issues
         _da = da
+        send_sock, rx_sock, close_rx = _resolve_probe_sock(sock, _da)
 
         def _rx(pkt, _da=_da):
             # type: (CAN, int) -> None
@@ -923,16 +1090,20 @@ def j1939_scan_xcp(
 
         def _send_probes(_da=_da):
             # type: (int) -> None
-            _pre_probe_flush(sock)
+            _pre_probe_flush(rx_sock)
             for _sa in src_addrs:
                 can_id = _j1939_can_id(_SCAN_PRIORITY, diag_pgn, _da, _sa)
-                sock.send(CAN(identifier=can_id, flags="extended",
-                              data=_XCP_CONNECT_REQ))
+                send_sock.send(CAN(identifier=can_id, flags="extended",
+                                   data=_XCP_CONNECT_REQ))
             log_j1939.debug("xcp: probing DA=0x%02X on PF=0x%02X", _da, diag_pgn)
 
-        sock.sniff(prn=_rx, timeout=sniff_time, store=False,
-                   started_callback=_send_probes,
-                   stop_filter=lambda _, _da=_da: _da in found)
+        try:
+            rx_sock.sniff(prn=_rx, timeout=sniff_time, store=False,
+                          started_callback=_send_probes,
+                          stop_filter=lambda _, _da=_da: _da in found)
+        finally:
+            if close_rx:
+                rx_sock.close()
 
         # Pace: 1 probe per src_addr (Physical), DLC=8, + 1 response
         _tx_bits = len(src_addrs) * _can_frame_bits(8)
@@ -949,7 +1120,7 @@ def j1939_scan_xcp(
 
 
 def j1939_scan(
-    sock,  # type: SuperSocket
+    sock,  # type: SockOrFactory
     scan_range=_SCAN_ADDR_RANGE,  # type: Iterable[int]
     methods=None,  # type: Optional[List[str]]
     src_addrs=None,  # type: Optional[List[int]]
@@ -991,7 +1162,10 @@ def j1939_scan(
     disable this filtering, or supply an explicit *noise_ids* set to bypass the
     passive pre-scan.
 
-    :param sock: raw CAN socket (e.g. a :class:`~scapy.contrib.cansocket.CANSocket`)
+    :param sock: raw CAN socket **or** zero-argument callable returning one.
+                 Passing a callable enables per-probe socket creation with
+                 socketcan hardware filters, preventing kernel buffer overflow
+                 on busy buses.
     :param scan_range: DA range for unicast / RTS sweeps (default 0x00–0xFD)
     :param methods: list of method names to run; valid values are
                     ``"addr_claim"``, ``"ecu_id"``, ``"unicast"``,
@@ -1046,12 +1220,19 @@ def j1939_scan(
 
     # If the caller left bitrate at the sentinel default, try to pull the real
     # value from the socket (e.g. CANSocket stores it as sock.bitrate).
+    # When sock is a callable, probe a temporary socket for the attribute.
     if bitrate == _J1939_DEFAULT_BITRATE:
-        sock_bitrate = getattr(sock, "bitrate", None)
+        _probe = sock() if callable(sock) else sock
+        sock_bitrate = getattr(_probe, "bitrate", None)
         if sock_bitrate is not None:
             try:
                 bitrate = int(sock_bitrate)
             except (TypeError, ValueError):
+                pass
+        if callable(sock) and _probe is not sock:
+            try:
+                _probe.close()
+            except Exception:
                 pass
 
     # Step 0: passive pre-scan to detect background noise unless disabled.
@@ -1228,6 +1409,7 @@ def j1939_scan(
 
 
 __all__ = [
+    "SockOrFactory",
     "j1939_scan",
     "j1939_scan_passive",
     "j1939_scan_addr_claim",
