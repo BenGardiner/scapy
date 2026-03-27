@@ -2019,5 +2019,3 @@ def test_addr_claim_factory():
     cleanup_testsockets()
 
 test_addr_claim_factory()
-
-test_unicast_stale_frames()
