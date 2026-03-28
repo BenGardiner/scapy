@@ -888,7 +888,89 @@ def test_address_claim_ignored_without_name():
 
 test_address_claim_ignored_without_name()
 
-+ Cleanup
+= Test: _on_tp_cm short data
+def test_tp_cm_short_data():
+    with TestSocket(CAN) as can_sock:
+        with J1939SoftSocket(can_sock, src_addr=0x22, dst_addr=0x11, pgn=0) as s:
+            cm_id = _j1939_can_id(7, J1939_TP_CM_PF, 0x22, 0x11)
+            s.impl.on_can_recv(CAN(identifier=cm_id, flags="extended", data=b'\x20\x00'))
+            assert s.impl.rx_queue.empty(), "Short TP.CM should be dropped"
+    cleanup_testsockets()
+
+test_tp_cm_short_data()
+
+= Test: _send_abort sends correct abort frame
+def test_send_abort_frame():
+    with TestSocket(CAN) as can_sock, TestSocket(CAN) as monitor:
+        can_sock.pair(monitor)
+        with J1939SoftSocket(can_sock, src_addr=0x22, dst_addr=0xFF, pgn=0) as s:
+            s.impl.address_state = J1939_ADDR_STATE_CLAIMED
+            s.impl._send_abort(0x11, 0xFECA, 0x01)
+            pkts = monitor.sniff(count=1, timeout=1)
+            assert len(pkts) == 1, "Expected abort frame"
+            _, pf, ps, sa = _j1939_decode_can_id(pkts[0].identifier)
+            assert pf == J1939_TP_CM_PF
+            assert ps == 0x11
+            assert sa == 0x22
+            assert pkts[0].data[0] == TP_Conn_Abort
+            assert pkts[0].data[1] == 0x01
+    cleanup_testsockets()
+
+test_send_abort_frame()
+
+= Test: on_can_recv ignores non-extended frames
+def test_non_extended_frame_ignored():
+    with TestSocket(CAN) as can_sock:
+        with J1939SoftSocket(can_sock, src_addr=0x22, dst_addr=0xFF, pgn=0) as s:
+            s.impl.on_can_recv(CAN(identifier=0x123, flags=0, data=b'\x01\x02\x03'))
+            assert s.impl.rx_queue.empty(), "Non-extended frames should be ignored"
+    cleanup_testsockets()
+
+test_non_extended_frame_ignored()
+
+= Test: _on_request_pgn with short data
+def test_request_pgn_short_data():
+    with TestSocket(CAN) as can_sock:
+        with J1939SoftSocket(can_sock, src_addr=0x80, pgn=0) as s:
+            req_id = _j1939_can_id(6, J1939_PF_REQUEST, 0x80, 0x10)
+            s.impl.on_can_recv(CAN(identifier=req_id, flags="extended", data=b'\x01\x02'))
+            # Should not crash; short data ignored
+    cleanup_testsockets()
+
+test_request_pgn_short_data()
+
+= Test: close() is idempotent
+def test_close_idempotent():
+    with TestSocket(CAN) as can_sock:
+        s = J1939SoftSocket(can_sock, src_addr=0x10, pgn=0)
+        s.close()
+        assert s.closed
+        s.close()
+        assert s.closed
+    cleanup_testsockets()
+
+test_close_idempotent()
+
+= Test: recv_raw returns None when socket is closed
+def test_recv_raw_closed():
+    with TestSocket(CAN) as can_sock:
+        s = J1939SoftSocket(can_sock, src_addr=0x10, pgn=0)
+        s.close()
+        cls, data, ts = s.recv_raw()
+        assert data is None
+        assert ts is None
+    cleanup_testsockets()
+
+test_recv_raw_closed()
+
+= Test: recv returns None when queue is empty
+def test_recv_no_data():
+    with TestSocket(CAN) as can_sock:
+        with J1939SoftSocket(can_sock, src_addr=0x10, pgn=0) as s:
+            assert s.impl.rx_queue.empty()
+    cleanup_testsockets()
+
+test_recv_no_data()
 
 = Delete test sockets
 cleanup_testsockets()
