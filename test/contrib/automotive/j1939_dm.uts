@@ -235,7 +235,7 @@ with J1939SoftSocket(TestSocket(CAN), pgn=0xFECA, src_addr=0x11) as s:
     result = s.impl.rx_queue.recv()
 
 assert result is not None, "rx_queue.recv() returned None"
-raw_data, _ts = result
+raw_data, _ts, _pgn, _sa, _da = result
 dm1_rx = J1939_DM1(raw_data)
 assert dm1_rx.mil_status == 1, "mil_status: {}".format(dm1_rx.mil_status)
 assert len(dm1_rx.dtcs) == 1

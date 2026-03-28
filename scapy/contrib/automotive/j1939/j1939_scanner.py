@@ -159,17 +159,21 @@ PGN_DIAG_B = 0xDB00
 #: PF byte for Diagnostic Message B
 J1939_PF_DIAG_B = 0xDB
 
-#: UDS TesterPresent request payloads: length=2, SID=0x3E, subfunction 0x00,
-#: followed by 5 padding bytes (0xFF) to fill an 8-byte CAN frame.
+#: UDS TesterPresent request payloads: length=2, SID=0x3E, followed by 5
+#: padding bytes (0xFF) to fill an 8-byte CAN frame.
+#: Subfunction 0x00 asks for a response; 0x01 suppresses it (but some ECUs
+#: respond anyway, confirming UDS support).
 _UDS_TESTER_PRESENT_REQS = [
     b"\x02\x3e\x00\xff\xff\xff\xff\xff",
+    b"\x02\x3e\x01\xff\xff\xff\xff\xff",
 ]
 
 #: Expected UDS responses for TesterPresent (SID=0x3E).
-#: Includes positive responses (SID=0x7E) and negative responses (SID=0x7F,
-#: original SID=0x3E).
+#: Includes positive responses (SID=0x7E, subfunctions 0x00 and 0x01) and
+#: negative responses (SID=0x7F, original SID=0x3E).
 _UDS_TESTER_PRESENT_RESPS = [
     b"\x02\x7e\x00",
+    b"\x02\x7e\x01",
     b"\x03\x7f\x3e",
 ]
 

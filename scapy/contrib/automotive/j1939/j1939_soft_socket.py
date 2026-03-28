@@ -700,7 +700,8 @@ class J1939SocketImplementation:
 
         # I/O queues
         # rx_queue carries (payload, timestamp, pgn, sa, da) tuples
-        self.rx_queue = ObjectPipe[Tuple[bytes, Union[float, EDecimal], int, int, int]]()
+        _RxTuple = Tuple[bytes, Union[float, EDecimal], int, int, int]
+        self.rx_queue = ObjectPipe[_RxTuple]()
         self.tx_queue = ObjectPipe[Tuple[bytes, int, int]]()
         # tx_queue carries (payload, pgn, dst_addr) tuples
 
@@ -1571,7 +1572,7 @@ class J1939SocketImplementation:
         self.tx_queue.send((p, self.pgn, self.dst_addr))
 
     def recv(self, timeout=None):
-        # type: (Optional[int]) -> Optional[Tuple[bytes, Union[float, EDecimal], int, int, int]]
+        # type: (Optional[int]) -> Optional[Tuple[bytes, Union[float, EDecimal], int, int, int]]  # noqa: E501
         """Receive a reassembled J1939 message.
 
         Returns ``(data, timestamp, pgn, src_addr, dst_addr)`` or None.
