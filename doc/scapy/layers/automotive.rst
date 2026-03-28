@@ -1377,7 +1377,7 @@ SAE J1939 standard family.  The central concept of J1939 is the *Controller Appl
 (CA): every logical function on the network claims a unique *Source Address* (SA, 0x00–0xFD)
 and communicates with other CAs using *Parameter Group Numbers* (PGNs).
 
-Scapy provides four complementary active techniques for enumerating active CAs on a J1939
+Scapy provides six complementary active techniques for enumerating active CAs on a J1939
 bus, as well as a passive sniffing helper.  All active scanners automatically perform a
 passive pre-scan to detect pre-existing bus traffic ("background noise") so that already-known
 CAs are not re-probed or re-reported by default.
@@ -1397,8 +1397,37 @@ Setup::
     ...     j1939_scan_ecu_id,
     ...     j1939_scan_unicast,
     ...     j1939_scan_rts_probe,
+    ...     j1939_scan_uds,
+    ...     j1939_scan_xcp,
     ... )
     >>> sock = CANSocket("can0")
+
+
+J1939SoftSocket — multi-packet reassembly
+-------------------------------------------
+
+``J1939SoftSocket`` wraps a raw ``CANSocket`` and provides J1939 Transport
+Protocol reassembly (BAM and CMDT).  Use it to sniff complete J1939 messages
+including multi-packet payloads larger than 8 bytes.
+
+The ``pgn`` parameter controls which PGNs are accepted.  Setting ``pgn=0``
+(the default) accepts **all** PGNs — each received packet carries the actual
+PGN, source address, and destination address from the CAN frame::
+
+    >>> from scapy.contrib.automotive.j1939.j1939_soft_socket import (
+    ...     J1939SoftSocket,
+    ... )
+    >>> with J1939SoftSocket(CANSocket("can0"), src_addr=0xFE,
+    ...                      dst_addr=0xFF, pgn=0) as s:
+    ...     pkts = s.sniff(timeout=2)
+    >>> for p in pkts:
+    ...     print("PGN=0x{:05X} SA=0x{:02X}".format(p.pgn, p.src_addr))
+
+To filter for a specific PGN, pass it as ``pgn``::
+
+    >>> with J1939SoftSocket(CANSocket("can0"), src_addr=0xFE,
+    ...                      dst_addr=0xFF, pgn=0xFECA) as s:
+    ...     pkts = s.sniff(timeout=2)
 
 
 j1939_scan_passive — background-noise detection
@@ -1418,7 +1447,7 @@ to all active scanners to suppress already-known CAs.
 Active scanning techniques
 --------------------------
 
-The four active techniques complement each other and are all noise-aware by default.
+The six active techniques complement each other and are all noise-aware by default.
 
 **Technique 1 — Global Address Claim Request** (``j1939_scan_addr_claim``)
 
@@ -1460,26 +1489,52 @@ global broadcasts::
 
 Sends a minimal TP.CM_RTS (Transport Protocol Connection Management – Request to
 Send) frame to each destination address.  An active node replies with either
-TP.CM_CTS (Clear to Send) or TP.Conn_Abort (Connection Abort).  Both responses
-confirm the node is present, even if it refuses the connection::
+TP.CM_CTS (Clear to Send), TP.Conn_Abort (Connection Abort), or a NACK
+Acknowledgment (PGN 0xE800).  All three responses confirm the node is present::
 
     >>> found = j1939_scan_rts_probe(sock, scan_range=range(0x00, 0xFE), sniff_time=0.05)
+
+**Technique 5 — UDS TesterPresent** (``j1939_scan_uds``)
+
+Sends UDS TesterPresent (SID 0x3E) requests over Diagnostic Message A
+(PF=0xDA, peer-to-peer) and Diagnostic Message B (PF=0xDB, functional broadcast).
+A node that implements UDS responds with a positive response (SID 0x7E) or a
+negative response (SID 0x7F).  Both subfunctions 0x00 and 0x01 are probed::
+
+    >>> found = j1939_scan_uds(sock, scan_range=range(0x00, 0xFE), sniff_time=0.05)
+    >>> for sa, pkts in sorted(found.items()):
+    ...     print("SA=0x{:02X} responded to UDS".format(sa))
+
+Skip the functional (broadcast) scan to avoid waking every ECU::
+
+    >>> found = j1939_scan_uds(sock, scan_range=[0x00], sniff_time=0.1,
+    ...                        skip_functional=True)
+
+**Technique 6 — XCP Connect Probe** (``j1939_scan_xcp``)
+
+Sends an XCP CONNECT command (command byte 0xFF, mode 0x00) over Proprietary A
+(PF=0xEF) to each destination address.  A node that implements XCP responds with
+a positive response whose first byte is ``0xFF``::
+
+    >>> found = j1939_scan_xcp(sock, scan_range=range(0x00, 0xFE), sniff_time=0.05)
+    >>> for sa, pkts in sorted(found.items()):
+    ...     print("SA=0x{:02X} responded to XCP".format(sa))
 
 
 j1939_scan — combined scanner with automatic noise filtering
 -------------------------------------------------------------
 
-``j1939_scan()`` runs any subset of the four techniques and merges results.  Before
+``j1939_scan()`` runs any subset of the six techniques and merges results.  Before
 starting any active probe it performs a passive pre-scan (``j1939_scan_passive``) to
 collect the set of source addresses already present on the bus.  Those addresses are
 excluded from probing and from the returned results.
 
 The returned dictionary maps each **newly-discovered** source address to a record with
 keys ``"methods"`` (a list of **all** techniques that detected the CA, in order of
-first detection) and ``"packet"`` (the first CAN frame received from it).  A CA
-visible to multiple scan techniques will appear in all of their names.
+first detection), ``"packets"`` (a parallel list of lists of CAN frames), and
+``"src_addrs"`` (the scanner source addresses that elicited the response).
 
-Quick scan using all four techniques::
+Quick scan using all six techniques::
 
     >>> found = j1939_scan(sock)
     >>> for sa, info in sorted(found.items()):
@@ -1505,16 +1560,23 @@ Provide an explicit noise baseline to skip the automatic passive pre-scan::
     >>> noise = j1939_scan_passive(sock, listen_time=2.0)
     >>> found = j1939_scan(sock, noise_ids=noise)
 
+Format results as human-readable text or JSON::
+
+    >>> text_output = j1939_scan(sock, output_format="text")
+    >>> print(text_output)
+    >>> json_output = j1939_scan(sock, output_format="json")
+
 
 Bus-load pacing
 ---------------
 
-All per-address probe functions (``j1939_scan_unicast``, ``j1939_scan_rts_probe``)
-and the DM scanner (``j1939_scan_dm``, ``j1939_scan_dm_pgn``) automatically pace
-their probe rate so that the scanner's contribution to the bus stays within a
-configurable fraction of the total bitrate.  The broadcast methods
-(``j1939_scan_addr_claim``, ``j1939_scan_ecu_id``) accept the same parameters for
-API uniformity, but do not apply pacing because they send only a single probe frame.
+All per-address probe functions (``j1939_scan_unicast``, ``j1939_scan_rts_probe``,
+``j1939_scan_uds``, ``j1939_scan_xcp``) and the DM scanner (``j1939_scan_dm``,
+``j1939_scan_dm_pgn``) automatically pace their probe rate so that the scanner's
+contribution to the bus stays within a configurable fraction of the total bitrate.
+The broadcast methods (``j1939_scan_addr_claim``, ``j1939_scan_ecu_id``) accept
+the same parameters for API uniformity, but do not apply pacing because they send
+only a single probe frame.
 
 ``bitrate`` (``int``, default ``250000``)
     CAN bus bitrate in bit/s.  SAE J1939 mandates 250 kbit/s; adjust when testing
@@ -1574,7 +1636,7 @@ Probe a target ECU for all eight standard DMs::
 
 Scan only a subset of DMs::
 
-    >>> results = j1939_scan_dm(sock, target_da=0x00, pgns=["DM1", "DM5"])
+    >>> results = j1939_scan_dm(sock, target_da=0x00, dms=["DM1", "DM5"])
 
 Probe a single PGN directly::
 
@@ -1612,6 +1674,8 @@ optional handler callbacks to manage ECU state between DM probes:
     :class:`~scapy.supersocket.SuperSocket`; all subsequent probes use the
     returned socket.  Can also be provided without *reset_handler* when the ECU
     spontaneously drops the connection after each diagnostic exchange.
+    On failure, *reconnect_handler* is retried up to ``reconnect_retries``
+    times (default 5) with a 1-second backoff between attempts.
 
 Example — reset and reconnect between every DM probe::
 
