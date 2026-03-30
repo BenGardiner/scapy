@@ -1,4 +1,4 @@
-% Regression tests for J1939 Diagnostic Messages (DM1, DM13, DM14)
+% Regression tests for J1939 Diagnostic Messages (DM1, DM2, DM13, DM14, DM15, NACK)
 ~ automotive_comm
 
 + Configuration
@@ -11,8 +11,10 @@ from scapy.contrib.automotive.j1939 import (
     J1939, J1939SoftSocket, J1939_GLOBAL_ADDRESS,
 )
 from scapy.contrib.automotive.j1939.j1939_dm import (
-    J1939_DTC, J1939_DM1, J1939_DM13, J1939_DM14,
-    PGN_DM1, PGN_DM13, PGN_DM14, sniff_dm1, send_dm14_request,
+    J1939_DTC, J1939_DM1, J1939_DM2, J1939_DM13, J1939_DM14, J1939_DM15,
+    J1939_NACK, PGN_DM1, PGN_DM2, PGN_DM13, PGN_DM14, PGN_DM15, PGN_ACK,
+    FMI_DESCRIPTIONS, SPN_DESCRIPTIONS, DM14_COMMANDS, DM14_POINTER_TYPES,
+    DM15_STATUS, ACK_CONTROL, sniff_dm1, send_dm14_request,
 )
 from scapy.error import Scapy_Exception
 from test.testsocket import TestSocket, cleanup_testsockets
@@ -258,3 +260,212 @@ try:
     assert False, "Expected Scapy_Exception for dst_addr=0xFF"
 except Scapy_Exception:
     pass  # expected
+
+
++ DTC descriptive name and FMI enum
+~ dtc_descriptions
+
+= J1939_DTC name attribute matches UDS convention
+assert J1939_DTC().name == "DiagnosticTroubleCode"
+
+= FMI_DESCRIPTIONS contains standard J1939-73 values
+assert FMI_DESCRIPTIONS[0] == "DataValidAboveNormalMostSevere"
+assert FMI_DESCRIPTIONS[11] == "RootCauseNotKnown"
+assert FMI_DESCRIPTIONS[31] == "NotAvailable"
+assert len(FMI_DESCRIPTIONS) >= 22
+
+= J1939_DTC.fmi_descriptions is accessible as class attribute
+assert J1939_DTC.fmi_descriptions is FMI_DESCRIPTIONS
+
+= SPN_DESCRIPTIONS is empty by default (customizable per OEM)
+assert SPN_DESCRIPTIONS == {}
+assert J1939_DTC.spn_descriptions is SPN_DESCRIPTIONS
+
+= DTC FMI field uses BitEnumField with FMI descriptions
+dtc = J1939_DTC(SPN=100, FMI=2, CM=0, OC=1)
+raw = bytes(dtc)
+parsed = J1939_DTC(raw)
+assert parsed.FMI == 2
+
+
++ DM1 descriptive name and answers()
+~ dm1_details
+
+= J1939_DM1 has descriptive name
+assert J1939_DM1().name == "ActiveDiagnosticTroubleCodes"
+
+= J1939_DM1.answers() always returns False (broadcast message)
+dm1 = J1939_DM1(mil_status=1)
+dm14 = J1939_DM14(address=0x1000, length=1)
+assert dm1.answers(dm14) is False
+assert dm1.answers(dm1) is False
+
+
++ DM2 Previously Active DTCs
+~ dm2
+
+= DM2 PGN is 65227 (0xFECB)
+assert PGN_DM2 == 0xFECB
+
+= J1939_DM2 has descriptive name
+assert J1939_DM2().name == "PreviouslyActiveDiagnosticTroubleCodes"
+
+= J1939_DM2 PGN attribute
+assert J1939_DM2.PGN == PGN_DM2
+
+= DM2 single-frame: 1 DTC is padded to exactly 8 bytes
+dtc = J1939_DTC(SPN=200, FMI=3, CM=0, OC=1)
+dm2 = J1939_DM2(mil_status=0, dtcs=[dtc])
+raw = bytes(dm2)
+assert len(raw) == 8
+
+= DM2 dissection round-trip preserves DTC values
+parsed = J1939_DM2(raw)
+assert len(parsed.dtcs) == 1
+assert parsed.dtcs[0].SPN == 200
+assert parsed.dtcs[0].FMI == 3
+assert parsed.mil_status == 0
+
+= J1939_DM2.answers() always returns False (broadcast)
+dm2 = J1939_DM2(mil_status=0)
+assert dm2.answers(dm2) is False
+
+= DM2 repr includes class name
+dm2 = J1939_DM2(mil_status=1, dtcs=[J1939_DTC(SPN=100, FMI=2)])
+r = repr(dm2)
+assert "J1939_DM2" in r
+
+
++ DM13 descriptive name and enum
+~ dm13_details
+
+= J1939_DM13 has descriptive name
+assert J1939_DM13().name == "StopStartBroadcast"
+
+= J1939_DM13 holdSignalValues dict is available
+assert J1939_DM13.holdSignalValues[0xFE] == "resumeBroadcast"
+assert J1939_DM13.holdSignalValues[0xFF] == "notAvailable"
+assert J1939_DM13.holdSignalValues[0x00] == "stopBroadcast"
+
+= J1939_DM13 hold_signal uses ByteEnumField
+dm13 = J1939_DM13(hold_signal=0xFE)
+raw = bytes(dm13)
+assert len(raw) == 8
+assert raw[0] == 0xFE
+
+= J1939_DM13.answers() always returns False
+dm13 = J1939_DM13()
+assert dm13.answers(dm13) is False
+
+
++ DM14 descriptive name and public enum dicts
+~ dm14_details
+
+= J1939_DM14 has descriptive name
+assert J1939_DM14().name == "MemoryAccessRequest"
+
+= DM14_COMMANDS dict is publicly accessible
+assert DM14_COMMANDS[0] == "erase"
+assert DM14_COMMANDS[1] == "read"
+assert DM14_COMMANDS[2] == "write"
+
+= DM14_POINTER_TYPES dict is publicly accessible
+assert DM14_POINTER_TYPES[0] == "direct"
+assert DM14_POINTER_TYPES[1] == "indirect"
+
+
++ DM15 Memory Access Response
+~ dm15
+
+= DM15 PGN is 55296 (0xD800)
+assert PGN_DM15 == 0xD800
+
+= J1939_DM15 has descriptive name
+assert J1939_DM15().name == "MemoryAccessResponse"
+
+= J1939_DM15 PGN attribute
+assert J1939_DM15.PGN == PGN_DM15
+
+= DM15_STATUS dict is publicly accessible
+assert DM15_STATUS[0] == "proceed"
+assert DM15_STATUS[1] == "busy"
+assert DM15_STATUS[2] == "completed"
+assert DM15_STATUS[3] == "error"
+
+= DM15 instantiation with proceed status
+dm15 = J1939_DM15(status=0, pointer_type=0, address=0x1000, length=4)
+raw = bytes(dm15)
+assert len(raw) == 8
+
+= DM15 round-trip: build then parse
+parsed = J1939_DM15(raw)
+assert parsed.status == 0
+assert parsed.address == 0x1000
+assert parsed.length == 4
+
+= DM15 answers() matches DM14 by address and pointer_type
+dm14 = J1939_DM14(command_type=1, pointer_type=0, address=0x2000, length=8)
+dm15_ok = J1939_DM15(status=0, pointer_type=0, address=0x2000, length=8)
+dm15_bad = J1939_DM15(status=0, pointer_type=0, address=0x3000, length=8)
+assert dm15_ok.answers(dm14) is True
+assert dm15_bad.answers(dm14) is False
+
+= DM15 answers() returns False for non-DM14
+dm15 = J1939_DM15(status=0, address=0x1000)
+dm1 = J1939_DM1()
+assert dm15.answers(dm1) is False
+
+= DM15 answers() checks pointer_type
+dm14 = J1939_DM14(pointer_type=1, address=0x1000)
+dm15 = J1939_DM15(status=0, pointer_type=0, address=0x1000)
+assert dm15.answers(dm14) is False
+
+
++ NACK (Negative Acknowledgment)
+~ nack
+
+= PGN_ACK is 59392 (0xE800)
+assert PGN_ACK == 0xE800
+
+= J1939_NACK has descriptive name
+assert J1939_NACK().name == "NegativeAcknowledgment"
+
+= ACK_CONTROL dict is publicly accessible
+assert ACK_CONTROL[0x00] == "positiveAcknowledgment"
+assert ACK_CONTROL[0x01] == "negativeAcknowledgment"
+assert ACK_CONTROL[0x02] == "accessDenied"
+assert ACK_CONTROL[0x03] == "cannotRespond"
+
+= J1939_NACK instantiation with default NACK control byte
+nack = J1939_NACK()
+assert nack.control == 0x01
+raw = bytes(nack)
+assert len(raw) == 8
+assert raw[0] == 0x01
+
+= J1939_NACK nacked_pgn property computes 24-bit PGN
+nack = J1939_NACK(pgn_lsb=0x00, pgn_mid=0xD9, pgn_msb=0x00)
+assert nack.nacked_pgn == 0x00D900
+assert nack.nacked_pgn == PGN_DM14
+
+= J1939_NACK round-trip: build then parse
+nack = J1939_NACK(control=0x01, pgn_lsb=0xCA, pgn_mid=0xFE, pgn_msb=0x00)
+raw = bytes(nack)
+parsed = J1939_NACK(raw)
+assert parsed.control == 0x01
+assert parsed.nacked_pgn == PGN_DM1
+
+= J1939_NACK answers() matches DM14 by PGN
+dm14 = J1939_DM14(address=0x1000)
+nack = J1939_NACK(pgn_lsb=0x00, pgn_mid=0xD9, pgn_msb=0x00)
+assert nack.answers(dm14) is True
+
+= J1939_NACK answers() returns False for wrong PGN
+dm14 = J1939_DM14(address=0x1000)
+nack = J1939_NACK(pgn_lsb=0xCA, pgn_mid=0xFE, pgn_msb=0x00)
+assert nack.answers(dm14) is False
+
+= J1939_NACK answers() returns False for non-DM14
+dm1 = J1939_DM1()
+nack = J1939_NACK(pgn_lsb=0xCA, pgn_mid=0xFE, pgn_msb=0x00)
+assert nack.answers(dm1) is False
