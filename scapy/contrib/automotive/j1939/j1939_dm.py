@@ -552,9 +552,9 @@ class J1939_DM15(Packet):
     def answers(self, other):
         # type: (Packet) -> bool
         """DM15 is a positive response to :class:`J1939_DM14`."""
-        return isinstance(other, J1939_DM14) and \
-            other.address == self.address and \
-            other.pointer_type == self.pointer_type
+        return (isinstance(other, J1939_DM14)
+                and other.address == self.address
+                and other.pointer_type == self.pointer_type)
 
 
 # ###########################NACK###################################
