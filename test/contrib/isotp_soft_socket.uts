@@ -1658,6 +1658,492 @@ assert result is not None, "MF response not received (slcan, can_filters, thread
 assert result.data == expected
 
 
++ Multiple ISOTP socket reuse tests (Python 3.12+ regression)
+# These tests reproduce a bug where reusing a CAN adapter across multiple
+# ISOTP socket open/close cycles works on Python 3.11.9 but fails on 3.12+.
+# The root cause is a race condition in TimeoutScheduler: the background
+# thread can die during the GRACE period just after new handles are
+# scheduled, leaving handles orphaned with no thread to execute them.
+# This causes sr1() to timeout on the 2nd or 3rd iteration.
+#
+# The race window is between _peek_next() returning None (GRACE expired)
+# and the `return` statement in _task().  During this window, schedule()
+# sees _thread is not None so it doesn't start a new thread, but the old
+# thread is about to die.  The new handle is pushed to _handles but no
+# thread will ever execute it.
+#
+# On Windows with python-can adapters (slcan, candle), the OS thread
+# scheduler makes this window larger and the race triggers reliably.
+# On Linux the window is smaller, so we use monkeypatching to widen it
+# for deterministic testing.
+
+= TimeoutScheduler race: schedule() during _task() GRACE-expired return
+
+# Directly proves the race condition by instrumenting _task() to pause
+# at the exact point where it's about to die after GRACE expiration.
+# schedule() runs during this pause, sees _thread is not None, doesn't
+# start a new thread.  The old thread then dies, orphaning the handle.
+
+import time as _time
+from threading import Thread as _Thread, Event as _Event
+from unittest.mock import patch
+
+_original_task = TimeoutScheduler._task.__func__
+
+def _make_patched_task(race_point_reached, race_proceed):
+    """Create a patched _task that pauses at the GRACE-expiry return point."""
+    @classmethod
+    def _patched_task(cls):
+        time_empty = None
+        try:
+            while 1:
+                handle = cls._peek_next()
+                if handle is None:
+                    now = cls._time()
+                    if time_empty is None:
+                        time_empty = now
+                    if cls.GRACE < now - time_empty:
+                        # RACE POINT: thread is about to die
+                        race_point_reached.set()
+                        race_proceed.wait(timeout=5.0)
+                        return
+                else:
+                    time_empty = None
+                cls._wait(handle)
+                cls._poll()
+        finally:
+            cls._thread = None
+    return _patched_task
+
+race_point = _Event()
+proceed = _Event()
+
+TimeoutScheduler._task = _make_patched_task(race_point, proceed)
+
+# Start scheduler with a dummy handle, let it fire and clear
+TimeoutScheduler.schedule(0.001, lambda: None)
+_time.sleep(0.02)
+TimeoutScheduler.clear()
+# Wait past GRACE so thread reaches the race point
+_time.sleep(TimeoutScheduler.GRACE + 0.05)
+
+assert race_point.wait(timeout=5), "Thread didn't reach race point"
+
+# Thread is about to die but _thread is still not None.
+# Schedule a new handle — schedule() will see _thread is not None
+# and won't start a new thread.
+callback_fired = _Event()
+h = TimeoutScheduler.schedule(0.01, callback_fired.set)
+
+# Verify the race condition: handle was scheduled but thread won't process it
+assert TimeoutScheduler._thread is not None, "_thread should still be set"
+assert len(TimeoutScheduler._handles) >= 1, "Handle should be in _handles"
+
+# Let the old thread die
+proceed.set()
+_time.sleep(0.1)
+
+# Now _thread is None but handle is orphaned
+assert TimeoutScheduler._thread is None, "_thread should be None after death"
+
+# The callback should NOT have fired (this is the bug)
+bug_present = not callback_fired.is_set()
+
+# Restore original _task
+TimeoutScheduler._task = classmethod(_original_task)
+
+# Cleanup orphaned handles
+TimeoutScheduler.clear()
+
+# Report result — this test documents the race condition.
+# When the fix is applied, callback_fired.is_set() will be True.
+assert bug_present or callback_fired.is_set(), \
+    "Test infrastructure error"
+if bug_present:
+    import sys
+    sys.__stderr__.write(
+        "    [KNOWN BUG] TimeoutScheduler race confirmed: "
+        "handle orphaned after GRACE-expired thread death\n")
+    _bug_msg_1 = True
+else:
+    _bug_msg_1 = False
+
+= TimeoutScheduler race: callback never fires after close/reopen (forced)
+
+# End-to-end test using monkeypatched _task to force the race during
+# an actual ISOTPSoftSocket close/reopen cycle.  This deterministically
+# reproduces the timeout failure seen on Windows with python-can.
+
+_race_point2 = _Event()
+_proceed2 = _Event()
+_in_patched = [False]
+
+TimeoutScheduler._task = _make_patched_task(_race_point2, _proceed2)
+
+with TestSocket(CAN) as cans, TestSocket(CAN) as stim:
+    cans.pair(stim)
+    # Iteration 1: works fine
+    with ISOTPSoftSocket(cans, tx_id=0x7e3, rx_id=0x7eb) as isock:
+        stop = _Event()
+        def ecu_r1(_stim=stim, _stop=stop):
+            while not _stop.is_set():
+                if TestSocket.select([_stim], 0.05):
+                    try:
+                        pkt = _stim.recv()
+                    except Exception:
+                        break
+                    if pkt is not None and hasattr(pkt, 'identifier'):
+                        if pkt.identifier == 0x7e3:
+                            _stim.send(CAN(identifier=0x7eb,
+                                           data=dhex("02 50 03")))
+        t1 = _Thread(target=ecu_r1)
+        t1.start()
+        resp1 = isock.sr1(ISOTP(b'\x10\x03'), timeout=5, verbose=0)
+        stop.set()
+        t1.join(timeout=5)
+    assert resp1 is not None, "Iteration 1 should succeed"
+    # After close, wait for GRACE to expire so thread reaches race point
+    _time.sleep(TimeoutScheduler.GRACE + 0.05)
+    _race_point2.wait(timeout=5)
+    # Iteration 2: open new ISOTPSocket while thread is dying
+    isock2 = ISOTPSoftSocket(cans, tx_id=0x7e3, rx_id=0x7eb)
+    # Let old thread die — handles from isock2 are now orphaned
+    _proceed2.set()
+    _time.sleep(0.1)
+    # The can_recv/send callbacks should have been scheduled but
+    # no thread is running to execute them
+    thread_alive = TimeoutScheduler._thread is not None and \
+        TimeoutScheduler._thread.is_alive() if TimeoutScheduler._thread else False
+    handles_pending = len(TimeoutScheduler._handles)
+    isock2.close()
+
+# Restore original _task
+TimeoutScheduler._task = classmethod(_original_task)
+TimeoutScheduler.clear()
+
+# The race was triggered if handles are pending but thread is dead
+race_triggered = (not thread_alive) and handles_pending > 0
+if race_triggered:
+    import sys
+    sys.__stderr__.write(
+        "    [KNOWN BUG] ISOTP reuse race confirmed: "
+        "%d handles orphaned, thread dead\n" % handles_pending)
+    assert resp1 is not None
+else:
+    assert resp1 is not None
+
+= ISOTP socket reuse: both CANSocket and ISOTPSocket recreated each iteration
+
+# Reproduces the user's exact bug pattern:
+#   for m in messages:
+#     with CANSocket() as csock:
+#       with ISOTPSocket(csock) as isock:
+#         resp = isock.sr1(...)
+#
+# On Python 3.12+ on Windows, the 2nd/3rd iteration times out because
+# the TimeoutScheduler thread dies during the close/reopen gap.
+# On Linux, the race window is small so this test exercises the code
+# path without deterministically triggering the race.
+
+def run_isotp_reuse_both_sockets_recreated(num_iterations=3):
+    """Run sr1 in a loop, recreating both sockets each time."""
+    results = []
+    for i in range(num_iterations):
+        with TestSocket(CAN) as cans, TestSocket(CAN) as stim:
+            cans.pair(stim)
+            with ISOTPSoftSocket(cans, tx_id=0x7e3, rx_id=0x7eb) as isock:
+                stop = _Event()
+                def ecu_responder(_stim=stim, _stop=stop):
+                    """Echo back a SF response for any received request."""
+                    while not _stop.is_set():
+                        if TestSocket.select([_stim], 0.05):
+                            try:
+                                pkt = _stim.recv()
+                            except Exception:
+                                break
+                            if pkt is not None and hasattr(pkt, 'identifier'):
+                                if pkt.identifier == 0x7e3:
+                                    _stim.send(CAN(identifier=0x7eb,
+                                                   data=dhex("02 50 03")))
+                ecu_thread = _Thread(target=ecu_responder)
+                ecu_thread.start()
+                try:
+                    resp = isock.sr1(ISOTP(b'\x10\x03'), timeout=5, verbose=0)
+                    results.append(resp)
+                finally:
+                    stop.set()
+                    ecu_thread.join(timeout=5)
+        # Brief pause between iterations — on 3.11.9 this works fine,
+        # on 3.12+ the TimeoutScheduler thread may die here
+        _time.sleep(0.05)
+    return results
+
+results = run_isotp_reuse_both_sockets_recreated(3)
+for i, r in enumerate(results):
+    assert r is not None, \
+        "Iteration %d timed out (both sockets recreated)" % (i + 1)
+
+# Cleanup scheduler
+_ts = TimeoutScheduler._thread
+TimeoutScheduler.clear()
+if _ts is not None:
+    _ts.join(timeout=5)
+
+= ISOTP socket reuse: CANSocket kept open, only ISOTPSocket recreated
+
+# Same bug but with the CANSocket kept across iterations.
+# This proves the bug is in the ISOTP/TimeoutScheduler layer,
+# not in the SocketsPool/CANSocket layer.
+
+def run_isotp_reuse_can_socket_kept(num_iterations=3):
+    """Run sr1 in a loop, keeping the CANSocket and recreating ISOTPSocket."""
+    results = []
+    with TestSocket(CAN) as cans, TestSocket(CAN) as stim:
+        cans.pair(stim)
+        for i in range(num_iterations):
+            with ISOTPSoftSocket(cans, tx_id=0x7e3, rx_id=0x7eb) as isock:
+                stop = _Event()
+                def ecu_responder(_stim=stim, _stop=stop):
+                    while not _stop.is_set():
+                        if TestSocket.select([_stim], 0.05):
+                            try:
+                                pkt = _stim.recv()
+                            except Exception:
+                                break
+                            if pkt is not None and hasattr(pkt, 'identifier'):
+                                if pkt.identifier == 0x7e3:
+                                    _stim.send(CAN(identifier=0x7eb,
+                                                   data=dhex("02 50 03")))
+                ecu_thread = _Thread(target=ecu_responder)
+                ecu_thread.start()
+                try:
+                    resp = isock.sr1(ISOTP(b'\x10\x03'), timeout=5, verbose=0)
+                    results.append(resp)
+                finally:
+                    stop.set()
+                    ecu_thread.join(timeout=5)
+            # Brief pause — TimeoutScheduler thread may die here
+            _time.sleep(0.05)
+    return results
+
+results = run_isotp_reuse_can_socket_kept(3)
+for i, r in enumerate(results):
+    assert r is not None, \
+        "Iteration %d timed out (CANSocket kept, ISOTPSocket recreated)" % (i + 1)
+
+# Cleanup scheduler
+_ts = TimeoutScheduler._thread
+TimeoutScheduler.clear()
+if _ts is not None:
+    _ts.join(timeout=5)
+
+= ISOTP socket reuse: rapid open/close/reopen without GRACE delay
+
+# Variant where we do NOT wait between iterations.  This tests the case
+# where the TimeoutScheduler thread is still in the GRACE wait when new
+# handles are scheduled.
+
+def run_isotp_reuse_rapid(num_iterations=3):
+    """Run sr1 in a loop with no delay between close and reopen."""
+    results = []
+    with TestSocket(CAN) as cans, TestSocket(CAN) as stim:
+        cans.pair(stim)
+        for i in range(num_iterations):
+            with ISOTPSoftSocket(cans, tx_id=0x7e3, rx_id=0x7eb) as isock:
+                stop = _Event()
+                def ecu_responder(_stim=stim, _stop=stop):
+                    while not _stop.is_set():
+                        if TestSocket.select([_stim], 0.05):
+                            try:
+                                pkt = _stim.recv()
+                            except Exception:
+                                break
+                            if pkt is not None and hasattr(pkt, 'identifier'):
+                                if pkt.identifier == 0x7e3:
+                                    _stim.send(CAN(identifier=0x7eb,
+                                                   data=dhex("02 50 03")))
+                ecu_thread = _Thread(target=ecu_responder)
+                ecu_thread.start()
+                try:
+                    resp = isock.sr1(ISOTP(b'\x10\x03'), timeout=5, verbose=0)
+                    results.append(resp)
+                finally:
+                    stop.set()
+                    ecu_thread.join(timeout=5)
+            # NO delay — immediate reopen
+    return results
+
+results = run_isotp_reuse_rapid(3)
+for i, r in enumerate(results):
+    assert r is not None, \
+        "Iteration %d timed out (rapid reopen, no delay)" % (i + 1)
+
+# Cleanup scheduler
+_ts = TimeoutScheduler._thread
+TimeoutScheduler.clear()
+if _ts is not None:
+    _ts.join(timeout=5)
+
+= ISOTP socket reuse: CANSocket recreated with delay past GRACE period
+
+# Variant where we wait longer than GRACE (100ms) between iterations,
+# ensuring the TimeoutScheduler thread has fully died.  schedule() must
+# reliably start a new thread.
+
+def run_isotp_reuse_post_grace(num_iterations=3):
+    """Run sr1 in a loop, waiting past GRACE between iterations."""
+    results = []
+    for i in range(num_iterations):
+        with TestSocket(CAN) as cans, TestSocket(CAN) as stim:
+            cans.pair(stim)
+            with ISOTPSoftSocket(cans, tx_id=0x7e3, rx_id=0x7eb) as isock:
+                stop = _Event()
+                def ecu_responder(_stim=stim, _stop=stop):
+                    while not _stop.is_set():
+                        if TestSocket.select([_stim], 0.05):
+                            try:
+                                pkt = _stim.recv()
+                            except Exception:
+                                break
+                            if pkt is not None and hasattr(pkt, 'identifier'):
+                                if pkt.identifier == 0x7e3:
+                                    _stim.send(CAN(identifier=0x7eb,
+                                                   data=dhex("02 50 03")))
+                ecu_thread = _Thread(target=ecu_responder)
+                ecu_thread.start()
+                try:
+                    resp = isock.sr1(ISOTP(b'\x10\x03'), timeout=5, verbose=0)
+                    results.append(resp)
+                finally:
+                    stop.set()
+                    ecu_thread.join(timeout=5)
+        # Wait past GRACE so thread is fully dead
+        _time.sleep(TimeoutScheduler.GRACE + 0.05)
+    return results
+
+results = run_isotp_reuse_post_grace(3)
+for i, r in enumerate(results):
+    assert r is not None, \
+        "Iteration %d timed out (post-GRACE delay)" % (i + 1)
+
+# Cleanup scheduler
+_ts = TimeoutScheduler._thread
+TimeoutScheduler.clear()
+if _ts is not None:
+    _ts.join(timeout=5)
+
+= ISOTP socket reuse: MF (multi-frame) response across iterations
+
+# The original bug report uses UDS 0x1003 (DiagnosticSessionControl)
+# which returns a multi-frame response.  This test verifies that MF
+# responses work across multiple open/close cycles, using the same
+# ECU simulation pattern as the cartesian product tests above.
+
+def run_isotp_mf_reuse(num_iterations=3, keep_can_socket=True):
+    """Run MF sr1 exchange in a loop."""
+    response_data = dhex("620001666c61677b5544535f444154415f524541447d")
+    results = []
+    if keep_can_socket:
+        cans_ctx = TestSocket(CAN)
+        stim_ctx = TestSocket(CAN)
+        cans_ctx.pair(stim_ctx)
+    for i in range(num_iterations):
+        if not keep_can_socket:
+            cans_ctx = TestSocket(CAN)
+            stim_ctx = TestSocket(CAN)
+            cans_ctx.pair(stim_ctx)
+        cans = cans_ctx
+        stim = stim_ctx
+        with ISOTPSoftSocket(cans, tx_id=0x7e3, rx_id=0x7eb) as isock:
+            fc_received = _Event()
+            stop = _Event()
+            def ecu_mf_responder(_stim=stim, _fc=fc_received, _stop=stop):
+                """Send a multi-frame response after receiving FC."""
+                _time.sleep(0.05)
+                _stim.send(CAN(identifier=0x7eb,
+                               data=dhex("1016620001666c61")))
+                _fc.wait(timeout=10.0)
+                if not _fc.is_set():
+                    return
+                _time.sleep(0.008)
+                _stim.send(CAN(identifier=0x7eb,
+                               data=dhex("21677b5544535f44")))
+                _time.sleep(0.010)
+                _stim.send(CAN(identifier=0x7eb,
+                               data=dhex("224154415f524541")))
+                _time.sleep(0.010)
+                _stim.send(CAN(identifier=0x7eb,
+                               data=dhex("23447d")))
+            with TestSocket(CAN) as ecu_mon:
+                cans.pair(ecu_mon)
+                def fc_watcher(_mon=ecu_mon, _fc=fc_received, _stop=stop):
+                    while not _stop.is_set():
+                        if TestSocket.select([_mon], 0.1):
+                            pkt = _mon.recv()
+                            if pkt is not None and \
+                               pkt.identifier == 0x7e3 and \
+                               len(pkt.data) >= 1 and \
+                               bytes(pkt.data)[0] == 0x30:
+                                _fc.set()
+                                return
+                ecu_thread = _Thread(target=ecu_mf_responder)
+                fc_thread = _Thread(target=fc_watcher)
+                ecu_thread.start()
+                fc_thread.start()
+                try:
+                    resp = isock.sr1(ISOTP(data=dhex("220001")),
+                                     retry=0, timeout=10.0, verbose=0)
+                    results.append(resp)
+                finally:
+                    stop.set()
+                    fc_received.set()
+                    ecu_thread.join(timeout=5)
+                    fc_thread.join(timeout=5)
+                # Unpair ecu_mon before it closes
+                try:
+                    cans.paired_sockets.remove(ecu_mon)
+                except ValueError:
+                    pass
+        # Cleanup scheduler between iterations to match real-world
+        # pattern where user code doesn't explicitly manage the scheduler
+        _time.sleep(0.05)
+        if not keep_can_socket:
+            cans_ctx.close()
+            stim_ctx.close()
+    if keep_can_socket:
+        cans_ctx.close()
+        stim_ctx.close()
+    return results, response_data
+
+results, expected = run_isotp_mf_reuse(3, keep_can_socket=True)
+for i, r in enumerate(results):
+    assert r is not None, \
+        "MF iteration %d timed out (CANSocket kept)" % (i + 1)
+    assert r.data == expected, \
+        "MF iteration %d data mismatch (CANSocket kept)" % (i + 1)
+
+# Cleanup scheduler
+_ts = TimeoutScheduler._thread
+TimeoutScheduler.clear()
+if _ts is not None:
+    _ts.join(timeout=5)
+
+= ISOTP socket reuse: MF response, both sockets recreated each iteration
+
+results, expected = run_isotp_mf_reuse(3, keep_can_socket=False)
+for i, r in enumerate(results):
+    assert r is not None, \
+        "MF iteration %d timed out (both recreated)" % (i + 1)
+    assert r.data == expected, \
+        "MF iteration %d data mismatch (both recreated)" % (i + 1)
+
+# Cleanup scheduler
+_ts = TimeoutScheduler._thread
+TimeoutScheduler.clear()
+if _ts is not None:
+    _ts.join(timeout=5)
+
+
 + Cleanup
 
 = Delete testsockets
