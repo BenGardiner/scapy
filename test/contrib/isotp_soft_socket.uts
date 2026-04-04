@@ -1764,9 +1764,9 @@ if bug_present:
     sys.__stderr__.write(
         "    [KNOWN BUG] TimeoutScheduler race confirmed: "
         "handle orphaned after GRACE-expired thread death\n")
-    _bug_msg_1 = True
+    _race_documented = True
 else:
-    _bug_msg_1 = False
+    _race_documented = False
 
 = TimeoutScheduler race: callback never fires after close/reopen (forced)
 
@@ -1776,7 +1776,6 @@ else:
 
 _race_point2 = _Event()
 _proceed2 = _Event()
-_in_patched = [False]
 
 TimeoutScheduler._task = _make_patched_task(_race_point2, _proceed2)
 
@@ -1812,8 +1811,8 @@ with TestSocket(CAN) as cans, TestSocket(CAN) as stim:
     _time.sleep(0.1)
     # The can_recv/send callbacks should have been scheduled but
     # no thread is running to execute them
-    thread_alive = TimeoutScheduler._thread is not None and \
-        TimeoutScheduler._thread.is_alive() if TimeoutScheduler._thread else False
+    thread_alive = (TimeoutScheduler._thread is not None and
+                    TimeoutScheduler._thread.is_alive())
     handles_pending = len(TimeoutScheduler._handles)
     isock2.close()
 
@@ -2043,6 +2042,8 @@ def run_isotp_mf_reuse(num_iterations=3, keep_can_socket=True):
     """Run MF sr1 exchange in a loop."""
     response_data = dhex("620001666c61677b5544535f444154415f524541447d")
     results = []
+    cans_ctx = None
+    stim_ctx = None
     if keep_can_socket:
         cans_ctx = TestSocket(CAN)
         stim_ctx = TestSocket(CAN)
@@ -2099,7 +2100,9 @@ def run_isotp_mf_reuse(num_iterations=3, keep_can_socket=True):
                     fc_received.set()
                     ecu_thread.join(timeout=5)
                     fc_thread.join(timeout=5)
-                # Unpair ecu_mon before it closes
+                # Unpair ecu_mon before its context manager closes it;
+                # otherwise stim would try to send to a closed pipe
+                # on the next iteration since pair() is bidirectional.
                 try:
                     cans.paired_sockets.remove(ecu_mon)
                 except ValueError:
