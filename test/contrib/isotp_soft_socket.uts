@@ -1823,6 +1823,46 @@ TimeoutScheduler.clear()
 if _ts is not None:
     _ts.join(timeout=5)
 
+= TimeoutScheduler race fix: stress test across GRACE boundaries
+
+# Stress test: rapidly schedule/wait/clear across many iterations to
+# exercise the GRACE-expiry atomic check under real thread scheduling.
+# Each iteration lets the thread die (or nearly die), then schedules
+# a new callback.  All callbacks must fire.
+
+_ts = TimeoutScheduler._thread
+TimeoutScheduler.clear()
+if _ts is not None:
+    _ts.join(timeout=5)
+
+_missed = []
+for trial in range(20):
+    fired = _Event()
+    # Schedule and immediately let it fire
+    TimeoutScheduler.schedule(0.001, lambda: None)
+    _time.sleep(0.005)
+    # Clear handles — thread begins GRACE countdown
+    TimeoutScheduler.clear()
+    # Wait approximately GRACE time (sometimes under, sometimes over)
+    # to exercise both the "thread still alive" and "thread dead" paths
+    if trial % 2 == 0:
+        _time.sleep(TimeoutScheduler.GRACE + 0.02)
+    else:
+        _time.sleep(TimeoutScheduler.GRACE * 0.8)
+    # Schedule a new callback — must fire regardless of thread state
+    TimeoutScheduler.schedule(0.01, fired.set)
+    if not fired.wait(timeout=5.0):
+        _missed.append(trial)
+
+assert not _missed, \
+    "Callbacks failed to fire on trials: %s" % _missed
+
+# Cleanup
+_ts = TimeoutScheduler._thread
+TimeoutScheduler.clear()
+if _ts is not None:
+    _ts.join(timeout=5)
+
 = ISOTP socket reuse: both CANSocket and ISOTPSocket recreated each iteration
 
 # Reproduces the user's exact bug pattern:
