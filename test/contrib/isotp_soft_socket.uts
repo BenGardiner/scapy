@@ -2214,14 +2214,11 @@ with TestSocket(CAN) as cans, TestSocket(CAN) as stim:
     # Simulate the orphan callback firing after close
     impl.can_recv()
     # The CAN frame must still be on the bus (not consumed by orphan)
-    if TestSocket.select([cans], 0.1):
-        pkt = cans.recv()
-        assert pkt is not None, "Frame was consumed by orphan can_recv"
-        assert pkt.identifier == 0x7eb
-    else:
-        # Frame might have been multiplexed already by a previous select;
-        # check the wrapper rx_queue directly
-        assert True, "Frame available or mux'd — not consumed by orphan"
+    assert TestSocket.select([cans], 0.1), \
+        "Frame was consumed by orphan can_recv — not available on bus"
+    pkt = cans.recv()
+    assert pkt is not None, "Frame was consumed by orphan can_recv"
+    assert pkt.identifier == 0x7eb
 
 _ts = TimeoutScheduler._thread
 TimeoutScheduler.clear()
