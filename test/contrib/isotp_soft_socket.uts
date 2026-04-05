@@ -2253,19 +2253,16 @@ def run_usb_buffer_overflow_test(num_iterations=5, hw_fifo_size=8,
                                   bg_frames_per_gap=12,
                                   disable_drain=False):
     """Run sr1 in a loop with a shared USB-like CANSocket.
-       .
     Between iterations, inject bg_frames_per_gap background frames
     to fill/overflow the USB adapter's hardware FIFO.
-       .
-    If disable_drain is True, monkeypatch __init__ and close() to
-    skip the select()-based drain, reproducing the pre-fix behavior.
+    If disable_drain is True, re-fill the FIFO after __init__ drains
+    it, reproducing the pre-fix behavior where no drain occurred.
     """
     import time as _time
     from threading import Thread as _Thread, Event as _Event
     from scapy.layers.can import CAN as _CAN
     from scapy.contrib.isotp import ISOTP as _ISOTP
     from scapy.contrib.isotp.isotp_soft_socket import ISOTPSoftSocket as _ISOTPSoftSocket
-    from scapy.contrib.isotp.isotp_soft_socket import ISOTPSocketImplementation as _Impl
     from scapy.contrib.isotp.isotp_soft_socket import TimeoutScheduler as _TS
     from test.testsocket import TestSocket as _TestSocket, USBTestSocket as _USBTestSocket
     _dhex = bytes.fromhex
@@ -2283,26 +2280,6 @@ def run_usb_buffer_overflow_test(num_iterations=5, hw_fifo_size=8,
                 for j in range(bg_frames_per_gap):
                     bid = bg_ids[j % len(bg_ids)]
                     stim.send(_CAN(identifier=bid, data=bytes(8)))
-            # Optionally disable the drain to reproduce the bug
-            orig_init = None
-            orig_close = None
-            if disable_drain:
-                orig_init = _Impl.__init__
-                orig_close = _Impl.close
-                def patched_init(self, *args, **kwargs):
-                    orig_init(self, *args, **kwargs)
-                    # Undo the drain that __init__ just did by NOT
-                    # actually doing anything extra — the drain already
-                    # ran.  Instead we re-fill the FIFO to simulate
-                    # the drain never happening.
-                def patched_close(self, _orig=orig_close):
-                    # Skip the final drain in close() by setting
-                    # closed before the drain would happen and not
-                    # calling select at the end.
-                    _orig(self)
-                # Instead of complex monkeypatching, we simulate the
-                # pre-fix behavior by re-filling the FIFO after init
-                # drains it, effectively undoing the drain.
             with _ISOTPSoftSocket(cans, tx_id=0x7e3, rx_id=0x7eb) as isock:
                 if disable_drain and iteration > 0:
                     # Undo the drain that __init__ performed by
