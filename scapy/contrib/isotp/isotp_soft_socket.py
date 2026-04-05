@@ -570,10 +570,25 @@ class ISOTPSocketImplementation:
         self.rx_tx_poll_rate = 0.005
         self.tx_timeout_handle = None  # type: Optional[TimeoutScheduler.Handle]  # noqa: E501
         self.rx_timeout_handle = None  # type: Optional[TimeoutScheduler.Handle]  # noqa: E501
+
+        # Drain frames that accumulated in the CAN adapter's hardware
+        # RX buffer while no ISOTP socket was active.  USB adapters
+        # (candle, cantact) have small hardware buffers; if background
+        # CAN traffic fills the buffer before can_recv starts polling,
+        # the ECU's response frame may be silently dropped by the
+        # adapter.  This drain frees buffer space *before* we send.
+        try:
+            self.can_socket.select([self.can_socket], 0)
+        except Exception:
+            pass
+
+        # Schedule initial callbacks with timeout=0 so they fire on
+        # the very next TimeoutScheduler._poll() cycle, minimising
+        # the window during which the adapter buffer is unserviced.
         self.rx_handle = TimeoutScheduler.schedule(
-            self.rx_tx_poll_rate, self.can_recv)
+            0, self.can_recv)
         self.tx_handle = TimeoutScheduler.schedule(
-            self.rx_tx_poll_rate, self._send)
+            0, self._send)
         self.last_rx_call = 0.0
         self.rx_start_time = 0.0
 
@@ -627,6 +642,12 @@ class ISOTPSocketImplementation:
         self.last_rx_call = TimeoutScheduler._time()
         try:
             while self.can_socket.select([self.can_socket], 0):
+                # Re-check closed inside the loop: if close() set the
+                # flag while we were processing the previous frame,
+                # stop immediately to avoid consuming frames that
+                # belong to the next session.
+                if self.closed:
+                    break
                 pkt = self.can_socket.recv()
                 if pkt:
                     self.on_can_recv(pkt)
@@ -671,32 +692,29 @@ class ISOTPSocketImplementation:
         if self.closed:
             return
 
-        # Final poll to ensure any pending frames are distributed to the
-        # background state machines before we check for emptiness.
-        try:
-            self.can_socket.select([self.can_socket], 0)
-        except Exception:
-            pass
+        # Set closed flag FIRST to prevent orphan callbacks from
+        # consuming CAN frames meant for the next ISOTP session.
+        # The can_recv() and _send() methods check self.closed at
+        # entry AND inside their loops, so any in-progress callback
+        # on the TimeoutScheduler thread will exit promptly.
+        self.closed = True
 
+        # Brief barrier: yield to the TimeoutScheduler thread so any
+        # currently-executing callback sees self.closed and exits.
+        time.sleep(0.005)
+
+        # Diagnostic warnings (non-blocking)
         try:
             if select_objects([self.tx_queue], 0):
-                # Wait briefly for background thread to finish current cycle
-                time.sleep(0.01)
-                if select_objects([self.tx_queue], 0):
-                    log_isotp.warning("TX queue not empty")
+                log_isotp.warning("TX queue not empty")
         except (OSError, Scapy_Exception):
             pass
-
         try:
             if select_objects([self.rx_queue], 0):
-                # Final chance to fetch frames multiplexed by another thread
-                time.sleep(0.01)
-                if select_objects([self.rx_queue], 0):
-                    log_isotp.warning("RX queue not empty")
+                log_isotp.warning("RX queue not empty")
         except (OSError, Scapy_Exception):
             pass
 
-        self.closed = True
         try:
             self.rx_handle.cancel()
         except Scapy_Exception:
@@ -715,6 +733,18 @@ class ISOTPSocketImplementation:
                 self.tx_timeout_handle.cancel()
             except Scapy_Exception:
                 pass
+
+        # Final drain: move frames from the CAN adapter's hardware
+        # buffer into the SocketWrapper software queue.  This frees
+        # adapter buffer space so the NEXT ISOTP session's ECU
+        # response is not dropped due to hardware overflow.  The
+        # frames stay in the SocketWrapper rx_queue (not lost) and
+        # will be available to the next session's can_recv.
+        try:
+            self.can_socket.select([self.can_socket], 0)
+        except Exception:
+            pass
+
         try:
             self.rx_queue.close()
         except (OSError, EOFError):
