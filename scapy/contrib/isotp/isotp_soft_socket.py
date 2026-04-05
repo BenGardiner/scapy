@@ -617,6 +617,13 @@ class ISOTPSocketImplementation:
 
     def can_recv(self):
         # type: () -> None
+        # Early exit for orphan callbacks: when close() races with
+        # can_recv on the TimeoutScheduler thread, the old handle may
+        # fire one last time after closed is set.  Without this guard
+        # the orphan callback would consume CAN frames from the shared
+        # bus — frames that belong to the NEXT ISOTPSocket session.
+        if self.closed:
+            return
         self.last_rx_call = TimeoutScheduler._time()
         try:
             while self.can_socket.select([self.can_socket], 0):
@@ -1086,6 +1093,9 @@ class ISOTPSocketImplementation:
 
     def _send(self):
         # type: () -> None
+        # Early exit for orphan callbacks (same rationale as can_recv).
+        if self.closed:
+            return
         try:
             if self.tx_state == ISOTP_IDLE:
                 if select_objects([self.tx_queue], 0):
