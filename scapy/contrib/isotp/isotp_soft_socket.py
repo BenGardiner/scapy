@@ -383,9 +383,8 @@ class TimeoutScheduler:
         except Exception:
             # Unexpected error — ensure we clear _thread so the next
             # schedule() call can start a fresh thread.
-            cls.logger.debug("Thread died @ %f (exception)",
-                             cls._time())
-            traceback.print_exc()
+            cls.logger.exception(
+                "Thread died @ %f (exception)", cls._time())
             with cls._mutex:
                 cls._thread = None
 
