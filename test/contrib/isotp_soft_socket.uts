@@ -2349,6 +2349,146 @@ if _ts is not None:
     _ts.join(timeout=5)
 
 
+= Stress test: hundreds of SF exchanges on persistent ISOTPSoftSocket
+
+# Exercises a single ISOTPSoftSocket for many request-response cycles
+# without closing/reopening.  The socket must reliably dispatch all
+# exchanges via the same TimeoutScheduler callbacks.
+# Uses short timeout (2s) per exchange to surface any timing bugs.
+
+import time as _time
+from threading import Thread as _Thread, Event as _Event
+
+NUM_SF_EXCHANGES = 200
+
+with TestSocket(CAN) as cans, TestSocket(CAN) as stim:
+    cans.pair(stim)
+    stop = _Event()
+    exchange_count = [0]
+    def sf_ecu(_stim=stim, _stop=stop, _count=exchange_count):
+        """Auto-respond to any SF request with a SF response."""
+        while not _stop.is_set():
+            if TestSocket.select([_stim], 0.05):
+                try:
+                    pkt = _stim.recv()
+                except Exception:
+                    break
+                if pkt is not None and hasattr(pkt, 'identifier'):
+                    if pkt.identifier == 0x7e3:
+                        raw = bytes(pkt.data)
+                        # Echo back the service ID + 0x40
+                        if len(raw) >= 2:
+                            sid = raw[1]
+                            _stim.send(CAN(identifier=0x7eb,
+                                           data=bytes([0x02, sid + 0x40, 0x03])))
+                            _count[0] += 1
+    ecu_thread = _Thread(target=sf_ecu)
+    ecu_thread.start()
+    with ISOTPSoftSocket(cans, tx_id=0x7e3, rx_id=0x7eb) as isock:
+        failures = []
+        for i in range(NUM_SF_EXCHANGES):
+            resp = isock.sr1(ISOTP(b'\x10\x03'), timeout=2, verbose=0)
+            if resp is None:
+                failures.append(i)
+    stop.set()
+    ecu_thread.join(timeout=10)
+
+assert len(failures) == 0, \
+    "SF stress test: %d/%d timed out, first failures: %s" % (
+        len(failures), NUM_SF_EXCHANGES, failures[:10])
+
+_ts = TimeoutScheduler._thread
+TimeoutScheduler.clear()
+if _ts is not None:
+    _ts.join(timeout=5)
+
+= Stress test: hundreds of MF exchanges on persistent ISOTPSoftSocket
+
+# Same pattern but with multi-frame responses (4 CF).  This exercises
+# the full ISOTP state machine (FF → FC → CF×3) across many cycles
+# on the same socket instance.
+
+NUM_MF_EXCHANGES = 100
+
+def run_mf_stress(num_exchanges):
+    """Run num_exchanges MF request/response cycles on one ISOTPSoftSocket."""
+    expected_data = dhex("620001666c61677b5544535f444154415f524541447d")
+    with TestSocket(CAN) as cans, TestSocket(CAN) as stim:
+        cans.pair(stim)
+        stop = _Event()
+        with TestSocket(CAN) as ecu_mon:
+            cans.pair(ecu_mon)
+            def mf_ecu(_stim=stim, _mon=ecu_mon, _stop=stop):
+                """For each request, send an MF response (FF + 3 CF)."""
+                while not _stop.is_set():
+                    if TestSocket.select([_stim], 0.05):
+                        try:
+                            pkt = _stim.recv()
+                        except Exception:
+                            break
+                        if pkt is not None and hasattr(pkt, 'identifier'):
+                            if pkt.identifier == 0x7e3:
+                                # Send FF
+                                _stim.send(CAN(identifier=0x7eb,
+                                               data=dhex("1016620001666c61")))
+                                # Wait for FC from tester
+                                fc_seen = False
+                                deadline = _time.monotonic() + 5.0
+                                while not _stop.is_set() and _time.monotonic() < deadline:
+                                    if TestSocket.select([_mon], 0.05):
+                                        fp = _mon.recv()
+                                        if fp is not None and \
+                                           fp.identifier == 0x7e3 and \
+                                           len(fp.data) >= 1 and \
+                                           bytes(fp.data)[0] == 0x30:
+                                            fc_seen = True
+                                            break
+                                if not fc_seen:
+                                    continue
+                                _time.sleep(0.002)
+                                _stim.send(CAN(identifier=0x7eb,
+                                               data=dhex("21677b5544535f44")))
+                                _time.sleep(0.002)
+                                _stim.send(CAN(identifier=0x7eb,
+                                               data=dhex("224154415f524541")))
+                                _time.sleep(0.002)
+                                _stim.send(CAN(identifier=0x7eb,
+                                               data=dhex("23447d")))
+            ecu_thread = _Thread(target=mf_ecu)
+            ecu_thread.start()
+            with ISOTPSoftSocket(cans, tx_id=0x7e3, rx_id=0x7eb) as isock:
+                failures = []
+                mismatches = []
+                for i in range(num_exchanges):
+                    resp = isock.sr1(ISOTP(data=dhex("220001")),
+                                     retry=0, timeout=5, verbose=0)
+                    if resp is None:
+                        failures.append(i)
+                    elif resp.data != expected_data:
+                        mismatches.append(i)
+            stop.set()
+            ecu_thread.join(timeout=10)
+            # Unpair ecu_mon to avoid stale references
+            try:
+                cans.paired_sockets.remove(ecu_mon)
+            except ValueError:
+                pass
+    return failures, mismatches
+
+failures, mismatches = run_mf_stress(NUM_MF_EXCHANGES)
+assert len(failures) == 0, \
+    "MF stress test: %d/%d timed out, first failures: %s" % (
+        len(failures), NUM_MF_EXCHANGES, failures[:10])
+assert len(mismatches) == 0, \
+    "MF stress test: %d/%d data mismatch, first: %s" % (
+        len(mismatches), NUM_MF_EXCHANGES, mismatches[:10])
+
+_ts = TimeoutScheduler._thread
+TimeoutScheduler.clear()
+if _ts is not None:
+    _ts.join(timeout=5)
+
+
 = Delete testsockets
 
 cleanup_testsockets()
