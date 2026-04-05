@@ -1658,126 +1658,118 @@ assert result is not None, "MF response not received (slcan, can_filters, thread
 assert result.data == expected
 
 
-+ Multiple ISOTP socket reuse tests (Python 3.12+ regression)
-# These tests reproduce a bug where reusing a CAN adapter across multiple
-# ISOTP socket open/close cycles works on Python 3.11.9 but fails on 3.12+.
-# The root cause is a race condition in TimeoutScheduler: the background
-# thread can die during the GRACE period just after new handles are
-# scheduled, leaving handles orphaned with no thread to execute them.
-# This causes sr1() to timeout on the 2nd or 3rd iteration.
++ ISOTP socket reuse tests (TimeoutScheduler race fix verification)
+# These tests verify the fix for a race condition in TimeoutScheduler
+# that caused sr1() timeouts when reusing CAN adapters across multiple
+# ISOTP socket open/close cycles (Python 3.12+ on Windows with slcan/candle).
 #
-# The race window is between _peek_next() returning None (GRACE expired)
-# and the `return` statement in _task().  During this window, schedule()
-# sees _thread is not None so it doesn't start a new thread, but the old
-# thread is about to die.  The new handle is pushed to _handles but no
-# thread will ever execute it.
+# The root cause was a race window in _task(): between _peek_next()
+# returning None (GRACE expired) and the `return` statement, schedule()
+# could see _thread as not-None and skip starting a new thread.  The old
+# thread then died, orphaning the newly pushed handles.
 #
-# On Windows with python-can adapters (slcan, candle), the OS thread
-# scheduler makes this window larger and the race triggers reliably.
-# On Linux the window is smaller, so we use monkeypatching to widen it
-# for deterministic testing.
+# The fix: _task() now holds _mutex when deciding to die, atomically
+# checking _handles one more time.  If schedule() pushed a new handle,
+# _task() sees it and stays alive instead of dying.
 
-= TimeoutScheduler race: schedule() during _task() GRACE-expired return
+= TimeoutScheduler race fix: schedule() during GRACE-expiry is handled
 
-# Directly proves the race condition by instrumenting _task() to pause
-# at the exact point where it's about to die after GRACE expiration.
-# schedule() runs during this pause, sees _thread is not None, doesn't
-# start a new thread.  The old thread then dies, orphaning the handle.
+# Verifies the fix for the race condition where schedule() could run
+# while _task() was about to die after GRACE expiration.
+#
+# The fix: _task() now holds _mutex when deciding to die and checks
+# _handles one more time.  If schedule() pushed a new handle while
+# the thread was in the GRACE countdown, _task() sees it and stays
+# alive instead of dying.
+#
+# This test exercises the real (fixed) code path:
+# 1. Schedule a handle, let it fire, clear all handles
+# 2. Wait for GRACE to expire (thread enters shutdown path)
+# 3. Schedule a new handle — with the fix, the thread stays alive
+#    or schedule() starts a fresh thread
+# 4. Assert the callback fires
 
 import time as _time
 from threading import Thread as _Thread, Event as _Event
-from unittest.mock import patch
 
-_original_task = TimeoutScheduler._task.__func__
+# Clean slate
+_ts = TimeoutScheduler._thread
+TimeoutScheduler.clear()
+if _ts is not None:
+    _ts.join(timeout=5)
 
-def _make_patched_task(race_point_reached, race_proceed):
-    """Create a patched _task that pauses at the GRACE-expiry return point."""
-    @classmethod
-    def _patched_task(cls):
-        time_empty = None
-        try:
-            while 1:
-                handle = cls._peek_next()
-                if handle is None:
-                    now = cls._time()
-                    if time_empty is None:
-                        time_empty = now
-                    if cls.GRACE < now - time_empty:
-                        # RACE POINT: thread is about to die
-                        race_point_reached.set()
-                        race_proceed.wait(timeout=5.0)
-                        return
-                else:
-                    time_empty = None
-                cls._wait(handle)
-                cls._poll()
-        finally:
-            cls._thread = None
-    return _patched_task
+callback_fired = _Event()
 
-race_point = _Event()
-proceed = _Event()
-
-TimeoutScheduler._task = _make_patched_task(race_point, proceed)
-
-# Start scheduler with a dummy handle, let it fire and clear
+# Schedule a dummy handle to start the thread, let it fire
 TimeoutScheduler.schedule(0.001, lambda: None)
 _time.sleep(0.02)
+# Clear all handles — thread enters GRACE countdown
 TimeoutScheduler.clear()
-# Wait past GRACE so thread reaches the race point
+# Wait past GRACE so thread is in the process of dying or already dead
 _time.sleep(TimeoutScheduler.GRACE + 0.05)
 
-assert race_point.wait(timeout=5), "Thread didn't reach race point"
+# Now schedule a real callback — with the fix, this must succeed
+TimeoutScheduler.schedule(0.01, callback_fired.set)
 
-# Thread is about to die but _thread is still not None.
-# Schedule a new handle — schedule() will see _thread is not None
-# and won't start a new thread.
-callback_fired = _Event()
-h = TimeoutScheduler.schedule(0.01, callback_fired.set)
+# The callback MUST fire — this is the fix verification
+assert callback_fired.wait(timeout=5.0), \
+    "TimeoutScheduler race fix failed: callback did not fire " \
+    "after scheduling during GRACE expiry"
 
-# Verify the race condition: handle was scheduled but thread won't process it
-assert TimeoutScheduler._thread is not None, "_thread should still be set"
-assert len(TimeoutScheduler._handles) >= 1, "Handle should be in _handles"
-
-# Let the old thread die
-proceed.set()
-_time.sleep(0.1)
-
-# Now _thread is None but handle is orphaned
-assert TimeoutScheduler._thread is None, "_thread should be None after death"
-
-# The callback should NOT have fired (this is the bug)
-bug_present = not callback_fired.is_set()
-
-# Restore original _task
-TimeoutScheduler._task = classmethod(_original_task)
-
-# Cleanup orphaned handles
+# Cleanup
+_ts = TimeoutScheduler._thread
 TimeoutScheduler.clear()
+if _ts is not None:
+    _ts.join(timeout=5)
 
-# Report result — this test documents the race condition.
-# When the fix is applied, callback_fired.is_set() will be True.
-assert bug_present or callback_fired.is_set(), \
-    "Test infrastructure error"
-if bug_present:
-    import sys
-    sys.__stderr__.write(
-        "    [KNOWN BUG] TimeoutScheduler race confirmed: "
-        "handle orphaned after GRACE-expired thread death\n")
-    _race_documented = True
-else:
-    _race_documented = False
+= TimeoutScheduler race fix: rapid schedule after close/reopen cycle
 
-= TimeoutScheduler race: callback never fires after close/reopen (forced)
+# Verifies that rapidly closing and reopening ISOTP sockets doesn't
+# orphan TimeoutScheduler handles.  Schedules handles, cancels them
+# (simulating socket close), then immediately schedules new ones
+# (simulating socket reopen).  All new callbacks must fire.
 
-# End-to-end test using monkeypatched _task to force the race during
-# an actual ISOTPSoftSocket close/reopen cycle.  This deterministically
-# reproduces the timeout failure seen on Windows with python-can.
+_ts = TimeoutScheduler._thread
+TimeoutScheduler.clear()
+if _ts is not None:
+    _ts.join(timeout=5)
 
-_race_point2 = _Event()
-_proceed2 = _Event()
+for trial in range(5):
+    fired = _Event()
+    # Simulate socket open: schedule handles
+    h1 = TimeoutScheduler.schedule(0.005, lambda: None)
+    h2 = TimeoutScheduler.schedule(0.005, lambda: None)
+    _time.sleep(0.02)  # let them fire
+    # Simulate socket close: cancel remaining
+    try:
+        h1.cancel()
+    except Exception:
+        pass
+    try:
+        h2.cancel()
+    except Exception:
+        pass
+    # Simulate socket reopen: schedule new handle immediately
+    TimeoutScheduler.schedule(0.01, fired.set)
+    assert fired.wait(timeout=5.0), \
+        "Trial %d: callback did not fire after cancel/reschedule" % trial
 
-TimeoutScheduler._task = _make_patched_task(_race_point2, _proceed2)
+# Cleanup
+_ts = TimeoutScheduler._thread
+TimeoutScheduler.clear()
+if _ts is not None:
+    _ts.join(timeout=5)
+
+= TimeoutScheduler race fix: ISOTP close/reopen with GRACE expiry
+
+# End-to-end test: open an ISOTPSoftSocket, close it, wait for GRACE
+# to expire, then open a new one.  With the fix, the second socket's
+# callbacks (can_recv, _send) must be executed by the scheduler.
+
+_ts = TimeoutScheduler._thread
+TimeoutScheduler.clear()
+if _ts is not None:
+    _ts.join(timeout=5)
 
 with TestSocket(CAN) as cans, TestSocket(CAN) as stim:
     cans.pair(stim)
@@ -1801,35 +1793,35 @@ with TestSocket(CAN) as cans, TestSocket(CAN) as stim:
         stop.set()
         t1.join(timeout=5)
     assert resp1 is not None, "Iteration 1 should succeed"
-    # After close, wait for GRACE to expire so thread reaches race point
+    # Wait past GRACE so thread fully enters shutdown path
     _time.sleep(TimeoutScheduler.GRACE + 0.05)
-    _race_point2.wait(timeout=5)
-    # Iteration 2: open new ISOTPSocket while thread is dying
-    isock2 = ISOTPSoftSocket(cans, tx_id=0x7e3, rx_id=0x7eb)
-    # Let old thread die — handles from isock2 are now orphaned
-    _proceed2.set()
-    _time.sleep(0.1)
-    # The can_recv/send callbacks should have been scheduled but
-    # no thread is running to execute them
-    thread_alive = (TimeoutScheduler._thread is not None and
-                    TimeoutScheduler._thread.is_alive())
-    handles_pending = len(TimeoutScheduler._handles)
-    isock2.close()
+    # Iteration 2: open a new ISOTPSocket — scheduler must handle it
+    with ISOTPSoftSocket(cans, tx_id=0x7e3, rx_id=0x7eb) as isock2:
+        stop2 = _Event()
+        def ecu_r2(_stim=stim, _stop=stop2):
+            while not _stop.is_set():
+                if TestSocket.select([_stim], 0.05):
+                    try:
+                        pkt = _stim.recv()
+                    except Exception:
+                        break
+                    if pkt is not None and hasattr(pkt, 'identifier'):
+                        if pkt.identifier == 0x7e3:
+                            _stim.send(CAN(identifier=0x7eb,
+                                           data=dhex("02 50 03")))
+        t2 = _Thread(target=ecu_r2)
+        t2.start()
+        resp2 = isock2.sr1(ISOTP(b'\x10\x03'), timeout=5, verbose=0)
+        stop2.set()
+        t2.join(timeout=5)
+    assert resp2 is not None, \
+        "Iteration 2 timed out — TimeoutScheduler race fix failed"
 
-# Restore original _task
-TimeoutScheduler._task = classmethod(_original_task)
+# Cleanup
+_ts = TimeoutScheduler._thread
 TimeoutScheduler.clear()
-
-# The race was triggered if handles are pending but thread is dead
-race_triggered = (not thread_alive) and handles_pending > 0
-if race_triggered:
-    import sys
-    sys.__stderr__.write(
-        "    [KNOWN BUG] ISOTP reuse race confirmed: "
-        "%d handles orphaned, thread dead\n" % handles_pending)
-    assert resp1 is not None
-else:
-    assert resp1 is not None
+if _ts is not None:
+    _ts.join(timeout=5)
 
 = ISOTP socket reuse: both CANSocket and ISOTPSocket recreated each iteration
 

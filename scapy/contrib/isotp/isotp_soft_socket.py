@@ -357,17 +357,37 @@ class TimeoutScheduler:
                         time_empty = now
                     # 100 ms of grace time before killing the thread
                     if cls.GRACE < now - time_empty:
-                        return
+                        # Atomically check whether new handles arrived
+                        # while we were deciding to die.  schedule()
+                        # holds _mutex when it checks _thread, so by
+                        # holding _mutex here we ensure that either:
+                        #  (a) _handles is still empty → we set
+                        #      _thread = None and return, OR
+                        #  (b) a new handle was pushed → we stay alive.
+                        # This closes the race window where schedule()
+                        # saw _thread as not-None but the thread was
+                        # about to die.
+                        with cls._mutex:
+                            if not cls._handles:
+                                cls.logger.debug(
+                                    "Thread died @ %f", cls._time())
+                                cls._thread = None
+                                return
+                        # New handle(s) appeared — stay alive
+                        time_empty = None
+                        continue
                 else:
                     time_empty = None
                 cls._wait(handle)
                 cls._poll()
-
-        finally:
-            # Worst case scenario: if this thread dies, the next scheduled
-            # timeout will start a new one
-            cls.logger.debug("Thread died @ %f", cls._time())
-            cls._thread = None
+        except Exception:
+            # Unexpected error — ensure we clear _thread so the next
+            # schedule() call can start a fresh thread.
+            cls.logger.debug("Thread died @ %f (exception)",
+                             cls._time())
+            traceback.print_exc()
+            with cls._mutex:
+                cls._thread = None
 
     @classmethod
     def _poll(cls):
