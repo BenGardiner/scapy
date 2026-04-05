@@ -114,6 +114,9 @@ class SocketMapper(object):
 
         Serialized with read_bus() via bus_lock to prevent concurrent
         serial I/O on slcan interfaces.
+
+        :param msg: python-can Message to send.
+        :raises can_CanError: If the underlying python-can Bus raises.
         """
         with self.bus_lock:
             self.bus.send(msg)
