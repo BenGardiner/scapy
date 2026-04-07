@@ -2488,6 +2488,293 @@ TimeoutScheduler.clear()
 if _ts is not None:
     _ts.join(timeout=5)
 
+= Stress test: UDS-scanner-style varying service IDs on persistent socket (SF)
+
+# Mimics UDS_ServiceEnumerator: iterates through different service IDs
+# on the SAME ISOTPSoftSocket without closing/reopening.  Each sr1()
+# sends a different UDS service request and the ECU simulator replies
+# with the matching positive response.  This exercises the rx_queue
+# across varying hashret/answers pairs — a late response from service
+# N could confuse service N+1 if state isn't handled properly.
+
+import time as _time
+from threading import Thread as _Thread, Event as _Event
+
+SCAN_RANGE = list(range(0x10, 0x3F))  # 47 services
+NUM_SCAN_CYCLES = 5  # Repeat the scan range 5 times = 235 total exchanges
+
+with TestSocket(CAN) as cans, TestSocket(CAN) as stim:
+    cans.pair(stim)
+    stop = _Event()
+    def uds_ecu_sf(_stim=stim, _stop=stop):
+        """ECU that responds to each UDS service with positive response."""
+        while not _stop.is_set():
+            if TestSocket.select([_stim], 0.05):
+                try:
+                    pkt = _stim.recv()
+                except Exception:
+                    break
+                if pkt is not None and hasattr(pkt, 'identifier'):
+                    if pkt.identifier == 0x7e0:
+                        raw = bytes(pkt.data)
+                        if len(raw) >= 2:
+                            pci_len = raw[0]
+                            sid = raw[1]
+                            # Positive response: SID + 0x40
+                            resp_sid = (sid + 0x40) & 0xFF
+                            _stim.send(CAN(identifier=0x7e8,
+                                           data=bytes([0x02, resp_sid, 0x00])))
+    ecu_thread = _Thread(target=uds_ecu_sf)
+    ecu_thread.start()
+    with ISOTPSoftSocket(cans, tx_id=0x7e0, rx_id=0x7e8) as isock:
+        failures = []
+        wrong_resp = []
+        total = 0
+        for cycle in range(NUM_SCAN_CYCLES):
+            for sid in SCAN_RANGE:
+                req = ISOTP(data=bytes([sid, 0x00]))
+                resp = isock.sr1(req, timeout=2, verbose=0)
+                if resp is None:
+                    failures.append((cycle, sid, total))
+                elif len(resp.data) < 1 or resp.data[0] != ((sid + 0x40) & 0xFF):
+                    wrong_resp.append((cycle, sid, total, bytes(resp.data)))
+                total += 1
+    stop.set()
+    ecu_thread.join(timeout=10)
+
+assert len(failures) == 0, \
+    "UDS SF scan stress: %d/%d timed out, first: %s" % (
+        len(failures), total, failures[:5])
+assert len(wrong_resp) == 0, \
+    "UDS SF scan stress: %d/%d wrong response, first: %s" % (
+        len(wrong_resp), total, wrong_resp[:5])
+
+_ts = TimeoutScheduler._thread
+TimeoutScheduler.clear()
+if _ts is not None:
+    _ts.join(timeout=5)
+
+= Stress test: UDS-scanner-style varying service IDs on persistent socket (MF)
+
+# Same pattern but some services return multi-frame responses.
+# Services 0x22 (ReadDataByIdentifier) and 0x19 (ReadDTCInformation)
+# return long MF responses; all others return SF.  This tests the
+# ISOTP state machine transitioning between SF and MF responses across
+# many consecutive sr1() calls on the same socket.
+
+MF_SIDS = {0x22, 0x19}  # Services that return multi-frame responses
+NUM_MF_SCAN_CYCLES = 3
+MF_SCAN_RANGE = [0x10, 0x11, 0x19, 0x22, 0x27, 0x2E, 0x31, 0x3E]
+
+def run_uds_mf_scan_stress(num_cycles, scan_range, mf_sids):
+    """Scan with mixed SF/MF responses on a persistent socket."""
+    mf_payload = dhex("0001AABBCCDD112233445566778899")  # 15 bytes
+    with TestSocket(CAN) as cans, TestSocket(CAN) as stim:
+        cans.pair(stim)
+        stop = _Event()
+        with TestSocket(CAN) as ecu_mon:
+            cans.pair(ecu_mon)
+            def uds_ecu_mf(_stim=stim, _mon=ecu_mon, _stop=stop):
+                """ECU with mixed SF/MF responses per service ID."""
+                while not _stop.is_set():
+                    if TestSocket.select([_stim], 0.05):
+                        try:
+                            pkt = _stim.recv()
+                        except Exception:
+                            break
+                        if pkt is None or not hasattr(pkt, 'identifier'):
+                            continue
+                        if pkt.identifier != 0x7e0:
+                            continue
+                        raw = bytes(pkt.data)
+                        if len(raw) < 2:
+                            continue
+                        # Only process Single Frame requests (PCI type 0).
+                        # Ignore FC frames (PCI type 3 = 0x3X) that the
+                        # tester sends back during MF exchanges.
+                        pci_type = (raw[0] >> 4) & 0x0F
+                        if pci_type != 0:
+                            continue
+                        sid = raw[1]
+                        resp_sid = (sid + 0x40) & 0xFF
+                        if sid in mf_sids:
+                            # Multi-frame response: FF + CFs
+                            # Build 16-byte payload: resp_sid + 15 bytes
+                            resp_data = bytes([resp_sid]) + mf_payload
+                            ff_data = bytes([0x10, len(resp_data)]) + resp_data[:6]
+                            _stim.send(CAN(identifier=0x7e8, data=ff_data))
+                            # Wait for FC
+                            fc_seen = False
+                            deadline = _time.monotonic() + 5.0
+                            while not _stop.is_set() and _time.monotonic() < deadline:
+                                if TestSocket.select([_mon], 0.05):
+                                    fp = _mon.recv()
+                                    if fp is not None and \
+                                       fp.identifier == 0x7e0 and \
+                                       len(fp.data) >= 1 and \
+                                       (bytes(fp.data)[0] >> 4) == 3:
+                                        fc_seen = True
+                                        break
+                            if not fc_seen:
+                                continue
+                            _time.sleep(0.002)
+                            cf1 = bytes([0x21]) + resp_data[6:13]
+                            _stim.send(CAN(identifier=0x7e8, data=cf1))
+                            _time.sleep(0.002)
+                            cf2 = bytes([0x22]) + resp_data[13:16]
+                            _stim.send(CAN(identifier=0x7e8, data=cf2))
+                        else:
+                            # Single-frame response
+                            _stim.send(CAN(identifier=0x7e8,
+                                           data=bytes([0x02, resp_sid, 0x00])))
+            ecu_thread = _Thread(target=uds_ecu_mf)
+            ecu_thread.start()
+            with ISOTPSoftSocket(cans, tx_id=0x7e0, rx_id=0x7e8) as isock:
+                failures = []
+                wrong_resp = []
+                total = 0
+                for cycle in range(num_cycles):
+                    for sid in scan_range:
+                        req = ISOTP(data=bytes([sid, 0x00]))
+                        resp = isock.sr1(req, timeout=5, verbose=0)
+                        expected_sid = (sid + 0x40) & 0xFF
+                        if resp is None:
+                            failures.append((cycle, sid, total))
+                        elif len(resp.data) < 1 or resp.data[0] != expected_sid:
+                            wrong_resp.append((cycle, sid, total, bytes(resp.data)))
+                        total += 1
+            stop.set()
+            ecu_thread.join(timeout=10)
+            try:
+                cans.paired_sockets.remove(ecu_mon)
+            except ValueError:
+                pass
+    return failures, wrong_resp, total
+
+failures, wrong_resp, total = run_uds_mf_scan_stress(
+    NUM_MF_SCAN_CYCLES, MF_SCAN_RANGE, MF_SIDS)
+assert len(failures) == 0, \
+    "UDS MF scan stress: %d/%d timed out, first: %s" % (
+        len(failures), total, failures[:5])
+assert len(wrong_resp) == 0, \
+    "UDS MF scan stress: %d/%d wrong response, first: %s" % (
+        len(wrong_resp), total, wrong_resp[:5])
+
+_ts = TimeoutScheduler._thread
+TimeoutScheduler.clear()
+if _ts is not None:
+    _ts.join(timeout=5)
+
+= Stress test: close/reopen cycles between service groups (scanner reconnect pattern)
+
+# Mimics UDS_Scanner reconnect_handler: after scanning one ECU state,
+# close the ISOTPSoftSocket and create a new one (same CANSocket).
+# This is the pattern that triggers the TimeoutScheduler race and
+# orphan-callback bugs at scale.  Each group does 10 service probes,
+# then close/reopen.
+
+NUM_GROUPS = 20
+PROBES_PER_GROUP = 10
+GROUP_SCAN_RANGE = list(range(0x10, 0x10 + PROBES_PER_GROUP))
+
+with TestSocket(CAN) as cans, TestSocket(CAN) as stim:
+    cans.pair(stim)
+    stop = _Event()
+    def group_ecu(_stim=stim, _stop=stop):
+        """ECU that responds to any service probe."""
+        while not _stop.is_set():
+            if TestSocket.select([_stim], 0.05):
+                try:
+                    pkt = _stim.recv()
+                except Exception:
+                    break
+                if pkt is not None and hasattr(pkt, 'identifier'):
+                    if pkt.identifier == 0x7e0:
+                        raw = bytes(pkt.data)
+                        if len(raw) >= 2:
+                            sid = raw[1]
+                            resp_sid = (sid + 0x40) & 0xFF
+                            _stim.send(CAN(identifier=0x7e8,
+                                           data=bytes([0x02, resp_sid, 0x00])))
+    ecu_thread = _Thread(target=group_ecu)
+    ecu_thread.start()
+    failures = []
+    total = 0
+    for group in range(NUM_GROUPS):
+        with ISOTPSoftSocket(cans, tx_id=0x7e0, rx_id=0x7e8) as isock:
+            for sid in GROUP_SCAN_RANGE:
+                req = ISOTP(data=bytes([sid, 0x00]))
+                resp = isock.sr1(req, timeout=2, verbose=0)
+                if resp is None:
+                    failures.append((group, sid, total))
+                total += 1
+        # Brief pause between groups — mimics scanner state transition
+        _time.sleep(0.02)
+    stop.set()
+    ecu_thread.join(timeout=10)
+
+assert len(failures) == 0, \
+    "Reconnect stress: %d/%d timed out, first: %s" % (
+        len(failures), total, failures[:10])
+
+_ts = TimeoutScheduler._thread
+TimeoutScheduler.clear()
+if _ts is not None:
+    _ts.join(timeout=5)
+
+= Stress test: rapid close/reopen with no delay (worst-case reconnect)
+
+# Same as above but with ZERO delay between groups.  This maximises
+# the race window where the TimeoutScheduler thread may die during
+# close and the next ISOTPSocket.__init__ needs it alive.
+
+NUM_RAPID_GROUPS = 30
+RAPID_PROBES = 5
+
+with TestSocket(CAN) as cans, TestSocket(CAN) as stim:
+    cans.pair(stim)
+    stop = _Event()
+    def rapid_ecu(_stim=stim, _stop=stop):
+        """ECU for rapid reconnect test."""
+        while not _stop.is_set():
+            if TestSocket.select([_stim], 0.05):
+                try:
+                    pkt = _stim.recv()
+                except Exception:
+                    break
+                if pkt is not None and hasattr(pkt, 'identifier'):
+                    if pkt.identifier == 0x7e0:
+                        raw = bytes(pkt.data)
+                        if len(raw) >= 2:
+                            sid = raw[1]
+                            _stim.send(CAN(identifier=0x7e8,
+                                           data=bytes([0x02, (sid + 0x40) & 0xFF, 0x00])))
+    ecu_thread = _Thread(target=rapid_ecu)
+    ecu_thread.start()
+    failures = []
+    total = 0
+    for group in range(NUM_RAPID_GROUPS):
+        with ISOTPSoftSocket(cans, tx_id=0x7e0, rx_id=0x7e8) as isock:
+            for probe in range(RAPID_PROBES):
+                sid = 0x10 + (probe % 0x30)
+                req = ISOTP(data=bytes([sid, 0x00]))
+                resp = isock.sr1(req, timeout=2, verbose=0)
+                if resp is None:
+                    failures.append((group, sid, total))
+                total += 1
+        # NO delay — immediate close/reopen
+    stop.set()
+    ecu_thread.join(timeout=10)
+
+assert len(failures) == 0, \
+    "Rapid reconnect stress: %d/%d timed out, first: %s" % (
+        len(failures), total, failures[:10])
+
+_ts = TimeoutScheduler._thread
+TimeoutScheduler.clear()
+if _ts is not None:
+    _ts.join(timeout=5)
+
 
 = Delete testsockets
 
