@@ -2776,6 +2776,89 @@ if _ts is not None:
     _ts.join(timeout=5)
 
 
+= TimeoutScheduler thread death recovery: stale _thread reference must not block new threads
+
+# Simulates the scenario where the TimeoutScheduler thread dies from a
+# BaseException (or any unexpected exit) that leaves _thread as a stale
+# reference.  The schedule() fix detects the dead thread via is_alive()
+# and starts a fresh one, so ISOTP callbacks resume normally.
+
+import time as _time
+from threading import Thread as _Thread, Event as _Event
+
+# Clean slate
+_ts = TimeoutScheduler._thread
+TimeoutScheduler.clear()
+_ts and _ts.join(timeout=5)
+
+# Schedule a simple callback to get the thread running
+_fired = _Event()
+def _dummy_cb(_e=_fired):
+    _e.set()
+
+TimeoutScheduler.schedule(0, _dummy_cb)
+_fired.wait(timeout=2)
+assert _fired.is_set(), "Initial callback did not fire"
+
+# Wait for the thread to go idle and die (GRACE = 0.1s)
+_time.sleep(0.3)
+
+# Now simulate a stale _thread: set _thread to a dead Thread object.
+# This mimics what would happen if _task() exited without clearing
+# _thread (the bug that the finally block fixes).
+with TimeoutScheduler._mutex:
+    _dead = _Thread(target=lambda: None)
+    _dead.start()
+    _dead.join()
+    assert not _dead.is_alive()
+    TimeoutScheduler._thread = _dead
+
+# schedule() should detect the dead thread and start a new one
+_fired2 = _Event()
+def _recovery_cb(_e=_fired2):
+    _e.set()
+
+TimeoutScheduler.schedule(0, _recovery_cb)
+_fired2.wait(timeout=2)
+assert _fired2.is_set(), \
+    "Recovery callback did not fire — schedule() failed to detect dead thread"
+
+# Verify ISOTP sockets still work after thread recovery
+def run_isotp_after_recovery():
+    with TestSocket(CAN) as cans, TestSocket(CAN) as stim:
+        cans.pair(stim)
+        stop = _Event()
+        def recovery_ecu(_stim=stim, _stop=stop):
+            while not _stop.is_set():
+                if TestSocket.select([_stim], 0.05):
+                    try:
+                        pkt = _stim.recv()
+                    except Exception:
+                        break
+                    if pkt is not None and hasattr(pkt, 'identifier'):
+                        if pkt.identifier == 0x7e0:
+                            raw = bytes(pkt.data)
+                            if len(raw) >= 2:
+                                sid = raw[1]
+                                _stim.send(CAN(identifier=0x7e8,
+                                               data=bytes([0x02, (sid + 0x40) & 0xFF, 0x00])))
+        ecu_thread = _Thread(target=recovery_ecu)
+        ecu_thread.start()
+        with ISOTPSoftSocket(cans, tx_id=0x7e0, rx_id=0x7e8) as isock:
+            for sid in [0x10, 0x11, 0x22]:
+                req = ISOTP(data=bytes([sid, 0x00]))
+                resp = isock.sr1(req, timeout=2, verbose=0)
+                assert resp is not None, \
+                    "ISOTP sr1 failed for SID 0x%02x after thread recovery" % sid
+        stop.set()
+        ecu_thread.join(timeout=10)
+
+run_isotp_after_recovery()
+
+_ts = TimeoutScheduler._thread
+TimeoutScheduler.clear()
+_ts and _ts.join(timeout=5)
+
 = Delete testsockets
 
 cleanup_testsockets()
