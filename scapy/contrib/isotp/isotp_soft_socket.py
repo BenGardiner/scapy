@@ -253,8 +253,10 @@ class TimeoutScheduler:
             heapq.heappush(cls._handles, handle)
             must_interrupt = cls._handles[0] == handle
 
-            # Start the scheduling thread if it is not started already
-            if cls._thread is None:
+            # Start the scheduling thread if it is not started already.
+            # Also recover if the thread reference is stale (thread died
+            # without clearing _thread — e.g. from a BaseException).
+            if cls._thread is None or not cls._thread.is_alive():
                 t = Thread(target=cls._task, name="TimeoutScheduler._task")
                 t.daemon = True
                 must_interrupt = False
@@ -381,10 +383,16 @@ class TimeoutScheduler:
                 cls._wait(handle)
                 cls._poll()
         except Exception:
-            # Unexpected error — ensure we clear _thread so the next
-            # schedule() call can start a fresh thread.
             cls.logger.exception(
                 "Thread died @ %f (exception)", cls._time())
+        finally:
+            # Always clear _thread so the next schedule() call can
+            # start a fresh thread.  The normal-exit path (GRACE
+            # expiry) already sets _thread = None inside the mutex;
+            # this finally covers unexpected exits (exceptions,
+            # BaseException subclasses like SystemExit, etc.) that
+            # would otherwise leave a stale _thread reference and
+            # permanently prevent new threads from starting.
             with cls._mutex:
                 cls._thread = None
 
