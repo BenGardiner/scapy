@@ -41,6 +41,36 @@ from can.interface import Bus as can_Bus
 
 __all__ = ["CANSocket", "PythonCANSocket"]
 
+# Interfaces with hardware or kernel-level CAN filtering.
+# These keep bus-level filters for efficiency since the device/driver
+# handles filtering before frames reach userspace.
+# All other interfaces (USB adapters like candle, gs_usb, cantact;
+# serial like slcan) only do software filtering in BusABC.recv() and
+# need filters cleared at the bus level to avoid starving matching
+# frames behind non-matching ones (echo frames, other bus traffic).
+_HW_FILTERED_INTERFACES = frozenset([
+    'socketcan', 'kvaser', 'vector', 'pcan', 'ixxat',
+    'nican', 'neovi', 'etas', 'systec', 'nixnet',
+])
+
+
+def _is_sw_filtered(interface_key):
+    # type: (str) -> bool
+    """Return True if the bus identified by interface_key only does
+    software filtering (inside BusABC.recv).
+
+    For such interfaces, bus-level filters must be cleared so that
+    bus.recv(timeout=0) returns ALL frames.  Per-socket filtering
+    is then handled by distribute() via _matches_filters().
+
+    Without this, BusABC.recv(timeout=0) on software-filtered buses
+    (candle, gs_usb, cantact, slcan, etc.) can silently consume
+    one non-matching frame per call and return None, starving matching
+    frames that sit behind it in the USB/serial buffer.
+    """
+    iface = interface_key.split('_')[0].lower()
+    return iface not in _HW_FILTERED_INTERFACES
+
 
 class SocketMapper(object):
     """Internal Helper class to map a python-can bus object to
@@ -233,12 +263,13 @@ class _SocketsPool(object):
                 t = self.pool[k]
                 t.sockets.append(socket)
                 # Update bus-level filters to the union of all sockets'
-                # filters.  For non-slcan interfaces (socketcan, kvaser,
-                # vector), this enables efficient hardware/kernel
-                # filtering.  For slcan, the bus filters were already
-                # cleared on creation, so this is a no-op (all sockets
-                # on slcan share the unfiltered bus).
-                if not k.lower().startswith('slcan'):
+                # filters.  For hardware-filtered interfaces (socketcan,
+                # kvaser, vector, pcan, ixxat), this enables efficient
+                # kernel/device filtering.  For software-filtered
+                # interfaces (slcan, candle, gs_usb, cantact), the bus
+                # filters were already cleared on creation, so this is
+                # a no-op (all sockets share the unfiltered bus).
+                if not _is_sw_filtered(k):
                     filters = [s.filters for s in t.sockets
                                if s.filters is not None]
                     if filters:
@@ -246,21 +277,23 @@ class _SocketsPool(object):
                 socket.name = k
             else:
                 bus = can_Bus(*args, **kwargs)
-                # Serial interfaces like slcan only do software
-                # filtering inside BusABC.recv(): the recv loop reads
-                # one frame, finds it doesn't match, and returns
-                # None -- silently consuming serial bandwidth without
-                # returning the frame to the mux.  This starves the
-                # mux on busy buses.
+                # Software-filtered interfaces (slcan, candle, gs_usb,
+                # cantact, etc.) only filter inside BusABC.recv(): the
+                # recv loop reads one frame, finds it doesn't match,
+                # and returns None -- silently consuming serial/USB
+                # bandwidth without returning the frame to the mux.
+                # On USB adapters with timeout=0 mapped to ~1ms reads,
+                # this means only one non-matching frame is consumed
+                # per poll cycle, starving matching ECU responses that
+                # sit behind echo frames in the hardware buffer.
                 #
-                # For slcan, clear the filters from the bus so that
-                # bus.recv() returns ALL frames.  Per-socket filtering
-                # in distribute() via _matches_filters() handles
-                # delivery.  Other interfaces (socketcan, kvaser,
-                # vector, candle) perform efficient hardware/kernel
-                # filtering and should keep their bus-level filters.
-                if kwargs.get('can_filters') and \
-                        k.lower().startswith('slcan'):
+                # For all software-filtered interfaces, clear the bus
+                # filters so bus.recv() returns ALL frames.  Per-socket
+                # filtering in distribute() via _matches_filters()
+                # handles delivery.  Hardware-filtered interfaces
+                # (socketcan, kvaser, vector, pcan, ixxat) keep their
+                # bus-level filters for efficiency.
+                if kwargs.get('can_filters') and _is_sw_filtered(k):
                     bus.set_filters(None)
                 socket.name = k
                 self.pool[k] = SocketMapper(bus, [socket])
