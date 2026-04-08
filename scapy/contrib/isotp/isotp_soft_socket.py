@@ -13,7 +13,7 @@ import struct
 import time
 import traceback
 from bisect import bisect_left
-from threading import Thread, Event, RLock
+from threading import Thread, Event, RLock, current_thread
 # Typing imports
 from typing import (
     Optional,
@@ -386,15 +386,18 @@ class TimeoutScheduler:
             cls.logger.exception(
                 "Thread died @ %f (exception)", cls._time())
         finally:
-            # Always clear _thread so the next schedule() call can
-            # start a fresh thread.  The normal-exit path (GRACE
-            # expiry) already sets _thread = None inside the mutex;
-            # this finally covers unexpected exits (exceptions,
-            # BaseException subclasses like SystemExit, etc.) that
-            # would otherwise leave a stale _thread reference and
-            # permanently prevent new threads from starting.
+            # Clear _thread so the next schedule() call can start a
+            # fresh thread.  Only clear if _thread still points to
+            # *this* thread; if schedule() already started a
+            # replacement thread between the normal-exit mutex release
+            # and this finally block, we must not overwrite the new
+            # reference.  The normal-exit path (GRACE expiry) sets
+            # _thread = None inside the mutex before returning; this
+            # finally covers unexpected exits (exceptions,
+            # BaseException subclasses like SystemExit, etc.).
             with cls._mutex:
-                cls._thread = None
+                if cls._thread is current_thread():
+                    cls._thread = None
 
     @classmethod
     def _poll(cls):

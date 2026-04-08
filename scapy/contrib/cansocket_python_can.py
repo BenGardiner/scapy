@@ -384,6 +384,9 @@ class PythonCANSocket(SuperSocket):
         """Returns a tuple containing (cls, pkt_data, time)"""
         msg = self.can_iface.recv()
 
+        if msg is None:
+            return self.basecls, None, None
+
         hdr = msg.is_extended_id << 31 | msg.is_remote_frame << 30 | \
             msg.is_error_frame << 29 | msg.arbitration_id
 
