@@ -2859,6 +2859,76 @@ _ts = TimeoutScheduler._thread
 TimeoutScheduler.clear()
 _ts and _ts.join(timeout=5)
 
+= UDS_Scanner reset_handler leaked socket causes CAN frame theft
+
+# When reset_handler is a socket factory, the returned socket must be
+# closed by reset_target().  If it is not, its can_recv callback
+# steals CAN frames from the active session, causing sr1 timeouts.
+
+import time as _time
+from threading import Thread as _Thread, Event as _Event
+from scapy.contrib.automotive.uds import UDS
+
+COMMON_SIDs = [0x10, 0x11, 0x14, 0x19, 0x22, 0x27, 0x28, 0x3E, 0x85]
+
+leaked = []
+cans_isotp = TestSocket(CAN)
+stim_isotp = TestSocket(CAN)
+cans_isotp.pair(stim_isotp)
+stop = _Event()
+
+def uds_ecu_nr_100():
+    while not stop.is_set():
+        if TestSocket.select([stim_isotp], 0.05):
+            try:
+                pkt = stim_isotp.recv()
+            except Exception:
+                break
+            if pkt is None or not hasattr(pkt, 'identifier'):
+                continue
+            if pkt.identifier != 0x7e0:
+                continue
+            raw_d = bytes(pkt.data)
+            if len(raw_d) < 2:
+                continue
+            if (raw_d[0] >> 4) != 0:
+                continue
+            sid = raw_d[1]
+            stim_isotp.send(CAN(identifier=0x7e8, data=bytes([0x03, 0x7f, sid, 0x13, 0x00, 0x00, 0x00, 0x00])))
+
+def socket_factory_100():
+    s = ISOTPSoftSocket(cans_isotp, tx_id=0x7e0, rx_id=0x7e8, basecls=UDS)
+    leaked.append(s)
+    return s
+
+ecu_thread = _Thread(target=uds_ecu_nr_100)
+ecu_thread.start()
+from scapy.contrib.automotive.uds_scan import UDS_ServiceEnumerator, UDS_Scanner
+scanner = UDS_Scanner(socket_factory_100(), reconnect_handler=socket_factory_100, reset_handler=socket_factory_100, test_cases=[UDS_ServiceEnumerator], UDS_ServiceEnumerator_kwargs={"scan_range": COMMON_SIDs, "timeout": 2})
+scanner.scan()
+stop.set()
+ecu_thread.join(timeout=10)
+enum = scanner.configuration.test_cases[0]
+failures = [r for r in enum.results if r[2] is None]
+
+def cleanup_leaked(socks):
+    for s in socks:
+        try:
+            if not s.closed:
+                s.close()
+        except Exception:
+            pass
+
+cleanup_leaked(leaked)
+cans_isotp.close()
+stim_isotp.close()
+
+assert len(failures) == 0, "UDS scanner had %d/%d timeouts (leaked reset_handler socket): first=%s" % (len(failures), len(enum.results), [(hex(r[1].service),) for r in failures[:5]])
+
+_ts = TimeoutScheduler._thread
+TimeoutScheduler.clear()
+_ts and _ts.join(timeout=5)
+
 = Delete testsockets
 
 cleanup_testsockets()
