@@ -158,6 +158,12 @@ class AutomotiveTestCaseExecutor(metaclass=abc.ABCMeta):
             # to prevent leaked sockets whose background callbacks
             # steal CAN frames from the active session.
             if result is not None and hasattr(result, 'close'):
+                log_automotive.warning(
+                    "reset_handler returned a socket-like object "
+                    "(%s). This is probably a misconfiguration "
+                    "(socket factory passed as reset_handler). "
+                    "Closing the leaked socket to prevent frame "
+                    "theft.", type(result).__name__)
                 try:
                     result.close()
                 except Exception:
