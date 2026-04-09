@@ -2970,10 +2970,10 @@ with ISOTPSoftSocket(TestSocket(CAN), rx_id=0x123) as s:
     s.impl._recv_ff(b"\x10\x00\x00\x00\x00\x0A\xAA\xBB\xCC\xDD", 1.23)
     assert s.impl.rx_len == 10
     # _recv_cf various
-    s.impl.rx_state = 2
+    s.impl.rx_state = 3  # ISOTP_WAIT_DATA
     s.impl.rx_ll_dl = 8
     s.impl._recv_cf(b"\x21\xAA\xBB\xCC\xDD\xEE\xFF\x00\x11") # Too long
-    assert s.impl.rx_state == 2
+    assert s.impl.rx_state == 3
     s.impl.rx_sn = 2
     s.impl._recv_cf(b"\x21\xAA") # Wrong SN
     assert s.impl.rx_state == 0
