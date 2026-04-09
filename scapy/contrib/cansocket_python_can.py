@@ -23,7 +23,7 @@ from scapy.config import conf
 from scapy.supersocket import SuperSocket
 from scapy.layers.can import CAN
 from scapy.packet import Packet
-from scapy.error import warning
+from scapy.error import log_runtime, warning
 from typing import (
     List,
     Type,

@@ -2953,11 +2953,11 @@ with ISOTPSoftSocket(TestSocket(CAN), tx_id=0x123) as s:
 = _recv_fc / _recv_sf / _recv_ff / _recv_cf edge cases
 with ISOTPSoftSocket(TestSocket(CAN), rx_id=0x123) as s:
     # _recv_fc short
-    s.impl.tx_state = 3 # ISOTP_WAIT_FC
+    s.impl.tx_state = 2 # ISOTP_WAIT_FC
     s.impl._recv_fc(b"\x30\x00")
     assert s.impl.tx_state == 0
     # _recv_fc unknown
-    s.impl.tx_state = 3
+    s.impl.tx_state = 2
     s.impl._recv_fc(b"\x3F\x00\x00")
     assert s.impl.tx_state == 0
     # _recv_sf FD
