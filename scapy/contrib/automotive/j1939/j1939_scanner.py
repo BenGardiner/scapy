@@ -287,8 +287,8 @@ def _pre_probe_flush(sock):
     """
     try:
         sock.select([sock], 0)
-    except Exception:
-        pass
+    except Exception as e:
+        log_j1939.debug("drain_kernel_buffer: select() failed: %s", e)
 
 
 # --- Socketcan filter helpers

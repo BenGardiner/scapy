@@ -590,8 +590,8 @@ class ISOTPSocketImplementation:
         # adapter.  This drain frees buffer space *before* we send.
         try:
             self.can_socket.select([self.can_socket], 0)
-        except Exception:
-            pass
+        except Exception as e:
+            log_isotp.debug("Initial buffer drain failed: %s", e)
 
         # Schedule initial callbacks with timeout=0 so they fire on
         # the very next TimeoutScheduler._poll() cycle, minimising

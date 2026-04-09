@@ -490,8 +490,8 @@ class PythonCANSocket(SuperSocket):
         # to any shared socket instances before we unregister.
         try:
             SocketsPool.multiplex_rx_packets()
-        except Exception:
-            pass
+        except Exception as e:
+            warning("[CLOSE] final multiplex_rx_packets failed: %s" % e)
         super(PythonCANSocket, self).close()
         self.can_iface.shutdown()
 
