@@ -137,6 +137,11 @@ PGN_ECU_ID = 0xFDC5  # 64965
 #: Bitmask for the CAN extended-frame flag (29-bit identifier)
 _CAN_EXTENDED_FLAG = 0x4
 
+#: Bitmask for the CAN error-frame flag (bit 0 of the ``flags`` field in
+#: :class:`~scapy.layers.can.CAN`).  When set the frame represents a CAN
+#: controller error notification rather than normal bus traffic.
+_CAN_ERROR_FLAG = 0x1
+
 #: Default priority for request frames sent by the scanner
 _SCAN_PRIORITY = 6
 
@@ -204,6 +209,70 @@ _ACK_CTRL_CANNOT_RESPOND = 0x03   # Cannot Respond
 
 #: All valid CA scan method names
 SCAN_METHODS = ("addr_claim", "ecu_id", "unicast", "rts_probe", "uds", "xcp")
+
+
+# --- Bus error tracking
+
+
+class BusErrorStats(object):
+    """Accumulates CAN bus error frame statistics during a scan.
+
+    Each scanner function creates one instance and calls :meth:`record` for
+    every CAN error frame received.  At the end of a scan the caller can
+    inspect :attr:`count` and :attr:`first_id` / :attr:`last_id`.  When at
+    least one error is recorded, :meth:`warn` emits a
+    :data:`logging.WARNING`-level message via :data:`log_j1939`.
+
+    The ``BusErrorStats`` object is JSON-serialisable via :meth:`to_dict`.
+    """
+
+    __slots__ = ("count", "first_id", "last_id")
+
+    def __init__(self):
+        # type: () -> None
+        self.count = 0
+        self.first_id = None  # type: Optional[int]
+        self.last_id = None  # type: Optional[int]
+
+    def record(self, pkt):
+        # type: (CAN) -> None
+        """Record a single CAN error frame."""
+        self.count += 1
+        if self.first_id is None:
+            self.first_id = pkt.identifier
+        self.last_id = pkt.identifier
+
+    def warn(self, method_name):
+        # type: (str) -> None
+        """Emit a warning if any errors were recorded."""
+        if self.count:
+            log_j1939.warning(
+                "%s: %d CAN bus error frame(s) detected during scan",
+                method_name, self.count,
+            )
+
+    def merge(self, other):
+        # type: (BusErrorStats) -> None
+        """Merge another :class:`BusErrorStats` into this one."""
+        if other.count == 0:
+            return
+        if self.count == 0:
+            self.first_id = other.first_id
+        self.count += other.count
+        self.last_id = other.last_id
+
+    def to_dict(self):
+        # type: () -> Dict[str, object]
+        """Return a plain dict suitable for JSON serialisation."""
+        return {
+            "count": self.count,
+            "first_id": self.first_id,
+            "last_id": self.last_id,
+        }
+
+    def __repr__(self):
+        # type: () -> str
+        return "<BusErrorStats count={}>".format(self.count)
 
 
 def _build_request_payload(pgn):
@@ -431,6 +500,7 @@ def j1939_scan_passive(
     sock,  # type: SockOrFactory
     listen_time=2.0,  # type: float
     stop_event=None,  # type: Optional[Event]
+    bus_errors=None,  # type: Optional[BusErrorStats]
 ):
     # type: (...) -> Set[int]
     """Passively listen to the bus and return the set of observed source addresses.
@@ -443,14 +513,21 @@ def j1939_scan_passive(
     :param sock: raw CAN socket **or** zero-argument callable returning one
     :param listen_time: seconds to collect background traffic
     :param stop_event: optional :class:`threading.Event` to abort early
+    :param bus_errors: optional :class:`BusErrorStats` accumulator; when
+                       ``None`` a fresh instance is created internally
     :returns: set of observed source addresses (integers)
     """
+    if bus_errors is None:
+        bus_errors = BusErrorStats()
     active_sock, close_sock = _resolve_broadcast_sock(sock)
     try:
         seen = set()  # type: Set[int]
 
         def _rx(pkt):
             # type: (CAN) -> None
+            if pkt.flags & _CAN_ERROR_FLAG:
+                bus_errors.record(pkt)
+                return
             if stop_event is not None and stop_event.is_set():
                 return
             if not (pkt.flags & _CAN_EXTENDED_FLAG):
@@ -462,6 +539,7 @@ def j1939_scan_passive(
         log_j1939.debug(
             "passive: observed %d SA(s): %s", len(seen), [hex(s) for s in sorted(seen)]
         )
+        bus_errors.warn("passive")
         return seen
     finally:
         if close_sock:
@@ -481,6 +559,7 @@ def j1939_scan_addr_claim(
     bitrate=_J1939_DEFAULT_BITRATE,  # type: int
     busload=_J1939_DEFAULT_BUSLOAD,  # type: float
     priority=_SCAN_PRIORITY,  # type: int
+    bus_errors=None,  # type: Optional[BusErrorStats]
 ):
     # type: (...) -> Dict[int, List[CAN]]
     """Enumerate CAs via a global Request for Address Claimed (PGN 60928).
@@ -502,9 +581,13 @@ def j1939_scan_addr_claim(
     :param bitrate: CAN bus bitrate in bit/s (default 250000).
     :param busload: maximum scanner bus-load fraction (default 0.05).
     :param priority: J1939 message priority (0–7, default 6)
+    :param bus_errors: optional :class:`BusErrorStats` accumulator; when
+                       ``None`` a fresh instance is created internally
     :returns: dict mapping responder source address (int) to a list of
               matching CAN replies
     """
+    if bus_errors is None:
+        bus_errors = BusErrorStats()
     if src_addrs is None:
         src_addrs = J1939_DIAGADAPTERS_ADDRESSES
     payload = _build_request_payload(PGN_ADDRESS_CLAIMED)
@@ -526,6 +609,9 @@ def j1939_scan_addr_claim(
 
             def _rx(pkt):
                 # type: (CAN) -> None
+                if pkt.flags & _CAN_ERROR_FLAG:
+                    bus_errors.record(pkt)
+                    return
                 if not (pkt.flags & _CAN_EXTENDED_FLAG):
                     return
                 if stop_event is not None and stop_event.is_set():
@@ -549,6 +635,7 @@ def j1939_scan_addr_claim(
             if _extra > 0.0:
                 time.sleep(_extra)
 
+        bus_errors.warn("addr_claim")
         return found
     finally:
         if close_sock:
@@ -568,6 +655,7 @@ def j1939_scan_ecu_id(
     bitrate=_J1939_DEFAULT_BITRATE,  # type: int
     busload=_J1939_DEFAULT_BUSLOAD,  # type: float
     priority=_SCAN_PRIORITY,  # type: int
+    bus_errors=None,  # type: Optional[BusErrorStats]
 ):
     # type: (...) -> Dict[int, List[CAN]]
     """Enumerate CAs via a global Request for ECU Identification (PGN 64965).
@@ -586,9 +674,13 @@ def j1939_scan_ecu_id(
     :param bitrate: CAN bus bitrate in bit/s (default 250000).
     :param busload: maximum scanner bus-load fraction (default 0.05).
     :param priority: J1939 message priority (0–7, default 6)
+    :param bus_errors: optional :class:`BusErrorStats` accumulator; when
+                       ``None`` a fresh instance is created internally
     :returns: dict mapping responder source address (int) to a list of
               matching CAN replies
     """
+    if bus_errors is None:
+        bus_errors = BusErrorStats()
     if src_addrs is None:
         src_addrs = J1939_DIAGADAPTERS_ADDRESSES
     payload = _build_request_payload(PGN_ECU_ID)
@@ -610,6 +702,9 @@ def j1939_scan_ecu_id(
 
             def _rx(pkt):
                 # type: (CAN) -> None
+                if pkt.flags & _CAN_ERROR_FLAG:
+                    bus_errors.record(pkt)
+                    return
                 if not (pkt.flags & _CAN_EXTENDED_FLAG):
                     return
                 if stop_event is not None and stop_event.is_set():
@@ -642,6 +737,7 @@ def j1939_scan_ecu_id(
             if _extra > 0.0:
                 time.sleep(_extra)
 
+        bus_errors.warn("ecu_id")
         return found
     finally:
         if close_sock:
@@ -662,6 +758,7 @@ def j1939_scan_unicast(
     bitrate=_J1939_DEFAULT_BITRATE,  # type: int
     busload=_J1939_DEFAULT_BUSLOAD,  # type: float
     priority=_SCAN_PRIORITY,  # type: int
+    bus_errors=None,  # type: Optional[BusErrorStats]
 ):
     # type: (...) -> Dict[int, List[CAN]]
     """Enumerate CAs by sending unicast Address Claim Requests to each DA.
@@ -695,9 +792,13 @@ def j1939_scan_unicast(
     :param busload: maximum fraction of bus capacity the scanner may consume
                     (default 0.05 = 5 %)
     :param priority: J1939 message priority (0–7, default 6)
+    :param bus_errors: optional :class:`BusErrorStats` accumulator; when
+                       ``None`` a fresh instance is created internally
     :returns: dict mapping responder source address (int) to a list of
               matching CAN replies
     """
+    if bus_errors is None:
+        bus_errors = BusErrorStats()
     if src_addrs is None:
         src_addrs = J1939_DIAGADAPTERS_ADDRESSES
     found = {}  # type: Dict[int, List[CAN]]
@@ -716,6 +817,9 @@ def j1939_scan_unicast(
 
         def _rx(pkt, _da=_da):
             # type: (CAN, int) -> None
+            if pkt.flags & _CAN_ERROR_FLAG:
+                bus_errors.record(pkt)
+                return
             if not (pkt.flags & _CAN_EXTENDED_FLAG):
                 return
             _, pf, ps, sa = _j1939_decode_can_id(pkt.identifier)
@@ -755,6 +859,7 @@ def j1939_scan_unicast(
         if _extra > 0.0:
             time.sleep(_extra)
 
+    bus_errors.warn("unicast")
     return found
 
 
@@ -772,6 +877,7 @@ def j1939_scan_rts_probe(
     bitrate=_J1939_DEFAULT_BITRATE,  # type: int
     busload=_J1939_DEFAULT_BUSLOAD,  # type: float
     priority=_SCAN_PRIORITY,  # type: int
+    bus_errors=None,  # type: Optional[BusErrorStats]
 ):
     # type: (...) -> Dict[int, List[CAN]]
     """Enumerate CAs by sending minimal TP.CM_RTS frames to each DA.
@@ -802,9 +908,13 @@ def j1939_scan_rts_probe(
     :param busload: maximum fraction of bus capacity the scanner may consume
                     (default 0.05 = 5 %)
     :param priority: J1939 message priority (0–7, default 6)
+    :param bus_errors: optional :class:`BusErrorStats` accumulator; when
+                       ``None`` a fresh instance is created internally
     :returns: dict mapping responder source address (int) to a list of
               matching CAN replies
     """
+    if bus_errors is None:
+        bus_errors = BusErrorStats()
     if src_addrs is None:
         src_addrs = J1939_DIAGADAPTERS_ADDRESSES
     found = {}  # type: Dict[int, List[CAN]]
@@ -837,6 +947,9 @@ def j1939_scan_rts_probe(
 
         def _rx(pkt, _da=_da):
             # type: (CAN, int) -> None
+            if pkt.flags & _CAN_ERROR_FLAG:
+                bus_errors.record(pkt)
+                return
             if not (pkt.flags & _CAN_EXTENDED_FLAG):
                 return
             _, pf, ps, sa = _j1939_decode_can_id(pkt.identifier)
@@ -898,6 +1011,7 @@ def j1939_scan_rts_probe(
         if _extra > 0.0:
             time.sleep(_extra)
 
+    bus_errors.warn("rts_probe")
     return found
 
 
@@ -918,6 +1032,7 @@ def j1939_scan_uds(
     broadcast_listen_time=1.0,  # type: float
     diag_pgn=J1939_PF_DIAG_A,  # type: int
     priority=_SCAN_PRIORITY,  # type: int
+    bus_errors=None,  # type: Optional[BusErrorStats]
 ):
     # type: (...) -> Dict[int, List[CAN]]
     """Enumerate CAs by sending a UDS TesterPresent request to each DA.
@@ -957,9 +1072,13 @@ def j1939_scan_uds(
     :param diag_pgn: PF byte for UDS diagnostic messages (default 0xDA).
                      Functional addressing uses ``diag_pgn | 0x01``.
     :param priority: J1939 message priority (0–7, default 6)
+    :param bus_errors: optional :class:`BusErrorStats` accumulator; when
+                       ``None`` a fresh instance is created internally
     :returns: dict mapping responder source address (int) to a list of
               matching CAN replies
     """
+    if bus_errors is None:
+        bus_errors = BusErrorStats()
     if src_addrs is None:
         src_addrs = J1939_DIAGADAPTERS_ADDRESSES
     found = {}  # type: Dict[int, List[CAN]]
@@ -969,6 +1088,9 @@ def j1939_scan_uds(
         try:
             def _rx_functional(pkt):
                 # type: (CAN) -> None
+                if pkt.flags & _CAN_ERROR_FLAG:
+                    bus_errors.record(pkt)
+                    return
                 if not (pkt.flags & _CAN_EXTENDED_FLAG):
                     return
                 if stop_event is not None and stop_event.is_set():
@@ -1021,6 +1143,9 @@ def j1939_scan_uds(
 
         def _rx(pkt, _da=_da):
             # type: (CAN, int) -> None
+            if pkt.flags & _CAN_ERROR_FLAG:
+                bus_errors.record(pkt)
+                return
             if not (pkt.flags & _CAN_EXTENDED_FLAG):
                 return
             _, pf, ps, sa = _j1939_decode_can_id(pkt.identifier)
@@ -1061,6 +1186,7 @@ def j1939_scan_uds(
         if _extra > 0.0:
             time.sleep(_extra)
 
+    bus_errors.warn("uds")
     return found
 
 
@@ -1079,6 +1205,7 @@ def j1939_scan_xcp(
     busload=_J1939_DEFAULT_BUSLOAD,  # type: float
     diag_pgn=J1939_PF_XCP,  # type: int
     priority=_SCAN_PRIORITY,  # type: int
+    bus_errors=None,  # type: Optional[BusErrorStats]
 ):
     # type: (...) -> Dict[int, List[CAN]]
     """Enumerate CAs by sending an XCP CONNECT command to each DA.
@@ -1109,9 +1236,13 @@ def j1939_scan_xcp(
     :param diag_pgn: PF byte for XCP diagnostic messages (default 0xEF,
                      Proprietary A peer-to-peer addressing)
     :param priority: J1939 message priority (0–7, default 6)
+    :param bus_errors: optional :class:`BusErrorStats` accumulator; when
+                       ``None`` a fresh instance is created internally
     :returns: dict mapping responder source address (int) to a list of
               matching CAN replies
     """
+    if bus_errors is None:
+        bus_errors = BusErrorStats()
     if src_addrs is None:
         src_addrs = J1939_XCP_SRC_ADDRS
     found = {}  # type: Dict[int, List[CAN]]
@@ -1129,6 +1260,9 @@ def j1939_scan_xcp(
 
         def _rx(pkt, _da=_da):
             # type: (CAN, int) -> None
+            if pkt.flags & _CAN_ERROR_FLAG:
+                bus_errors.record(pkt)
+                return
             if not (pkt.flags & _CAN_EXTENDED_FLAG):
                 return
             _, pf, ps, sa = _j1939_decode_can_id(pkt.identifier)
@@ -1167,6 +1301,7 @@ def j1939_scan_xcp(
         if _extra > 0.0:
             time.sleep(_extra)
 
+    bus_errors.warn("xcp")
     return found
 
 
@@ -1261,8 +1396,12 @@ def j1939_scan(
                      active scan methods.
     :returns: dict mapping SA (int) to
               ``{"methods": List[str], "packets": List[List[CAN]],
-              "src_addrs": List[List[int]]}``;
-              or a ``str`` when *output_format* is ``"text"`` or ``"json"``
+              "src_addrs": List[List[int]]}``.
+              The returned dict also contains a special key
+              ``"bus_errors"`` (:class:`BusErrorStats`) with aggregated
+              CAN bus error statistics across all scan methods.
+              Returns a ``str`` when *output_format* is ``"text"`` or
+              ``"json"``.
 
     Example::
 
@@ -1277,6 +1416,8 @@ def j1939_scan(
         log_j1939.setLevel(logging.DEBUG)
     if methods is None:
         methods = list(SCAN_METHODS)
+
+    bus_errors = BusErrorStats()
 
     for m in methods:
         if m not in SCAN_METHODS:
@@ -1311,7 +1452,8 @@ def j1939_scan(
         if stop_event is not None and stop_event.is_set():
             return {}
         noise_ids = j1939_scan_passive(
-            sock, listen_time=noise_listen_time, stop_event=stop_event
+            sock, listen_time=noise_listen_time, stop_event=stop_event,
+            bus_errors=bus_errors,
         )
         if verbose and noise_ids:
             log_j1939.info(
@@ -1378,6 +1520,7 @@ def j1939_scan(
                 bitrate=bitrate,
                 busload=busload,
                 priority=priority,
+                bus_errors=bus_errors,
             ),
             "addr_claim",
             with_src_addr=True,
@@ -1397,6 +1540,7 @@ def j1939_scan(
                 bitrate=bitrate,
                 busload=busload,
                 priority=priority,
+                bus_errors=bus_errors,
             ),
             "ecu_id",
             with_src_addr=True,
@@ -1417,6 +1561,7 @@ def j1939_scan(
                 bitrate=bitrate,
                 busload=busload,
                 priority=priority,
+                bus_errors=bus_errors,
             ),
             "unicast",
             with_src_addr=True,
@@ -1437,6 +1582,7 @@ def j1939_scan(
                 bitrate=bitrate,
                 busload=busload,
                 priority=priority,
+                bus_errors=bus_errors,
             ),
             "rts_probe",
             with_src_addr=True,
@@ -1458,6 +1604,7 @@ def j1939_scan(
             "skip_functional": skip_functional,
             "broadcast_listen_time": broadcast_listen_time,
             "priority": priority,
+            "bus_errors": bus_errors,
         }
         if diag_pgn is not None:
             uds_kwargs["diag_pgn"] = diag_pgn
@@ -1477,72 +1624,92 @@ def j1939_scan(
             "bitrate": bitrate,
             "busload": busload,
             "priority": priority,
+            "bus_errors": bus_errors,
         }
         if diag_pgn is not None:
             xcp_kwargs["diag_pgn"] = diag_pgn
         _merge(j1939_scan_xcp(**xcp_kwargs), "xcp", with_src_addr=True)
 
+    results["bus_errors"] = bus_errors  # type: ignore[assignment]
+
     if output_format == "text":
-        return _generate_text_output(results)
+        return _generate_text_output(results, bus_errors)
     if output_format == "json":
-        return _generate_json_output(results)
+        return _generate_json_output(results, bus_errors)
     return results
 
 
-def _generate_text_output(results):
-    # type: (Dict[int, Dict[str, object]]) -> str
+def _generate_text_output(results, bus_errors=None):
+    # type: (Dict[int, Dict[str, object]], Optional[BusErrorStats]) -> str
     """Format *results* as a human-readable string.
 
     :param results: dict returned by :func:`j1939_scan`
+    :param bus_errors: optional :class:`BusErrorStats` to include in output
     :returns: multiline text summary
     """
-    if not results:
-        return "No J1939 Controller Applications found."
-    lines = [
-        "Found {} J1939 Controller Application(s):".format(len(results))
-    ]
-    for sa in sorted(results):
-        info = results[sa]
-        methods = cast(List[str], info["methods"])
-        src_addrs = cast(List, info["src_addrs"])
-        lines.append(
-            "\nSA: 0x{:02X}".format(sa)
-        )
-        for method, s_addrs in zip(methods, src_addrs):
-            s_sas = ", ".join("0x{:02X}".format(s) for s in s_addrs)
+    # Filter out the special "bus_errors" key for iteration
+    sa_results = {k: v for k, v in results.items() if k != "bus_errors"}
+    if not sa_results:
+        text = "No J1939 Controller Applications found."
+    else:
+        lines = [
+            "Found {} J1939 Controller Application(s):".format(len(sa_results))
+        ]
+        for sa in sorted(sa_results):
+            info = sa_results[sa]
+            methods = cast(List[str], info["methods"])
+            src_addrs = cast(List, info["src_addrs"])
             lines.append(
-                "  Method: {}{}".format(
-                    method,
-                    " (scanner SA: {})".format(s_sas) if s_sas else "",
-                )
+                "\nSA: 0x{:02X}".format(sa)
             )
-    return "\n".join(lines)
+            for method, s_addrs in zip(methods, src_addrs):
+                s_sas = ", ".join("0x{:02X}".format(s) for s in s_addrs)
+                lines.append(
+                    "  Method: {}{}".format(
+                        method,
+                        " (scanner SA: {})".format(s_sas) if s_sas else "",
+                    )
+                )
+        text = "\n".join(lines)
+    if bus_errors is not None and bus_errors.count:
+        text += "\n\nBus errors: {} CAN error frame(s) during scan".format(
+            bus_errors.count
+        )
+    return text
 
 
-def _generate_json_output(results):
-    # type: (Dict[int, Dict[str, object]]) -> str
+def _generate_json_output(results, bus_errors=None):
+    # type: (Dict[int, Dict[str, object]], Optional[BusErrorStats]) -> str
     """Format *results* as a JSON string.
 
     Packet objects are not JSON-serialisable and are omitted; the output
-    contains SA, methods, and src_addrs only.
+    contains SA, methods, src_addrs, and bus_errors.
 
     :param results: dict returned by :func:`j1939_scan`
+    :param bus_errors: optional :class:`BusErrorStats` to include in output
     :returns: JSON string
     """
+    # Filter out the special "bus_errors" key for iteration
+    sa_results = {k: v for k, v in results.items() if k != "bus_errors"}
     out = []  # type: List[Dict[str, object]]
-    for sa in sorted(results):
-        info = results[sa]
+    for sa in sorted(sa_results):
+        info = sa_results[sa]
         entry = {
             "sa": sa,
             "methods": list(cast(List[str], info["methods"])),
             "src_addrs": [list(s) for s in cast(List, info["src_addrs"])],
         }  # type: Dict[str, object]
         out.append(entry)
-    return json.dumps(out)
+    wrapper = {
+        "results": out,
+        "bus_errors": bus_errors.to_dict() if bus_errors is not None else None,
+    }  # type: Dict[str, object]
+    return json.dumps(wrapper)
 
 
 __all__ = [
     "SockOrFactory",
+    "BusErrorStats",
     "j1939_scan",
     "j1939_scan_passive",
     "j1939_scan_addr_claim",

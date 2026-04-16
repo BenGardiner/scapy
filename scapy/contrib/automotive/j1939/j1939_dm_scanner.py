@@ -61,6 +61,7 @@ from scapy.contrib.automotive.j1939.j1939_scanner import (
     _inter_probe_delay,
     _pre_probe_flush,
     _resolve_probe_sock,
+    BusErrorStats,
     SockOrFactory,
 )
 
@@ -77,6 +78,9 @@ _ACK_CTRL_NACK = 0x01
 
 #: Bitmask for the CAN extended-frame flag (29-bit identifier)
 _CAN_EXTENDED_FLAG = 0x4
+
+#: Bitmask for the CAN error-frame flag
+_CAN_ERROR_FLAG = 0x1
 
 #: Default priority for request frames sent by the DM scanner
 _DM_SCAN_PRIORITY = 6
@@ -157,9 +161,11 @@ class DmScanResult(object):
     :param packet: the first CAN response received (``None`` on timeout)
     :param error: ``None`` when supported; ``"NACK"`` for negative ack;
                   ``"Timeout"`` when no reply
+    :param bus_errors: :class:`BusErrorStats` with CAN error frame statistics
+                       observed while probing this PGN
     """
 
-    __slots__ = ("dm_name", "pgn", "supported", "packet", "error")
+    __slots__ = ("dm_name", "pgn", "supported", "packet", "error", "bus_errors")
 
     def __init__(
         self,
@@ -168,6 +174,7 @@ class DmScanResult(object):
         supported,  # type: bool
         packet=None,  # type: Optional[CAN]
         error=None,  # type: Optional[str]
+        bus_errors=None,  # type: Optional[BusErrorStats]
     ):
         # type: (...) -> None
         self.dm_name = dm_name
@@ -175,11 +182,16 @@ class DmScanResult(object):
         self.supported = supported
         self.packet = packet
         self.error = error
+        self.bus_errors = bus_errors if bus_errors is not None else BusErrorStats()
 
     def __repr__(self):
         # type: () -> str
-        return "<DmScanResult dm={} pgn=0x{:04X} supported={} error={}>".format(
-            self.dm_name, self.pgn, self.supported, self.error
+        return (
+            "<DmScanResult dm={} pgn=0x{:04X} supported={} error={}"
+            " bus_errors={}>".format(
+                self.dm_name, self.pgn, self.supported, self.error,
+                self.bus_errors.count,
+            )
         )
 
 
@@ -238,8 +250,11 @@ def j1939_scan_dm_pgn(
     :param priority: J1939 message priority (0–7, default 6)
     :returns: :class:`DmScanResult` describing the outcome for this PGN
     """
+    bus_errors = BusErrorStats()
+
     if stop_event is not None and stop_event.is_set():
-        return DmScanResult(dm_name, pgn, False, error="Aborted")
+        return DmScanResult(dm_name, pgn, False, error="Aborted",
+                            bus_errors=bus_errors)
 
     can_id = _j1939_can_id(priority, J1939_PF_REQUEST, target_da, src_addr)
     payload = struct.pack("<I", pgn)[:3]
@@ -251,6 +266,9 @@ def j1939_scan_dm_pgn(
         # type: (CAN) -> None
         if result:
             return
+        if pkt.flags & _CAN_ERROR_FLAG:
+            bus_errors.record(pkt)
+            return
         if stop_event is not None and stop_event.is_set():
             return
         if not (pkt.flags & _CAN_EXTENDED_FLAG):
@@ -260,14 +278,16 @@ def j1939_scan_dm_pgn(
             return
         if _pgn_matches(pf, ps, pgn):
             log_j1939.debug("dm_scan: positive response SA=0x%02X PGN=0x%04X", sa, pgn)
-            result.append(DmScanResult(dm_name, pgn, True, packet=pkt))
+            result.append(DmScanResult(dm_name, pgn, True, packet=pkt,
+                                       bus_errors=bus_errors))
             return
         if pf == J1939_PF_ACK:
             data = bytes(pkt.data)
             if data and data[0] == _ACK_CTRL_NACK:
                 log_j1939.debug("dm_scan: NACK from SA=0x%02X PGN=0x%04X", sa, pgn)
                 result.append(
-                    DmScanResult(dm_name, pgn, False, packet=pkt, error="NACK")
+                    DmScanResult(dm_name, pgn, False, packet=pkt, error="NACK",
+                                 bus_errors=bus_errors)
                 )
 
     def _send_probe():
@@ -291,11 +311,14 @@ def j1939_scan_dm_pgn(
     if _extra > 0.0:
         time.sleep(_extra)
 
+    bus_errors.warn("dm_scan[{}]".format(dm_name))
+
     if result:
         return result[0]
 
     log_j1939.debug("dm_scan: timeout waiting for DA=0x%02X PGN=0x%04X", target_da, pgn)
-    return DmScanResult(dm_name, pgn, False, error="Timeout")
+    return DmScanResult(dm_name, pgn, False, error="Timeout",
+                        bus_errors=bus_errors)
 
 
 # --- Top-level DM scanner
@@ -357,12 +380,17 @@ def j1939_scan_dm(
                               *reconnect_handler* (default 5).  A 1-second
                               pause is inserted between retries.
     :param priority: J1939 message priority (0–7, default 6)
-    :returns: dict mapping each DM name (str) to its :class:`DmScanResult`
+    :returns: dict mapping each DM name (str) to its :class:`DmScanResult`.
+              The returned dict also contains a special key
+              ``"bus_errors"`` with an aggregated :class:`BusErrorStats`
+              instance covering all probed PGNs.
 
     Example::
 
         >>> results = j1939_scan_dm(sock, target_da=0x00)
         >>> for name, res in sorted(results.items()):
+        ...     if name == "bus_errors":
+        ...         continue
         ...     if res.supported:
         ...         print("[+] {} (PGN 0x{:04X})".format(name, res.pgn))
 
@@ -390,6 +418,7 @@ def j1939_scan_dm(
             )
 
     results = {}  # type: Dict[str, DmScanResult]
+    total_bus_errors = BusErrorStats()
     active_sock = sock  # may be replaced if reconnect_handler is used
     num_pgns = len(dms)
 
@@ -408,6 +437,7 @@ def j1939_scan_dm(
             busload=busload,
             priority=priority,
         )
+        total_bus_errors.merge(results[dm_name].bus_errors)
         # Between probes: reset target and/or reconnect if handlers provided
         if i < num_pgns - 1:
             if reset_handler is not None:
@@ -434,6 +464,7 @@ def j1939_scan_dm(
                         else:
                             time.sleep(1)
 
+    results["bus_errors"] = total_bus_errors  # type: ignore[assignment]
     return results
 
 
