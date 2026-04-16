@@ -26,6 +26,7 @@ from scapy.contrib.automotive.j1939.j1939_scanner import (
     j1939_scan_rts_probe,
     j1939_scan_uds,
     j1939_scan_xcp,
+    BusErrorStats,
     J1939_DIAGADAPTERS_ADDRESSES,
     J1939_XCP_SRC_ADDRS,
     PGN_ECU_ID,
@@ -50,6 +51,7 @@ from scapy.contrib.automotive.j1939.j1939_scanner import (
     _ACK_CTRL_NACK,
     _ACK_CTRL_ACCESS_DENIED,
     _ACK_CTRL_CANNOT_RESPOND,
+    _CAN_ERROR_FLAG,
     _generate_text_output,
     _generate_json_output,
 )
@@ -1113,7 +1115,9 @@ def test_j1939_scan_pacing_params():
     found = j1939_scan(sock, methods=["unicast"], scan_range=[],
                        bitrate=250000, busload=0.05, noise_ids=set(),
                        sniff_time=0.02)
-    assert found == {}
+    assert "bus_errors" in found
+    sa_results = {k: v for k, v in found.items() if k != "bus_errors"}
+    assert sa_results == {}
     cleanup_testsockets()
 
 test_j1939_scan_pacing_params()
@@ -1471,7 +1475,9 @@ def test_j1939_scan_bitrate_from_socket():
     sock.bitrate = 500000
     found = j1939_scan(sock, methods=["unicast"], scan_range=[],
                        noise_ids=set(), sniff_time=0.02)
-    assert found == {}
+    assert "bus_errors" in found
+    sa_results = {k: v for k, v in found.items() if k != "bus_errors"}
+    assert sa_results == {}
     cleanup_testsockets()
 
 test_j1939_scan_bitrate_from_socket()
@@ -2121,10 +2127,12 @@ found = j1939_scan(sock, methods=["addr_claim"], src_addrs=[0xF9],
                    output_format="json")
 assert isinstance(found, str), "json output should be str"
 parsed = _json.loads(found)
-assert isinstance(parsed, list)
-assert len(parsed) == 1
-assert parsed[0]["sa"] == 0x42
-assert parsed[0]["methods"] == ["addr_claim"]
+assert isinstance(parsed, dict)
+assert "results" in parsed
+assert "bus_errors" in parsed
+assert len(parsed["results"]) == 1
+assert parsed["results"][0]["sa"] == 0x42
+assert parsed["results"][0]["methods"] == ["addr_claim"]
 cleanup_testsockets()
 
 = j1939_scan: output_format="text" with empty results
@@ -2143,7 +2151,9 @@ found = j1939_scan(sock, methods=["addr_claim"], src_addrs=[0xF9],
                    output_format="json")
 assert isinstance(found, str)
 parsed = _json.loads(found)
-assert parsed == []
+assert isinstance(parsed, dict)
+assert parsed["results"] == []
+assert parsed["bus_errors"]["count"] == 0
 cleanup_testsockets()
 
 = _generate_text_output: formats multiple SAs
@@ -2168,10 +2178,11 @@ results = {
 }
 j = _generate_json_output(results)
 parsed = _json.loads(j)
-assert len(parsed) == 1
-assert parsed[0]["sa"] == 0x10
-assert parsed[0]["methods"] == ["unicast"]
-assert parsed[0]["src_addrs"] == [[0xF1]]
+assert isinstance(parsed, dict)
+assert len(parsed["results"]) == 1
+assert parsed["results"][0]["sa"] == 0x10
+assert parsed["results"][0]["methods"] == ["unicast"]
+assert parsed["results"][0]["src_addrs"] == [[0xF1]]
 
 
 + verbose log level control
@@ -2231,3 +2242,151 @@ stop_evt = Event()
 stop_evt.set()
 res = j1939_scan_passive(TestSocket(CAN), listen_time=0.1, stop_event=stop_evt)
 assert res == set()
+
+
++ Bus Error Detection
+~ automotive_comm
+
+= BusErrorStats: basic record and warn
+from scapy.contrib.automotive.j1939.j1939_scanner import BusErrorStats
+stats = BusErrorStats()
+assert stats.count == 0
+assert stats.first_id is None
+assert stats.last_id is None
+err_pkt = CAN(flags="error", identifier=0x20040004)
+stats.record(err_pkt)
+assert stats.count == 1
+assert stats.first_id == 0x20040004
+assert stats.last_id == 0x20040004
+err_pkt2 = CAN(flags="error", identifier=0x20040005)
+stats.record(err_pkt2)
+assert stats.count == 2
+assert stats.first_id == 0x20040004
+assert stats.last_id == 0x20040005
+
+= BusErrorStats: merge
+s1 = BusErrorStats()
+s2 = BusErrorStats()
+s1.record(CAN(flags="error", identifier=0x01))
+s2.record(CAN(flags="error", identifier=0x02))
+s2.record(CAN(flags="error", identifier=0x03))
+s1.merge(s2)
+assert s1.count == 3
+assert s1.first_id == 0x01
+assert s1.last_id == 0x03
+
+= BusErrorStats: merge empty
+s1 = BusErrorStats()
+s2 = BusErrorStats()
+s1.merge(s2)
+assert s1.count == 0
+s3 = BusErrorStats()
+s4 = BusErrorStats()
+s4.record(CAN(flags="error", identifier=0x42))
+s3.merge(s4)
+assert s3.count == 1
+assert s3.first_id == 0x42
+
+= BusErrorStats: to_dict
+s = BusErrorStats()
+d = s.to_dict()
+assert d == {"count": 0, "first_id": None, "last_id": None}
+s.record(CAN(flags="error", identifier=0xAB))
+d = s.to_dict()
+assert d == {"count": 1, "first_id": 0xAB, "last_id": 0xAB}
+
+= BusErrorStats: warn emits log_j1939.warning on errors
+import logging
+from io import StringIO
+_warn_stream = StringIO()
+_warn_handler = logging.StreamHandler(_warn_stream)
+_warn_handler.setLevel(logging.WARNING)
+log_j1939_logger.addHandler(_warn_handler)
+s = BusErrorStats()
+s.record(CAN(flags="error", identifier=0x01))
+s.warn("test_scan")
+log_j1939_logger.removeHandler(_warn_handler)
+assert "test_scan" in _warn_stream.getvalue()
+assert "1 CAN bus error" in _warn_stream.getvalue()
+
+= BusErrorStats: warn does not log when no errors
+_warn_stream2 = StringIO()
+_warn_handler2 = logging.StreamHandler(_warn_stream2)
+_warn_handler2.setLevel(logging.WARNING)
+log_j1939_logger.addHandler(_warn_handler2)
+s = BusErrorStats()
+s.warn("quiet_scan")
+log_j1939_logger.removeHandler(_warn_handler2)
+assert _warn_stream2.getvalue() == ""
+
+= passive: bus error frames are counted, not treated as SAs
+sock = TestSocket(CAN)
+# Send a CAN error frame
+sock.ins.send(bytes(CAN(flags="error", identifier=0x20040004, data=b'\x00' * 8)))
+# Send a normal extended frame so we have a result
+resp_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x42)
+sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8)))
+bus_errs = BusErrorStats()
+seen = j1939_scan_passive(sock, listen_time=0.1, bus_errors=bus_errs)
+assert 0x42 in seen, "Expected SA=0x42 in passive scan results"
+assert bus_errs.count == 1, "Expected 1 bus error, got {}".format(bus_errs.count)
+cleanup_testsockets()
+
+= addr_claim: bus error frames are counted
+sock = TestSocket(CAN)
+sock.ins.send(bytes(CAN(flags="error", identifier=0x20040004, data=b'\x00' * 8)))
+resp_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x42)
+sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8)))
+bus_errs = BusErrorStats()
+found = j1939_scan_addr_claim(sock, listen_time=0.1, src_addrs=[0xF9], bus_errors=bus_errs)
+assert 0x42 in found
+assert bus_errs.count == 1
+cleanup_testsockets()
+
+= unicast: bus error frames are counted
+sock = TestSocket(CAN)
+sock.ins.send(bytes(CAN(flags="error", identifier=0x20040004, data=b'\x00' * 8)))
+bus_errs = BusErrorStats()
+found = j1939_scan_unicast(sock, scan_range=[0x10], sniff_time=0.05, src_addrs=[0xF9], bus_errors=bus_errs)
+assert bus_errs.count == 1
+cleanup_testsockets()
+
+= j1939_scan: bus_errors key in results
+sock = TestSocket(CAN)
+sock.ins.send(bytes(CAN(flags="error", identifier=0x20040004, data=b'\x00' * 8)))
+found = j1939_scan(sock, methods=["addr_claim"], src_addrs=[0xF9],
+                   broadcast_listen_time=0.1, noise_ids=set())
+assert "bus_errors" in found
+assert isinstance(found["bus_errors"], BusErrorStats)
+assert found["bus_errors"].count == 1
+cleanup_testsockets()
+
+= j1939_scan: text output includes bus error count
+sock = TestSocket(CAN)
+sock.ins.send(bytes(CAN(flags="error", identifier=0x20040004, data=b'\x00' * 8)))
+text_result = j1939_scan(sock, methods=["addr_claim"], src_addrs=[0xF9],
+                          broadcast_listen_time=0.1, noise_ids=set(),
+                          output_format="text")
+assert isinstance(text_result, str)
+assert "Bus errors" in text_result or "bus error" in text_result.lower()
+cleanup_testsockets()
+
+= j1939_scan: json output includes bus_errors
+import json as _json2
+sock = TestSocket(CAN)
+sock.ins.send(bytes(CAN(flags="error", identifier=0x20040004, data=b'\x00' * 8)))
+json_result = j1939_scan(sock, methods=["addr_claim"], src_addrs=[0xF9],
+                          broadcast_listen_time=0.1, noise_ids=set(),
+                          output_format="json")
+parsed = _json2.loads(json_result)
+assert "bus_errors" in parsed
+assert parsed["bus_errors"]["count"] == 1
+cleanup_testsockets()
+
+= j1939_scan: no bus errors when none present
+sock = TestSocket(CAN)
+found = j1939_scan(sock, methods=["addr_claim"], src_addrs=[0xF9],
+                   broadcast_listen_time=0.02, noise_ids=set())
+assert "bus_errors" in found
+assert found["bus_errors"].count == 0
+cleanup_testsockets()

@@ -31,6 +31,7 @@ from scapy.contrib.automotive.j1939.j1939_scanner import (
     _J1939_DEFAULT_BITRATE,
     _J1939_DEFAULT_BUSLOAD,
     _inter_probe_delay,
+    BusErrorStats,
 )
 from test.testsocket import TestSocket, SlowTestSocket, cleanup_testsockets
 
@@ -234,9 +235,12 @@ test_dm_pgn_stop_event()
 = j1939_scan_dm: scans all DMs by default and returns dict with all entries
 sock = TestSocket(CAN)
 results = j1939_scan_dm(sock, target_da=0x00, sniff_time=0.02)
-assert len(results) == len(J1939_DM_PGNS), "Expected {} results, got {}".format(len(J1939_DM_PGNS), len(results))
+dm_results = {k: v for k, v in results.items() if k != "bus_errors"}
+assert len(dm_results) == len(J1939_DM_PGNS), "Expected {} results, got {}".format(len(J1939_DM_PGNS), len(dm_results))
 for name in J1939_DM_PGNS:
     assert name in results, "Missing result for {}".format(name)
+
+assert "bus_errors" in results, "Expected bus_errors key in results"
 
 cleanup_testsockets()
 
@@ -244,6 +248,9 @@ cleanup_testsockets()
 sock = TestSocket(CAN)
 results = j1939_scan_dm(sock, target_da=0x00, sniff_time=0.02)
 for name, res in results.items():
+    if name == "bus_errors":
+        assert isinstance(res, BusErrorStats), "bus_errors not BusErrorStats"
+        continue
     assert isinstance(res, DmScanResult), "{} not DmScanResult".format(name)
 
 cleanup_testsockets()
@@ -283,8 +290,9 @@ def test_dm_scan_stop_event():
         probes = monitor.sniff(count=1, timeout=0.1)
         assert len(probes) == 0, "No probes should be sent when stop_event is set"
         # All entries should be Aborted because stop_event was set before scan
-        assert len(results) == 0 or all(
-            r.error == "Aborted" for r in results.values()
+        dm_results = {k: v for k, v in results.items() if k != "bus_errors"}
+        assert len(dm_results) == 0 or all(
+            r.error == "Aborted" for r in dm_results.values()
         ), "All results should be Aborted"
     cleanup_testsockets()
 
@@ -294,8 +302,9 @@ test_dm_scan_stop_event()
 sock = TestSocket(CAN)
 results = j1939_scan_dm(sock, target_da=0x00, dms=["DM1", "DM5"],
                         sniff_time=0.02)
-assert set(results.keys()) == {"DM1", "DM5"}, \
-    "Expected only DM1 and DM5, got {}".format(set(results.keys()))
+dm_keys = set(results.keys()) - {"bus_errors"}
+assert dm_keys == {"DM1", "DM5"}, \
+    "Expected only DM1 and DM5, got {}".format(dm_keys)
 cleanup_testsockets()
 
 
@@ -660,3 +669,55 @@ try:
     assert False
 except ValueError:
     pass
+
+
++ Bus Error Detection – DM Scanner
+~ automotive_comm
+
+= dm_scan_pgn: bus error frames are counted in DmScanResult
+sock = TestSocket(CAN)
+# Inject an error frame followed by a timeout
+sock.ins.send(bytes(CAN(flags="error", identifier=0x20040004, data=b'\x00' * 8)))
+result = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=0xFECA, dm_name="DM1",
+                           sniff_time=0.05)
+assert result.error == "Timeout"
+assert result.bus_errors.count == 1
+cleanup_testsockets()
+
+= dm_scan_pgn: bus_errors zero when no errors
+sock = TestSocket(CAN)
+result = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=0xFECA, dm_name="DM1",
+                           sniff_time=0.05)
+assert result.bus_errors.count == 0
+cleanup_testsockets()
+
+= dm_scan_pgn: bus_errors attached to positive response
+sock = TestSocket(CAN)
+sock.ins.send(bytes(CAN(flags="error", identifier=0x20040004, data=b'\x00' * 8)))
+resp_can_id = _j1939_can_id(6, 0xFE, 0xCA, 0x10)
+sock.ins.send(bytes(CAN(identifier=resp_can_id, flags="extended",
+                        data=b'\xff\xff' + b'\x00' * 6)))
+result = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=0xFECA, dm_name="DM1",
+                           sniff_time=0.1)
+assert result.supported is True
+assert result.bus_errors.count == 1
+cleanup_testsockets()
+
+= j1939_scan_dm: bus_errors aggregated across probes
+sock = TestSocket(CAN)
+# Inject error frames that will be seen during different DM probes
+sock.ins.send(bytes(CAN(flags="error", identifier=0x20040004, data=b'\x00' * 8)))
+sock.ins.send(bytes(CAN(flags="error", identifier=0x20040005, data=b'\x00' * 8)))
+results = j1939_scan_dm(sock, target_da=0x10, dms=["DM1", "DM2"],
+                        sniff_time=0.05)
+assert "bus_errors" in results
+total = results["bus_errors"]
+assert isinstance(total, BusErrorStats)
+assert total.count >= 1, "Expected at least 1 bus error"
+cleanup_testsockets()
+
+= DmScanResult: repr includes bus_errors count
+r = DmScanResult("DM1", 0xFECA, True)
+assert "bus_errors=0" in repr(r)
+r2 = DmScanResult("DM2", 0xFECB, False, error="Timeout")
+assert "bus_errors=0" in repr(r2)
