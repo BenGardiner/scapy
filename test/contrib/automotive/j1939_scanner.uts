@@ -2307,7 +2307,7 @@ s.record(CAN(flags="error", identifier=0x01))
 s.warn("test_scan")
 log_j1939_logger.removeHandler(_warn_handler)
 assert "test_scan" in _warn_stream.getvalue()
-assert "1 CAN bus error" in _warn_stream.getvalue()
+assert "1 CAN bus error frame(s) detected during scan" in _warn_stream.getvalue()
 
 = BusErrorStats: warn does not log when no errors
 _warn_stream2 = StringIO()

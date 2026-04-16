@@ -713,7 +713,7 @@ results = j1939_scan_dm(sock, target_da=0x10, dms=["DM1", "DM2"],
 assert "bus_errors" in results
 total = results["bus_errors"]
 assert isinstance(total, BusErrorStats)
-assert total.count >= 1, "Expected at least 1 bus error"
+assert total.count >= 2, "Expected at least 2 bus errors, got {}".format(total.count)
 cleanup_testsockets()
 
 = DmScanResult: repr includes bus_errors count
