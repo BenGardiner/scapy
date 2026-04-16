@@ -480,6 +480,7 @@ def j1939_scan_addr_claim(
     stop_event=None,  # type: Optional[Event]
     bitrate=_J1939_DEFAULT_BITRATE,  # type: int
     busload=_J1939_DEFAULT_BUSLOAD,  # type: float
+    priority=_SCAN_PRIORITY,  # type: int
 ):
     # type: (...) -> Dict[int, List[CAN]]
     """Enumerate CAs via a global Request for Address Claimed (PGN 60928).
@@ -500,6 +501,7 @@ def j1939_scan_addr_claim(
     :param stop_event: optional :class:`threading.Event` to abort early
     :param bitrate: CAN bus bitrate in bit/s (default 250000).
     :param busload: maximum scanner bus-load fraction (default 0.05).
+    :param priority: J1939 message priority (0–7, default 6)
     :returns: dict mapping responder source address (int) to a list of
               matching CAN replies
     """
@@ -514,7 +516,7 @@ def j1939_scan_addr_claim(
             if stop_event is not None and stop_event.is_set():
                 break
             can_id = _j1939_can_id(
-                _SCAN_PRIORITY, J1939_PF_REQUEST, J1939_GLOBAL_ADDRESS, _sa
+                priority, J1939_PF_REQUEST, J1939_GLOBAL_ADDRESS, _sa
             )
             _pre_probe_flush(active_sock)
             active_sock.send(CAN(identifier=can_id, flags="extended", data=payload))
@@ -565,6 +567,7 @@ def j1939_scan_ecu_id(
     stop_event=None,  # type: Optional[Event]
     bitrate=_J1939_DEFAULT_BITRATE,  # type: int
     busload=_J1939_DEFAULT_BUSLOAD,  # type: float
+    priority=_SCAN_PRIORITY,  # type: int
 ):
     # type: (...) -> Dict[int, List[CAN]]
     """Enumerate CAs via a global Request for ECU Identification (PGN 64965).
@@ -582,6 +585,7 @@ def j1939_scan_ecu_id(
     :param stop_event: optional :class:`threading.Event` to abort early
     :param bitrate: CAN bus bitrate in bit/s (default 250000).
     :param busload: maximum scanner bus-load fraction (default 0.05).
+    :param priority: J1939 message priority (0–7, default 6)
     :returns: dict mapping responder source address (int) to a list of
               matching CAN replies
     """
@@ -596,7 +600,7 @@ def j1939_scan_ecu_id(
             if stop_event is not None and stop_event.is_set():
                 break
             can_id = _j1939_can_id(
-                _SCAN_PRIORITY, J1939_PF_REQUEST, J1939_GLOBAL_ADDRESS, _sa
+                priority, J1939_PF_REQUEST, J1939_GLOBAL_ADDRESS, _sa
             )
             _pre_probe_flush(active_sock)
             active_sock.send(CAN(identifier=can_id, flags="extended", data=payload))
@@ -657,6 +661,7 @@ def j1939_scan_unicast(
     stop_event=None,  # type: Optional[Event]
     bitrate=_J1939_DEFAULT_BITRATE,  # type: int
     busload=_J1939_DEFAULT_BUSLOAD,  # type: float
+    priority=_SCAN_PRIORITY,  # type: int
 ):
     # type: (...) -> Dict[int, List[CAN]]
     """Enumerate CAs by sending unicast Address Claim Requests to each DA.
@@ -689,6 +694,7 @@ def j1939_scan_unicast(
     :param bitrate: CAN bus bitrate in bit/s (default 250000 for J1939)
     :param busload: maximum fraction of bus capacity the scanner may consume
                     (default 0.05 = 5 %)
+    :param priority: J1939 message priority (0–7, default 6)
     :returns: dict mapping responder source address (int) to a list of
               matching CAN replies
     """
@@ -729,7 +735,7 @@ def j1939_scan_unicast(
             # type: (int) -> None
             _pre_probe_flush(rx_sock)
             for _sa in src_addrs:
-                can_id = _j1939_can_id(_SCAN_PRIORITY, J1939_PF_REQUEST, _da, _sa)
+                can_id = _j1939_can_id(priority, J1939_PF_REQUEST, _da, _sa)
                 send_sock.send(CAN(identifier=can_id, flags="extended", data=payload))
             log_j1939.debug("unicast: probing DA=0x%02X", _da)
 
@@ -765,6 +771,7 @@ def j1939_scan_rts_probe(
     stop_event=None,  # type: Optional[Event]
     bitrate=_J1939_DEFAULT_BITRATE,  # type: int
     busload=_J1939_DEFAULT_BUSLOAD,  # type: float
+    priority=_SCAN_PRIORITY,  # type: int
 ):
     # type: (...) -> Dict[int, List[CAN]]
     """Enumerate CAs by sending minimal TP.CM_RTS frames to each DA.
@@ -794,6 +801,7 @@ def j1939_scan_rts_probe(
     :param bitrate: CAN bus bitrate in bit/s (default 250000 for J1939)
     :param busload: maximum fraction of bus capacity the scanner may consume
                     (default 0.05 = 5 %)
+    :param priority: J1939 message priority (0–7, default 6)
     :returns: dict mapping responder source address (int) to a list of
               matching CAN replies
     """
@@ -869,8 +877,8 @@ def j1939_scan_rts_probe(
             # type: (int) -> None
             _pre_probe_flush(rx_sock)
             for _sa in src_addrs:
-                # CAN-ID: priority=7, PF=0xEC (TP.CM), DA=da, SA=_sa
-                can_id = _j1939_can_id(7, J1939_TP_CM_PF, _da, _sa)
+                # CAN-ID: priority from parameter, PF=0xEC (TP.CM), DA=da, SA=_sa
+                can_id = _j1939_can_id(priority, J1939_TP_CM_PF, _da, _sa)
                 send_sock.send(CAN(identifier=can_id, flags="extended", data=rts_payload))
             log_j1939.debug("rts_probe: probing DA=0x%02X", _da)
 
@@ -909,6 +917,7 @@ def j1939_scan_uds(
     skip_functional=False,  # type: bool
     broadcast_listen_time=1.0,  # type: float
     diag_pgn=J1939_PF_DIAG_A,  # type: int
+    priority=_SCAN_PRIORITY,  # type: int
 ):
     # type: (...) -> Dict[int, List[CAN]]
     """Enumerate CAs by sending a UDS TesterPresent request to each DA.
@@ -947,6 +956,7 @@ def j1939_scan_uds(
                                   broadcast functional probe
     :param diag_pgn: PF byte for UDS diagnostic messages (default 0xDA).
                      Functional addressing uses ``diag_pgn | 0x01``.
+    :param priority: J1939 message priority (0–7, default 6)
     :returns: dict mapping responder source address (int) to a list of
               matching CAN replies
     """
@@ -984,7 +994,7 @@ def j1939_scan_uds(
                 for _sa in src_addrs:
                     # diag_pgn | 0x01 is functional addressing PF (e.g. 0xDB)
                     can_id_f = _j1939_can_id(
-                        _SCAN_PRIORITY, diag_pgn | 0x01, J1939_GLOBAL_ADDRESS, _sa
+                        priority, diag_pgn | 0x01, J1939_GLOBAL_ADDRESS, _sa
                     )
                     for req in _UDS_TESTER_PRESENT_REQS:
                         func_sock.send(CAN(identifier=can_id_f, flags="extended", data=req))
@@ -1029,7 +1039,7 @@ def j1939_scan_uds(
             _pre_probe_flush(rx_sock)
             for _sa in src_addrs:
                 # diag_pgn is physical addressing PF (e.g. 0xDA)
-                can_id_a = _j1939_can_id(_SCAN_PRIORITY, diag_pgn, _da, _sa)
+                can_id_a = _j1939_can_id(priority, diag_pgn, _da, _sa)
                 for req in _UDS_TESTER_PRESENT_REQS:
                     send_sock.send(CAN(identifier=can_id_a, flags="extended", data=req))
             log_j1939.debug("uds: physical probe DA=0x%02X on PF=0x%02X", _da, diag_pgn)
@@ -1068,6 +1078,7 @@ def j1939_scan_xcp(
     bitrate=_J1939_DEFAULT_BITRATE,  # type: int
     busload=_J1939_DEFAULT_BUSLOAD,  # type: float
     diag_pgn=J1939_PF_XCP,  # type: int
+    priority=_SCAN_PRIORITY,  # type: int
 ):
     # type: (...) -> Dict[int, List[CAN]]
     """Enumerate CAs by sending an XCP CONNECT command to each DA.
@@ -1097,6 +1108,7 @@ def j1939_scan_xcp(
                     (default 0.05 = 5 %)
     :param diag_pgn: PF byte for XCP diagnostic messages (default 0xEF,
                      Proprietary A peer-to-peer addressing)
+    :param priority: J1939 message priority (0–7, default 6)
     :returns: dict mapping responder source address (int) to a list of
               matching CAN replies
     """
@@ -1134,7 +1146,7 @@ def j1939_scan_xcp(
             # type: (int) -> None
             _pre_probe_flush(rx_sock)
             for _sa in src_addrs:
-                can_id = _j1939_can_id(_SCAN_PRIORITY, diag_pgn, _da, _sa)
+                can_id = _j1939_can_id(priority, diag_pgn, _da, _sa)
                 send_sock.send(CAN(identifier=can_id, flags="extended",
                                    data=_XCP_CONNECT_REQ))
             log_j1939.debug("xcp: probing DA=0x%02X on PF=0x%02X", _da, diag_pgn)
@@ -1178,6 +1190,7 @@ def j1939_scan(
     skip_functional=False,  # type: bool
     diag_pgn=None,  # type: Optional[int]
     output_format=None,  # type: Optional[str]
+    priority=_SCAN_PRIORITY,  # type: int
 ):
     # type: (...) -> Union[Dict[int, Dict[str, object]], str]
     """Scan for J1939 Controller Applications using one or more techniques.
@@ -1244,6 +1257,8 @@ def j1939_scan(
                           the raw results dict.  ``"text"`` returns a
                           human-readable string.  ``"json"`` returns a JSON
                           string.
+    :param priority: J1939 message priority (0–7, default 6).  Passed to all
+                     active scan methods.
     :returns: dict mapping SA (int) to
               ``{"methods": List[str], "packets": List[List[CAN]],
               "src_addrs": List[List[int]]}``;
@@ -1362,6 +1377,7 @@ def j1939_scan(
                 stop_event=stop_event,
                 bitrate=bitrate,
                 busload=busload,
+                priority=priority,
             ),
             "addr_claim",
             with_src_addr=True,
@@ -1380,6 +1396,7 @@ def j1939_scan(
                 stop_event=stop_event,
                 bitrate=bitrate,
                 busload=busload,
+                priority=priority,
             ),
             "ecu_id",
             with_src_addr=True,
@@ -1399,6 +1416,7 @@ def j1939_scan(
                 stop_event=stop_event,
                 bitrate=bitrate,
                 busload=busload,
+                priority=priority,
             ),
             "unicast",
             with_src_addr=True,
@@ -1418,6 +1436,7 @@ def j1939_scan(
                 stop_event=stop_event,
                 bitrate=bitrate,
                 busload=busload,
+                priority=priority,
             ),
             "rts_probe",
             with_src_addr=True,
@@ -1438,6 +1457,7 @@ def j1939_scan(
             "busload": busload,
             "skip_functional": skip_functional,
             "broadcast_listen_time": broadcast_listen_time,
+            "priority": priority,
         }
         if diag_pgn is not None:
             uds_kwargs["diag_pgn"] = diag_pgn
@@ -1456,6 +1476,7 @@ def j1939_scan(
             "stop_event": stop_event,
             "bitrate": bitrate,
             "busload": busload,
+            "priority": priority,
         }
         if diag_pgn is not None:
             xcp_kwargs["diag_pgn"] = diag_pgn

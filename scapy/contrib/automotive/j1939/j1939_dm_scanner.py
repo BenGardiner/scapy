@@ -210,6 +210,7 @@ def j1939_scan_dm_pgn(
     stop_event=None,  # type: Optional[Event]
     bitrate=_J1939_DEFAULT_BITRATE,  # type: int
     busload=_J1939_DEFAULT_BUSLOAD,  # type: float
+    priority=_DM_SCAN_PRIORITY,  # type: int
 ):
     # type: (...) -> DmScanResult
     """Probe *target_da* for support of a single Diagnostic Message PGN.
@@ -234,12 +235,13 @@ def j1939_scan_dm_pgn(
     :param bitrate: CAN bus bitrate in bit/s (default 250000 for J1939)
     :param busload: maximum fraction of bus capacity the scanner may consume
                     (default 0.05 = 5 %)
+    :param priority: J1939 message priority (0–7, default 6)
     :returns: :class:`DmScanResult` describing the outcome for this PGN
     """
     if stop_event is not None and stop_event.is_set():
         return DmScanResult(dm_name, pgn, False, error="Aborted")
 
-    can_id = _j1939_can_id(_DM_SCAN_PRIORITY, J1939_PF_REQUEST, target_da, src_addr)
+    can_id = _j1939_can_id(priority, J1939_PF_REQUEST, target_da, src_addr)
     payload = struct.pack("<I", pgn)[:3]
 
     result = []  # type: List[DmScanResult]
@@ -312,6 +314,7 @@ def j1939_scan_dm(
     reset_handler=None,  # type: Optional[Callable[[], None]]
     reconnect_handler=None,  # type: Optional[Callable[[], SuperSocket]]
     reconnect_retries=5,  # type: int
+    priority=_DM_SCAN_PRIORITY,  # type: int
 ):
     # type: (...) -> Dict[str, DmScanResult]
     """Probe *target_da* for all (or a selected subset of) Diagnostic Message PGNs.
@@ -353,6 +356,7 @@ def j1939_scan_dm(
     :param reconnect_retries: maximum number of attempts when calling
                               *reconnect_handler* (default 5).  A 1-second
                               pause is inserted between retries.
+    :param priority: J1939 message priority (0–7, default 6)
     :returns: dict mapping each DM name (str) to its :class:`DmScanResult`
 
     Example::
@@ -402,6 +406,7 @@ def j1939_scan_dm(
             stop_event=stop_event,
             bitrate=bitrate,
             busload=busload,
+            priority=priority,
         )
         # Between probes: reset target and/or reconnect if handlers provided
         if i < num_pgns - 1:
