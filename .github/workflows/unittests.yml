@@ -2,10 +2,10 @@ name: Scapy unit tests
 
 on:
   push:
-    branches: [master, "copilot/non-j1939-changes-only", j1939_scanning]
+    branches: [master]
   pull_request:
     # The branches below must be a subset of the branches above
-    branches: [master, "copilot/non-j1939-changes-only", j1939_scanning]
+    branches: [master]
 
 # https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/control-the-concurrency-of-workflows-and-jobs
 concurrency:
@@ -101,7 +101,7 @@ jobs:
             flags: " -K scanner"
           # PyPy tests: root only
           - os: ubuntu-latest
-            python: "pypy3.11"
+            python: "pypy3.10"
             mode: root
             flags: " -K scanner"
           # Libpcap test
@@ -127,7 +127,7 @@ jobs:
             allow-failure: 'true'
             flags: " -k scanner"
           - os: ubuntu-latest
-            python: "pypy3.11"
+            python: "pypy3.10"
             mode: root
             flags: " -k scanner"
           - os: macos-14
