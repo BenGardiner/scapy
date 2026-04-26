@@ -2,10 +2,10 @@ name: Scapy unit tests
 
 on:
   push:
-    branches: [master, "copilot/non-j1939-changes-only"]
+    branches: [master, "copilot/non-j1939-changes-only", j1939_scanning]
   pull_request:
     # The branches below must be a subset of the branches above
-    branches: [master, "copilot/non-j1939-changes-only"]
+    branches: [master, "copilot/non-j1939-changes-only", j1939_scanning]
 
 # https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/control-the-concurrency-of-workflows-and-jobs
 concurrency:
