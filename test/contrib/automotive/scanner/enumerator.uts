@@ -1141,7 +1141,9 @@ class DummyExecutor8(AutomotiveTestCaseExecutor):
     @property
     def default_test_case_clss(self): return []
 
-def bad_cleanup(s, c): raise Scapy_Exception("bad")
+def bad_cleanup(s, c):
+    raise Scapy_Exception("bad")
+
 exec_test = DummyExecutor8(MockSock())
 exec_test.cleanup_functions = [bad_cleanup, "not callable"]
 exec_test.cleanup_state()
