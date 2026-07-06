@@ -52,9 +52,9 @@ from scapy.fields import (
 )
 from scapy.packet import Packet
 
-from scapy.contrib.automotive.j1939.j1939_soft_socket import (
+from scapy.contrib.j1939 import (
     J1939,
-    J1939_GLOBAL_ADDRESS,
+    J1939_BROADCAST_ADDR as J1939_GLOBAL_ADDRESS,
 )
 
 # ---------------------------------------------------------------------------
@@ -339,7 +339,7 @@ def sniff_dm1(
     from scapy.sendrecv import sniff
     from scapy.contrib.automotive.j1939 import J1939Socket  # type: ignore[attr-defined]
 
-    with J1939Socket(interface, rx_pgn=PGN_DM1) as sock:
+    with J1939Socket(interface, pgn=PGN_DM1) as sock:
         pkts = sniff(opened_socket=sock, timeout=timeout)
     return [J1939_DM1(p.data) for p in pkts if hasattr(p, "data")]
 
@@ -369,9 +369,9 @@ def send_dm14_request(
     from scapy.contrib.automotive.j1939 import J1939Socket  # type: ignore[attr-defined]
 
     dm14 = J1939_DM14(address=memory_address, length=length)
-    pkt = J1939(data=bytes(dm14), pgn=PGN_DM14)
+    pkt = J1939(data=bytes(dm14), pgn=PGN_DM14, dst=dest_addr)
     with J1939Socket(
-        interface, src_addr=0xFA, dst_addr=dest_addr, pgn=PGN_DM14
+        interface, src_addr=0xFA, pgn=PGN_DM14
     ) as sock:
         sock.send(pkt)
 

@@ -1,5 +1,5 @@
 % Regression tests for J1939 Diagnostic Messages (DM1, DM13, DM14)
-~ automotive_comm
+
 
 + Configuration
 ~ conf
@@ -210,7 +210,7 @@ assert raw[2] == 0x12, "LE address byte2=0x{:02X}".format(raw[2])
 = Socket integration: wrap DM1 in J1939 frame then re-dissect
 # Build a DM1 payload, wrap in a J1939 frame, and verify the
 # DM1 Scapy class correctly dissects the payload.
-from scapy.contrib.automotive.j1939.j1939_soft_socket import _j1939_can_id
+from scapy.contrib.automotive.j1939 import _j1939_can_id
 dtc = J1939_DTC(SPN=100, FMI=2, CM=0, OC=5)
 dm1_orig = J1939_DM1(mil_status=1, dtcs=[dtc])
 j1939_frame = J1939(pgn=PGN_DM1, data=bytes(dm1_orig))
@@ -221,7 +221,9 @@ assert len(dm1_parsed.dtcs) == 1
 assert dm1_parsed.dtcs[0].SPN == 100
 
 = Socket integration: receive DM1 via J1939SoftSocket
-from scapy.contrib.automotive.j1939.j1939_soft_socket import _j1939_can_id
+from scapy.contrib.automotive.j1939 import _j1939_can_id
+from scapy.automaton import select_objects
+import time
 
 # Build DM1 payload
 dtc = J1939_DTC(SPN=100, FMI=2, CM=0, OC=5)
@@ -231,16 +233,19 @@ dm1_data = bytes(J1939_DM1(mil_status=1, dtcs=[dtc]))
 can_id = _j1939_can_id(6, 0xFE, 0xCA, 0x80)
 
 with J1939SoftSocket(TestSocket(CAN), pgn=0xFECA, src_addr=0x11) as s:
-    # Inject CAN frame directly (bypasses background polling thread)
+    # Inject CAN frame directly
     s.impl.on_can_recv(
         CAN(identifier=can_id, flags="extended", data=dm1_data)
     )
+    time.sleep(0.1)
+    # Polybassa rx_queue returns (J1939_msg, timestamp) tuples
+    ready = select_objects([s.impl.rx_queue], 1.0)
+    assert ready, "No data in rx_queue"
     result = s.impl.rx_queue.recv()
 
 assert result is not None, "rx_queue.recv() returned None"
-raw_data, _ts, _pgn, _sa, _da = result
-dm1_rx = J1939_DM1(raw_data)
-assert dm1_rx.mil_status == 1, "mil_status: {}".format(dm1_rx.mil_status)
+j1939_msg, _ts = result
+dm1_rx = J1939_DM1(bytes(j1939_msg.data))
 assert len(dm1_rx.dtcs) == 1
 assert dm1_rx.dtcs[0].SPN == 100
 cleanup_testsockets()

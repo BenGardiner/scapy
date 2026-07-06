@@ -115,19 +115,42 @@ from typing import (
 from scapy.layers.can import CAN
 from scapy.supersocket import SuperSocket
 
-from scapy.contrib.automotive.j1939.j1939_soft_socket import (
-    J1939_GLOBAL_ADDRESS,
-    J1939_TP_CM_PF,
-    TP_CM_RTS,
-    TP_CM_CTS,
-    TP_Conn_Abort,
-    PGN_ADDRESS_CLAIMED,
-    J1939_PF_ADDRESS_CLAIMED,
-    J1939_PF_REQUEST,
-    _j1939_can_id,
-    _j1939_decode_can_id,
+from scapy.contrib.j1939 import (
+    J1939_BROADCAST_ADDR as J1939_GLOBAL_ADDRESS,
+    J1939_PGN_TP_CM,
+    J1939_TP_CTRL_RTS as TP_CM_RTS,
+    J1939_TP_CTRL_CTS as TP_CM_CTS,
+    J1939_TP_CTRL_ABORT as TP_Conn_Abort,
+    j1939_to_can_id,
+    can_id_to_j1939,
     log_j1939,
 )
+import socket
+
+#: PGN for Address Claimed (J1939-81)
+PGN_ADDRESS_CLAIMED = getattr(socket, 'J1939_PGN_ADDRESS_CLAIMED', 0xEE00)
+
+#: PDU Format byte for Address Claimed
+J1939_PF_ADDRESS_CLAIMED = (PGN_ADDRESS_CLAIMED >> 8) & 0xFF  # 0xEE
+
+#: PDU Format byte for Request
+J1939_PF_REQUEST = (getattr(socket, 'J1939_PGN_REQUEST', 0xEA00) >> 8) & 0xFF
+
+#: PDU Format byte for TP.CM
+J1939_TP_CM_PF = (J1939_PGN_TP_CM >> 8) & 0xFF  # 0xEC
+
+
+def _j1939_can_id(priority, pf, da, sa):
+    # type: (int, int, int, int) -> int
+    """Build a 29-bit J1939 CAN identifier (simplified 4-param form)."""
+    return j1939_to_can_id(priority, 0, 0, pf, da, sa)
+
+
+def _j1939_decode_can_id(can_id):
+    # type: (int) -> Tuple[int, int, int, int]
+    """Decode a 29-bit J1939 CAN identifier to (priority, pf, ps, sa)."""
+    d = can_id_to_j1939(can_id)
+    return d['priority'], d['pdu_format'], d['pdu_specific'], d['src']
 
 # --- Scanner constants
 

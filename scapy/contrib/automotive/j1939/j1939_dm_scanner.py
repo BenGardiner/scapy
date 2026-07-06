@@ -43,17 +43,34 @@ from typing import (
     Dict,
     List,
     Optional,
+    Tuple,
 )
 
 from scapy.layers.can import CAN
 from scapy.supersocket import SuperSocket
 
-from scapy.contrib.automotive.j1939.j1939_soft_socket import (
-    J1939_PF_REQUEST,
-    _j1939_can_id,
-    _j1939_decode_can_id,
+from scapy.contrib.j1939 import (
+    can_id_to_j1939,
+    j1939_to_can_id,
     log_j1939,
 )
+import socket
+
+#: PDU Format byte for Request
+J1939_PF_REQUEST = (getattr(socket, 'J1939_PGN_REQUEST', 0xEA00) >> 8) & 0xFF
+
+
+def _j1939_can_id(priority, pf, da, sa):
+    # type: (int, int, int, int) -> int
+    """Build a 29-bit J1939 CAN identifier (simplified 4-param form)."""
+    return j1939_to_can_id(priority, 0, 0, pf, da, sa)
+
+
+def _j1939_decode_can_id(can_id):
+    # type: (int) -> Tuple[int, int, int, int]
+    """Decode a 29-bit J1939 CAN identifier to (priority, pf, ps, sa)."""
+    d = can_id_to_j1939(can_id)
+    return d['priority'], d['pdu_format'], d['pdu_specific'], d['src']
 
 from scapy.contrib.automotive.j1939.j1939_scanner import (
     _J1939_DEFAULT_BITRATE,

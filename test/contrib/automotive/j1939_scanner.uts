@@ -9,8 +9,6 @@ import struct
 from scapy.layers.can import CAN
 from scapy.contrib.automotive.j1939 import (
     J1939_GLOBAL_ADDRESS, J1939_NULL_ADDRESS,
-)
-from scapy.contrib.automotive.j1939.j1939_soft_socket import (
     _j1939_can_id, _j1939_decode_can_id,
     J1939_PF_ADDRESS_CLAIMED, J1939_PF_REQUEST,
     J1939_TP_CM_PF,
@@ -2180,7 +2178,7 @@ assert parsed[0]["src_addrs"] == [[0xF1]]
 = j1939_scan: verbose=True sets log_j1939 to DEBUG
 def test_verbose_debug():
     import logging
-    from scapy.contrib.automotive.j1939.j1939_soft_socket import log_j1939
+    from scapy.contrib.j1939 import log_j1939
     old_level = log_j1939.level
     sock = TestSocket(CAN)
     j1939_scan(sock, methods=["addr_claim"], src_addrs=[0xF9],
@@ -2195,7 +2193,7 @@ test_verbose_debug()
 = j1939_scan: verbose=False does not change log level
 def test_verbose_false():
     import logging
-    from scapy.contrib.automotive.j1939.j1939_soft_socket import log_j1939
+    from scapy.contrib.j1939 import log_j1939
     old_level = log_j1939.level
     log_j1939.setLevel(logging.WARNING)
     sock = TestSocket(CAN)
