@@ -11,12 +11,15 @@ sys.path.append("test")
 import struct
 from threading import Event
 from scapy.layers.can import CAN
-from scapy.contrib.automotive.j1939 import (
-    J1939_GLOBAL_ADDRESS, J1939_NULL_ADDRESS,
-    _j1939_can_id, _j1939_decode_can_id,
-    J1939_PF_REQUEST,
+from scapy.contrib.j1939 import (
+    J1939_BROADCAST_ADDR as J1939_GLOBAL_ADDRESS,
+)
+from scapy.contrib.automotive.j1939.j1939_address_claim import (
+    J1939_NULL_ADDRESS,
 )
 from scapy.contrib.automotive.j1939.j1939_dm_scanner import (
+    _j1939_can_id, _j1939_decode_can_id,
+    J1939_PF_REQUEST,
     DmScanResult,
     J1939_DM_PGNS,
     J1939_PF_ACK,

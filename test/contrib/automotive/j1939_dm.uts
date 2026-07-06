@@ -10,8 +10,9 @@ sys.path.append(".")
 sys.path.append("test")
 import struct
 from scapy.layers.can import CAN
-from scapy.contrib.automotive.j1939 import (
-    J1939, J1939SoftSocket, J1939_GLOBAL_ADDRESS,
+from scapy.contrib.j1939 import (
+    J1939, J1939SoftSocket,
+    J1939_BROADCAST_ADDR as J1939_GLOBAL_ADDRESS,
 )
 from scapy.contrib.automotive.j1939.j1939_dm import (
     J1939_DTC, J1939_DM1, J1939_DM13, J1939_DM14,
@@ -210,7 +211,7 @@ assert raw[2] == 0x12, "LE address byte2=0x{:02X}".format(raw[2])
 = Socket integration: wrap DM1 in J1939 frame then re-dissect
 # Build a DM1 payload, wrap in a J1939 frame, and verify the
 # DM1 Scapy class correctly dissects the payload.
-from scapy.contrib.automotive.j1939 import _j1939_can_id
+from scapy.contrib.automotive.j1939.j1939_scanner import _j1939_can_id
 dtc = J1939_DTC(SPN=100, FMI=2, CM=0, OC=5)
 dm1_orig = J1939_DM1(mil_status=1, dtcs=[dtc])
 j1939_frame = J1939(pgn=PGN_DM1, data=bytes(dm1_orig))
@@ -221,7 +222,7 @@ assert len(dm1_parsed.dtcs) == 1
 assert dm1_parsed.dtcs[0].SPN == 100
 
 = Socket integration: receive DM1 via J1939SoftSocket
-from scapy.contrib.automotive.j1939 import _j1939_can_id
+from scapy.contrib.automotive.j1939.j1939_scanner import _j1939_can_id
 from scapy.automaton import select_objects
 import time
 

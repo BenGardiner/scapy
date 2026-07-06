@@ -7,15 +7,21 @@
 = Imports
 import struct
 from scapy.layers.can import CAN
-from scapy.contrib.automotive.j1939 import (
-    J1939_GLOBAL_ADDRESS, J1939_NULL_ADDRESS,
+from scapy.contrib.j1939 import (
+    J1939_BROADCAST_ADDR as J1939_GLOBAL_ADDRESS,
+    J1939_TP_CTRL_BAM as TP_CM_BAM,
+    J1939_TP_CTRL_CTS as TP_CM_CTS,
+    J1939_TP_CTRL_ABORT as TP_Conn_Abort,
+)
+from scapy.contrib.automotive.j1939.j1939_address_claim import (
+    J1939_NULL_ADDRESS,
+    PGN_REQUEST,
+)
+from scapy.contrib.automotive.j1939.j1939_scanner import (
     _j1939_can_id, _j1939_decode_can_id,
     J1939_PF_ADDRESS_CLAIMED, J1939_PF_REQUEST,
     J1939_TP_CM_PF,
-    PGN_ADDRESS_CLAIMED, PGN_REQUEST,
-    TP_CM_BAM, TP_CM_CTS, TP_Conn_Abort,
-)
-from scapy.contrib.automotive.j1939.j1939_scanner import (
+    PGN_ADDRESS_CLAIMED,
     j1939_scan,
     j1939_scan_passive,
     j1939_scan_addr_claim,
