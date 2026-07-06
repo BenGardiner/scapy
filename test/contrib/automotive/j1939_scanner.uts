@@ -2218,9 +2218,12 @@ except ValueError:
 
 = _pre_probe_flush exception
 from scapy.contrib.automotive.j1939.j1939_scanner import _pre_probe_flush
+from test.testsocket import TestSocket
+from scapy.layers.can import CAN
 class BadSocket(TestSocket):
     def select(self, *args):
         raise Exception("bad")
+
 _pre_probe_flush(BadSocket(CAN)) # Should not raise
 
 = j1939_scan_passive with stop_event
