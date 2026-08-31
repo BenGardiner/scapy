@@ -97,10 +97,10 @@ import json
 import logging
 import struct
 import time
-from threading import Event
+from threading import Event  # noqa: F401
 
 # Typing imports
-from typing import (
+from typing import (  # noqa: F401
     Callable,
     Dict,
     Iterable,
@@ -132,12 +132,18 @@ J1939_PF_ADDRESS_CLAIMED = 0xEE
 PGN_REQUEST = 0xEA00
 J1939_PF_REQUEST = 0xEA
 
+
 def _j1939_can_id(priority, pf, da, sa):
-    return j1939_to_can_id(priority=priority, reserved=0, data_page=0, pdu_format=pf, pdu_specific=da, src=sa)
+    return j1939_to_can_id(
+        priority=priority, reserved=0, data_page=0,
+        pdu_format=pf, pdu_specific=da, src=sa)
+
 
 def _j1939_decode_can_id(can_id):
     f = can_id_to_j1939(can_id)
-    return f['priority'], f['pdu_format'], f['pdu_specific'], f['src']
+    return (f['priority'], f['pdu_format'],
+            f['pdu_specific'], f['src'])
+
 
 # --- Scanner constants
 

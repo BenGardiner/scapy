@@ -35,10 +35,10 @@ Usage::
 
 import struct
 import time
-from threading import Event
+from threading import Event  # noqa: F401
 
 # Typing imports
-from typing import (
+from typing import (  # noqa: F401
     Callable,
     Dict,
     List,
@@ -46,27 +46,22 @@ from typing import (
 )
 
 from scapy.layers.can import CAN
-from scapy.supersocket import SuperSocket
+from scapy.supersocket import SuperSocket  # noqa: F401
 
-from scapy.contrib.j1939 import (
-    J1939_BROADCAST_ADDR as J1939_GLOBAL_ADDRESS,
-    log_j1939,
-)
-from scapy.contrib.automotive.j1939.j1939_scanner import (
+from scapy.contrib.j1939 import log_j1939
+from scapy.contrib.automotive.j1939.j1939_scanner import (  # noqa: F401
     _j1939_can_id,
     _j1939_decode_can_id,
-    J1939_PF_REQUEST,
-)
-J1939_NULL_ADDRESS = 0xFE
-
-from scapy.contrib.automotive.j1939.j1939_scanner import (
     _J1939_DEFAULT_BITRATE,
     _J1939_DEFAULT_BUSLOAD,
     _inter_probe_delay,
     _pre_probe_flush,
     _resolve_probe_sock,
+    J1939_PF_REQUEST,
     SockOrFactory,
 )
+
+J1939_NULL_ADDRESS = 0xFE
 
 # --- DM scanner constants
 

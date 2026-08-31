@@ -35,7 +35,7 @@ Usage example::
 """
 
 # Typing imports
-from typing import (
+from typing import (  # noqa: F401
     Any,
     List,
     Tuple,
