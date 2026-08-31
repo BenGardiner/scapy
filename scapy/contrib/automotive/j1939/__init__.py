@@ -56,6 +56,9 @@ from scapy.contrib.automotive.j1939.j1939_dm import (
 )
 
 from scapy.contrib.automotive.j1939.j1939_scanner import (
+    _j1939_can_id,
+    _j1939_decode_can_id,
+    J1939_TP_CM_PF,
     j1939_scan,
     j1939_scan_passive,
     j1939_scan_addr_claim,
