@@ -47,6 +47,7 @@ from scapy.fields import (
     BitEnumField,
     BitField,
     ByteField,
+    PacketListField,
     StrFixedLenField,
     XLEIntField,
     XShortField,
@@ -164,8 +165,6 @@ class J1939_DM1(Packet):
     #: PGN for DM1 Active DTCs (J1939-73)
     PGN = PGN_DM1
 
-    __slots__ = Packet.__slots__ + ["dtcs"]
-
     fields_desc = [
         # Byte 0: Lamp on/off status (bits 7-6 = MIL, 5-4 = RSL, 3-2 = AWL, 1-0 = PL)
         BitEnumField("mil_status", 3, 2, _LAMP_STATUS),
@@ -177,51 +176,27 @@ class J1939_DM1(Packet):
         BitEnumField("rsl_flash", 3, 2, _LAMP_STATUS),
         BitEnumField("awl_flash", 3, 2, _LAMP_STATUS),
         BitEnumField("pl_flash", 3, 2, _LAMP_STATUS),
+        PacketListField(
+            "dtcs",
+            [],
+            J1939_DTC,
+            next_cls_cb=lambda pkt, lst, cur, remain: (
+                J1939_DTC if len(remain) >= 4 else None
+            ),
+        ),
     ]
 
-    def __init__(self, *args, **kwargs):
-        # type: (*Any, **Any) -> None
-        self.dtcs = kwargs.pop("dtcs", [])  # type: List[J1939_DTC]
-        Packet.__init__(self, *args, **kwargs)
-
-    def do_dissect(self, s):
-        # type: (bytes) -> bytes
-        """Parse 2-byte lamp status then consume 4-byte DTC records."""
-        remain = super(J1939_DM1, self).do_dissect(s)
-        # Trailing bytes shorter than a full DTC (< 4 bytes) are treated as
-        # 0xFF padding and silently ignored, per J1939-21 single-frame rules.
-        self.dtcs = []
-        while len(remain) >= 4:
-            self.dtcs.append(J1939_DTC(remain[:4]))
-            remain = remain[4:]
-        return b""
-
-    def do_build(self):
-        # type: () -> bytes
-        """Build lamp status bytes + DTC bytes, padded to 8 bytes if needed."""
-        lamp_bytes = super(J1939_DM1, self).do_build()
-        dtc_bytes = b"".join(bytes(dtc) for dtc in self.dtcs)
-        result = lamp_bytes + dtc_bytes
-        if len(result) < 8:
-            result += b"\xff" * (8 - len(result))
-        return result
+    def post_build(self, p, pay):
+        # type: (bytes, bytes) -> bytes
+        """Pad single-frame DM1 messages (< 8 bytes) with 0xFF to 8 bytes."""
+        p += pay
+        if len(p) < 8:
+            p += b"\xff" * (8 - len(p))
+        return p
 
     def extract_padding(self, s):
         # type: (bytes) -> Tuple[bytes, bytes]
         return b"", s
-
-    def __repr__(self):
-        # type: () -> str
-        return (
-            "<J1939_DM1 mil_status={} rsl_status={} awl_status={} "
-            "pl_status={} dtcs={}>".format(
-                self.mil_status,
-                self.rsl_status,
-                self.awl_status,
-                self.pl_status,
-                self.dtcs,
-            )
-        )
 
 
 class J1939_DM13(Packet):
