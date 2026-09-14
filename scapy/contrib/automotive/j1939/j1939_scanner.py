@@ -283,25 +283,7 @@ def _inter_probe_delay(bitrate, busload, tx_dlc, rx_dlc, sniff_time):
 
 def _pre_probe_flush(sock):
     # type: (SuperSocket) -> None
-    """Flush the kernel CAN receive buffer before sending a probe.
-
-    On :class:`~scapy.contrib.cansocket_python_can.PythonCANSocket` the
-    kernel CAN socket buffer is only drained by ``multiplex_rx_packets()``
-    which is called from within ``select()``.  Between successive
-    ``sniff()`` calls the buffer is **not** read, so background CAN
-    traffic accumulates.  On resource-constrained embedded systems the
-    kernel buffer may be small enough to overflow, causing *response*
-    frames to be silently dropped.
-
-    Calling ``sock.select([sock], 0)`` with a zero timeout triggers a
-    non-blocking ``multiplex_rx_packets()`` pass, moving any
-    kernel-buffered frames into the unbounded Python ``rx_queue``.  This
-    frees space in the kernel buffer for the upcoming response.
-
-    For :class:`~scapy.contrib.cansocket_native.NativeCANSocket` and test
-    sockets this call is a harmless no-op (it checks readiness without
-    consuming data).
-    """
+    """Flush the kernel CAN receive buffer before sending a probe."""
     try:
         sock.select([sock], 0)
     except (AttributeError, OSError) as ex:
