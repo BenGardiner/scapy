@@ -145,8 +145,15 @@ J1939_TP_CTRL_ABORT = 255  # Connection Abort
 # PDU format threshold: PF < 240 → PDU1 (peer-to-peer), PF ≥ 240 → PDU2 (broadcast)
 J1939_PDU1_MAX_PF = 239
 
-# Default configuration key
-conf.contribs['J1939'] = {'channel': 'can0'}
+# Default configuration keys
+try:
+    conf.contribs['J1939'].setdefault('channel', 'can0')
+    conf.contribs['J1939'].setdefault('generic-answers-fallback', True)
+except KeyError:
+    conf.contribs['J1939'] = {
+        'channel': 'can0',
+        'generic-answers-fallback': True,
+    }
 
 # Common source address names (informational)
 J1939_ADDR_NAMES = {
@@ -284,11 +291,76 @@ class J1939(Packet):
         self.dst = kwargs.pop('dst', socket.J1939_NO_ADDR)  # type: int
         Packet.__init__(self, *args, **kwargs)
 
+    def clone_with(self, payload=None, **kargs):
+        # type: (Optional[Any], **Any) -> J1939
+        pkt = super(J1939, self).clone_with(payload=payload, **kargs)
+        pkt.priority = kargs.get('priority', self.priority)
+        pkt.pgn = kargs.get('pgn', self.pgn)
+        pkt.src = kargs.get('src', self.src)
+        pkt.dst = kargs.get('dst', self.dst)
+        return pkt
+
+    def copy(self):
+        # type: () -> J1939
+        clone = super(J1939, self).copy()
+        clone.priority = self.priority
+        clone.pgn = self.pgn
+        clone.src = self.src
+        clone.dst = self.dst
+        return clone
+
     def answers(self, other):
         # type: (Packet) -> int
         if not isinstance(other, J1939):
             return 0
-        return self.data == other.data
+        # Per (SA, DA) session tracking: directed requests must originate from other.dst
+        if other.dst not in (socket.J1939_NO_ADDR, 0xFF) and self.src != other.dst:
+            return 0
+        # If both other.src and self.dst are unicast, verify session return address
+        if (other.src not in (socket.J1939_NO_ADDR, 0xFF) and
+                self.dst not in (socket.J1939_NO_ADDR, 0xFF) and
+                self.dst != other.src):
+            return 0
+        # Request PGN (0xEA00 / 59904) matching
+        if other.pgn == 0xEA00 and len(other.data) >= 3:
+            target_pgn = other.data[0] | (other.data[1] << 8) | (other.data[2] << 16)
+            if self.pgn == target_pgn:
+                return 1
+            # Acknowledgment PGN (0xE800 / 59392; J1939-21 §5.4.4)
+            if self.pgn == 0xE800:
+                if len(self.data) >= 8:
+                    ack_pgn = self.data[5] | (self.data[6] << 8) | (self.data[7] << 16)
+                    if ack_pgn == target_pgn:
+                        return 1
+                elif len(self.data) >= 4:
+                    ack_pgn = self.data[1] | (self.data[2] << 8) | (self.data[3] << 16)
+                    if ack_pgn == target_pgn:
+                        return 1
+            return 0
+        # General command acknowledgment matching (e.g. DM11 clear DTCs)
+        if self.pgn == 0xE800 and other.pgn:
+            if len(self.data) >= 8:
+                ack_pgn = self.data[5] | (self.data[6] << 8) | (self.data[7] << 16)
+                if ack_pgn == other.pgn:
+                    return 1
+            elif len(self.data) >= 4:
+                ack_pgn = self.data[1] | (self.data[2] << 8) | (self.data[3] << 16)
+                if ack_pgn == other.pgn:
+                    return 1
+        # Generic fallback heuristic: same PGN with swapped DA and SA
+        j1939_conf = conf.contribs.get('J1939', {})
+        fallback_enabled = j1939_conf.get(
+            'generic-answers-fallback',
+            j1939_conf.get('generic_answers_fallback', True)
+        )
+        if fallback_enabled:
+            if (self.pgn == other.pgn and
+                    self.src == other.dst and
+                    self.dst == other.src and
+                    self.src not in (socket.J1939_NO_ADDR, 0xFF) and
+                    self.dst not in (socket.J1939_NO_ADDR, 0xFF)):
+                return 1
+        return int(self.data == other.data)
 
     def mysummary(self):
         # type: () -> str
@@ -375,6 +447,29 @@ class J1939_CAN(CAN):
         # type: () -> int
         """Destination address for PDU1 frames; :data:`socket.J1939_NO_ADDR` for PDU2."""  # noqa: E501
         return dst_from_fields(self.pdu_format, self.pdu_specific)
+
+    @property
+    def identifier(self):
+        # type: () -> int
+        """29-bit CAN arbitration identifier derived from J1939 sub-fields."""
+        return (
+            (self.priority << 26)
+            | (self.reserved << 25)
+            | (self.data_page << 24)
+            | (self.pdu_format << 16)
+            | (self.pdu_specific << 8)
+            | self.src
+        )
+
+    @identifier.setter
+    def identifier(self, val):
+        # type: (int) -> None
+        self.priority = (val >> 26) & 0x7
+        self.reserved = (val >> 25) & 0x1
+        self.data_page = (val >> 24) & 0x1
+        self.pdu_format = (val >> 16) & 0xFF
+        self.pdu_specific = (val >> 8) & 0xFF
+        self.src = val & 0xFF
 
     def to_can(self):
         # type: () -> CAN
@@ -1455,7 +1550,10 @@ class J1939TPImplementation:
 
     def _can_send(self, pkt):
         # type: (J1939_CAN) -> None
-        self.can_socket.send(pkt)
+        try:
+            self.can_socket.send(pkt)
+        except AttributeError:
+            self.can_socket.send(pkt.to_can())
 
     def _can_send_tp_cm(self, dst_sa, data, priority=6):
         # type: (int, bytes, int) -> None
