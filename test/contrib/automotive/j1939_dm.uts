@@ -147,6 +147,9 @@ assert "__repr__" not in J1939_DM1.__dict__
 = DM1 does not overwrite post_build
 assert "post_build" not in J1939_DM1.__dict__
 
+= DM1 does not overwrite do_build
+assert "do_build" not in J1939_DM1.__dict__
+
 
 
 + J1939_DM13 — Creation and PGN tests
