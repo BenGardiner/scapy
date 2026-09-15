@@ -31,8 +31,8 @@ Usage example::
     ... )
     >>> dtc = J1939_DTC(SPN=100, FMI=2, CM=0, OC=5)
     >>> dm1 = J1939_DM1(mil_status=1, dtcs=[dtc])
-    >>> len(bytes(dm1))  # padded to 8 bytes
-    8
+    >>> len(bytes(dm1))
+    6
 """
 
 # Typing imports
@@ -144,10 +144,8 @@ class J1939_DM1(Packet):
       flash pattern).
     - Bytes 2+:  Variable list of :class:`J1939_DTC` records (4 bytes each).
 
-    Single-frame DM1 messages (up to 8 bytes) are zero-padded with ``0xFF``
-    to exactly 8 bytes.  Multi-packet messages (>8 bytes) are sent via the
-    J1939-21 Transport Protocol, handled automatically by
-    :class:`J1939SoftSocket`.
+    Multi-packet messages (>8 bytes) are sent via the J1939-21 Transport
+    Protocol, handled automatically by :class:`J1939SoftSocket`.
 
     :param mil_status: Malfunction Indicator Lamp on/off (0=off, 1=on, 3=N/A)
     :param rsl_status: Red Stop Lamp on/off
@@ -185,14 +183,6 @@ class J1939_DM1(Packet):
             ),
         ),
     ]
-
-    def post_build(self, p, pay):
-        # type: (bytes, bytes) -> bytes
-        """Pad single-frame DM1 messages (< 8 bytes) with 0xFF to 8 bytes."""
-        p += pay
-        if len(p) < 8:
-            p += b"\xff" * (8 - len(p))
-        return p
 
     def extract_padding(self, s):
         # type: (bytes) -> Tuple[bytes, bytes]

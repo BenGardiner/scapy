@@ -76,19 +76,12 @@ assert raw[1] == 0x01, "byte1 should be SPN[15:8]=0x01, got 0x{:02X}".format(raw
 assert J1939_DM1.PGN == 65226, "PGN: {}".format(J1939_DM1.PGN)
 assert PGN_DM1 == 65226
 
-= DM1 single-frame: 1 DTC is padded to exactly 8 bytes
+= DM1 single-frame: 1 DTC produces 6 bytes (2 lamp + 4 DTC)
 dtc = J1939_DTC(SPN=100, FMI=2, CM=0, OC=5)
 dm1 = J1939_DM1(dtcs=[dtc])
 raw = bytes(dm1)
-assert len(raw) == 8, \
-    "DM1 with 1 DTC must be 8 bytes; got {}".format(len(raw))
-
-= DM1 single-frame: padding bytes are 0xFF
-dtc = J1939_DTC(SPN=100, FMI=2, CM=0, OC=5)
-dm1 = J1939_DM1(dtcs=[dtc])
-raw = bytes(dm1)
-assert raw[-2:] == b'\xff\xff', \
-    "Trailing padding must be 0xFF 0xFF, got {}".format(raw[-2:].hex())
+assert len(raw) == 6, \
+    "DM1 with 1 DTC must be 6 bytes; got {}".format(len(raw))
 
 = DM1 single-frame: lamp status fields are parsed correctly
 dm1 = J1939_DM1(
@@ -143,13 +136,17 @@ assert dm1_p.dtcs[1].CM  == 1
 = DM1 dissection: trailing 0xFF padding bytes are not parsed as DTCs
 dtc = J1939_DTC(SPN=100, FMI=2, CM=0, OC=5)
 dm1 = J1939_DM1(dtcs=[dtc])
-raw = bytes(dm1)          # 8 bytes: 2 lamp + 4 DTC + 2 padding
+raw = bytes(dm1) + b"\xff\xff"  # 8 bytes: 2 lamp + 4 DTC + 2 padding
 dm1_p = J1939_DM1(raw)
 assert len(dm1_p.dtcs) == 1, \
     "Expected 1 DTC (not 2), got {}".format(len(dm1_p.dtcs))
 
 = DM1 does not overwrite repr
 assert "__repr__" not in J1939_DM1.__dict__
+
+= DM1 does not overwrite post_build
+assert "post_build" not in J1939_DM1.__dict__
+
 
 
 + J1939_DM13 — Creation and PGN tests
