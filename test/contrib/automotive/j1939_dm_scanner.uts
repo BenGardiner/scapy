@@ -651,3 +651,292 @@ def test_reconnect_retry_uses_stop_event():
     cleanup_testsockets()
 
 test_reconnect_retry_uses_stop_event()
+
+
++ Multi-packet J1939-TP DM responses
+
+= Imports for J1939-TP DM tests
+from scapy.contrib.automotive.j1939 import (
+    TP_CM_BAM,
+    TP_CM_RTS,
+    J1939_TP_CM_PF,
+)
+
+= dm_pgn_probe: multi-packet BAM response for DM1 (2 Active DTCs = 10 bytes)
+sock = TestSocket(CAN)
+bam_id = _j1939_can_id(7, J1939_TP_CM_PF, J1939_GLOBAL_ADDRESS, 0x10)
+bam_data = bytes([TP_CM_BAM, 10, 0, 2, 0xFF]) + struct.pack("<I", J1939_DM_PGNS["DM1"])[:3]
+sock.ins.send(bytes(CAN(identifier=bam_id, flags="extended", data=bam_data)))
+res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=J1939_DM_PGNS["DM1"],
+                        dm_name="DM1", sniff_time=0.1)
+assert res.supported is True, "DM1 BAM response should be detected as supported"
+assert res.error is None
+assert res.packet is not None
+cleanup_testsockets()
+
+= dm_pgn_probe: multi-packet RTS response for DM1 (2 Active DTCs = 10 bytes)
+sock = TestSocket(CAN)
+rts_id = _j1939_can_id(7, J1939_TP_CM_PF, 0xF9, 0x10)
+rts_data = bytes([TP_CM_RTS, 10, 0, 2, 0xFF]) + struct.pack("<I", J1939_DM_PGNS["DM1"])[:3]
+sock.ins.send(bytes(CAN(identifier=rts_id, flags="extended", data=rts_data)))
+res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=J1939_DM_PGNS["DM1"],
+                        dm_name="DM1", sniff_time=0.1)
+assert res.supported is True, "DM1 RTS response should be detected as supported"
+assert res.error is None
+assert res.packet is not None
+cleanup_testsockets()
+
+= dm_pgn_probe: multi-packet BAM response for DM2 (Previously Active DTCs)
+sock = TestSocket(CAN)
+pgn = J1939_DM_PGNS["DM2"]
+bam_id = _j1939_can_id(7, J1939_TP_CM_PF, J1939_GLOBAL_ADDRESS, 0x10)
+bam_data = bytes([TP_CM_BAM, 14, 0, 2, 0xFF]) + struct.pack("<I", pgn)[:3]
+sock.ins.send(bytes(CAN(identifier=bam_id, flags="extended", data=bam_data)))
+res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=pgn, dm_name="DM2", sniff_time=0.1)
+assert res.supported is True, "DM2 BAM response should be detected as supported"
+assert res.error is None
+assert res.packet is not None
+cleanup_testsockets()
+
+= dm_pgn_probe: multi-packet RTS response for DM2 (Previously Active DTCs)
+sock = TestSocket(CAN)
+pgn = J1939_DM_PGNS["DM2"]
+rts_id = _j1939_can_id(7, J1939_TP_CM_PF, 0xF9, 0x10)
+rts_data = bytes([TP_CM_RTS, 14, 0, 2, 0xFF]) + struct.pack("<I", pgn)[:3]
+sock.ins.send(bytes(CAN(identifier=rts_id, flags="extended", data=rts_data)))
+res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=pgn, dm_name="DM2", sniff_time=0.1)
+assert res.supported is True, "DM2 RTS response should be detected as supported"
+assert res.error is None
+assert res.packet is not None
+cleanup_testsockets()
+
+= dm_pgn_probe: multi-packet BAM response for DM4 (Freeze Frame Parameters)
+sock = TestSocket(CAN)
+pgn = J1939_DM_PGNS["DM4"]
+bam_id = _j1939_can_id(7, J1939_TP_CM_PF, J1939_GLOBAL_ADDRESS, 0x10)
+bam_data = bytes([TP_CM_BAM, 25, 0, 4, 0xFF]) + struct.pack("<I", pgn)[:3]
+sock.ins.send(bytes(CAN(identifier=bam_id, flags="extended", data=bam_data)))
+res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=pgn, dm_name="DM4", sniff_time=0.1)
+assert res.supported is True, "DM4 BAM response should be detected as supported"
+assert res.error is None
+assert res.packet is not None
+cleanup_testsockets()
+
+= dm_pgn_probe: multi-packet RTS response for DM4 (Freeze Frame Parameters)
+sock = TestSocket(CAN)
+pgn = J1939_DM_PGNS["DM4"]
+rts_id = _j1939_can_id(7, J1939_TP_CM_PF, 0xF9, 0x10)
+rts_data = bytes([TP_CM_RTS, 25, 0, 4, 0xFF]) + struct.pack("<I", pgn)[:3]
+sock.ins.send(bytes(CAN(identifier=rts_id, flags="extended", data=rts_data)))
+res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=pgn, dm_name="DM4", sniff_time=0.1)
+assert res.supported is True, "DM4 RTS response should be detected as supported"
+assert res.error is None
+assert res.packet is not None
+cleanup_testsockets()
+
+= dm_pgn_probe: multi-packet BAM response for DM16 (Binary Data Transfer)
+sock = TestSocket(CAN)
+pgn = J1939_DM_PGNS["DM16"]
+bam_id = _j1939_can_id(7, J1939_TP_CM_PF, J1939_GLOBAL_ADDRESS, 0x10)
+bam_data = bytes([TP_CM_BAM, 64, 0, 10, 0xFF]) + struct.pack("<I", pgn)[:3]
+sock.ins.send(bytes(CAN(identifier=bam_id, flags="extended", data=bam_data)))
+res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=pgn, dm_name="DM16", sniff_time=0.1)
+assert res.supported is True, "DM16 BAM response should be detected as supported"
+assert res.error is None
+assert res.packet is not None
+cleanup_testsockets()
+
+= dm_pgn_probe: multi-packet RTS response for DM16 (Binary Data Transfer)
+sock = TestSocket(CAN)
+pgn = J1939_DM_PGNS["DM16"]
+rts_id = _j1939_can_id(7, J1939_TP_CM_PF, 0xF9, 0x10)
+rts_data = bytes([TP_CM_RTS, 64, 0, 10, 0xFF]) + struct.pack("<I", pgn)[:3]
+sock.ins.send(bytes(CAN(identifier=rts_id, flags="extended", data=rts_data)))
+res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=pgn, dm_name="DM16", sniff_time=0.1)
+assert res.supported is True, "DM16 RTS response should be detected as supported"
+assert res.error is None
+assert res.packet is not None
+cleanup_testsockets()
+
+= dm_pgn_probe: multi-packet BAM response for DM19 (Calibration Information)
+sock = TestSocket(CAN)
+pgn = J1939_DM_PGNS["DM19"]
+bam_id = _j1939_can_id(7, J1939_TP_CM_PF, J1939_GLOBAL_ADDRESS, 0x10)
+bam_data = bytes([TP_CM_BAM, 40, 0, 6, 0xFF]) + struct.pack("<I", pgn)[:3]
+sock.ins.send(bytes(CAN(identifier=bam_id, flags="extended", data=bam_data)))
+res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=pgn, dm_name="DM19", sniff_time=0.1)
+assert res.supported is True, "DM19 BAM response should be detected as supported"
+assert res.error is None
+assert res.packet is not None
+cleanup_testsockets()
+
+= dm_pgn_probe: multi-packet RTS response for DM19 (Calibration Information)
+sock = TestSocket(CAN)
+pgn = J1939_DM_PGNS["DM19"]
+rts_id = _j1939_can_id(7, J1939_TP_CM_PF, 0xF9, 0x10)
+rts_data = bytes([TP_CM_RTS, 40, 0, 6, 0xFF]) + struct.pack("<I", pgn)[:3]
+sock.ins.send(bytes(CAN(identifier=rts_id, flags="extended", data=rts_data)))
+res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=pgn, dm_name="DM19", sniff_time=0.1)
+assert res.supported is True, "DM19 RTS response should be detected as supported"
+assert res.error is None
+assert res.packet is not None
+cleanup_testsockets()
+
+= dm_pgn_probe: multi-packet BAM response for DM24 (SPN Support)
+sock = TestSocket(CAN)
+pgn = J1939_DM_PGNS["DM24"]
+bam_id = _j1939_can_id(7, J1939_TP_CM_PF, J1939_GLOBAL_ADDRESS, 0x10)
+bam_data = bytes([TP_CM_BAM, 80, 0, 12, 0xFF]) + struct.pack("<I", pgn)[:3]
+sock.ins.send(bytes(CAN(identifier=bam_id, flags="extended", data=bam_data)))
+res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=pgn, dm_name="DM24", sniff_time=0.1)
+assert res.supported is True, "DM24 BAM response should be detected as supported"
+assert res.error is None
+assert res.packet is not None
+cleanup_testsockets()
+
+= dm_pgn_probe: multi-packet RTS response for DM24 (SPN Support)
+sock = TestSocket(CAN)
+pgn = J1939_DM_PGNS["DM24"]
+rts_id = _j1939_can_id(7, J1939_TP_CM_PF, 0xF9, 0x10)
+rts_data = bytes([TP_CM_RTS, 80, 0, 12, 0xFF]) + struct.pack("<I", pgn)[:3]
+sock.ins.send(bytes(CAN(identifier=rts_id, flags="extended", data=rts_data)))
+res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=pgn, dm_name="DM24", sniff_time=0.1)
+assert res.supported is True, "DM24 RTS response should be detected as supported"
+assert res.error is None
+assert res.packet is not None
+cleanup_testsockets()
+
+= dm_pgn_probe: multi-packet BAM response for DM25 (Expanded Freeze Frame)
+sock = TestSocket(CAN)
+pgn = J1939_DM_PGNS["DM25"]
+bam_id = _j1939_can_id(7, J1939_TP_CM_PF, J1939_GLOBAL_ADDRESS, 0x10)
+bam_data = bytes([TP_CM_BAM, 35, 0, 5, 0xFF]) + struct.pack("<I", pgn)[:3]
+sock.ins.send(bytes(CAN(identifier=bam_id, flags="extended", data=bam_data)))
+res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=pgn, dm_name="DM25", sniff_time=0.1)
+assert res.supported is True, "DM25 BAM response should be detected as supported"
+assert res.error is None
+assert res.packet is not None
+cleanup_testsockets()
+
+= dm_pgn_probe: multi-packet RTS response for DM25 (Expanded Freeze Frame)
+sock = TestSocket(CAN)
+pgn = J1939_DM_PGNS["DM25"]
+rts_id = _j1939_can_id(7, J1939_TP_CM_PF, 0xF9, 0x10)
+rts_data = bytes([TP_CM_RTS, 35, 0, 5, 0xFF]) + struct.pack("<I", pgn)[:3]
+sock.ins.send(bytes(CAN(identifier=rts_id, flags="extended", data=rts_data)))
+res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=pgn, dm_name="DM25", sniff_time=0.1)
+assert res.supported is True, "DM25 RTS response should be detected as supported"
+assert res.error is None
+assert res.packet is not None
+cleanup_testsockets()
+
+= dm_pgn_probe: multi-packet BAM response for DM28 (Permanent DTCs)
+sock = TestSocket(CAN)
+pgn = J1939_DM_PGNS["DM28"]
+bam_id = _j1939_can_id(7, J1939_TP_CM_PF, J1939_GLOBAL_ADDRESS, 0x10)
+bam_data = bytes([TP_CM_BAM, 10, 0, 2, 0xFF]) + struct.pack("<I", pgn)[:3]
+sock.ins.send(bytes(CAN(identifier=bam_id, flags="extended", data=bam_data)))
+res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=pgn, dm_name="DM28", sniff_time=0.1)
+assert res.supported is True, "DM28 BAM response should be detected as supported"
+assert res.error is None
+assert res.packet is not None
+cleanup_testsockets()
+
+= dm_pgn_probe: multi-packet RTS response for DM28 (Permanent DTCs)
+sock = TestSocket(CAN)
+pgn = J1939_DM_PGNS["DM28"]
+rts_id = _j1939_can_id(7, J1939_TP_CM_PF, 0xF9, 0x10)
+rts_data = bytes([TP_CM_RTS, 10, 0, 2, 0xFF]) + struct.pack("<I", pgn)[:3]
+sock.ins.send(bytes(CAN(identifier=rts_id, flags="extended", data=rts_data)))
+res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=pgn, dm_name="DM28", sniff_time=0.1)
+assert res.supported is True, "DM28 RTS response should be detected as supported"
+assert res.error is None
+assert res.packet is not None
+cleanup_testsockets()
+
+= j1939_scan_dm: detects multi-packet TP BAM and RTS responses in combined scan
+def test_scan_dm_tp_combined():
+    import threading
+    with TestSocket(CAN) as sock, TestSocket(CAN) as monitor:
+        sock.pair(monitor)
+        def simulate_ecu():
+            while True:
+                pkts = monitor.sniff(count=1, timeout=0.5)
+                if not pkts:
+                    break
+                p = pkts[0]
+                _, pf, ps, sa = _j1939_decode_can_id(p.identifier)
+                if pf == J1939_PF_REQUEST:
+                    req_pgn = p.data[0] | (p.data[1] << 8) | (p.data[2] << 16)
+                    if req_pgn == J1939_DM_PGNS["DM1"]:
+                        bam_id = _j1939_can_id(7, J1939_TP_CM_PF, J1939_GLOBAL_ADDRESS, 0x20)
+                        bam_d = bytes([TP_CM_BAM, 10, 0, 2, 0xFF]) + struct.pack("<I", req_pgn)[:3]
+                        sock.ins.send(bytes(CAN(identifier=bam_id, flags="extended", data=bam_d)))
+                    elif req_pgn == J1939_DM_PGNS["DM19"]:
+                        rts_id = _j1939_can_id(7, J1939_TP_CM_PF, sa, 0x20)
+                        rts_d = bytes([TP_CM_RTS, 40, 0, 6, 0xFF]) + struct.pack("<I", req_pgn)[:3]
+                        sock.ins.send(bytes(CAN(identifier=rts_id, flags="extended", data=rts_d)))
+        t = threading.Thread(target=simulate_ecu)
+        t.start()
+        results = j1939_scan_dm(sock, target_da=0x20, dms=["DM1", "DM19"], sniff_time=0.2)
+        t.join(timeout=2.0)
+        assert results["DM1"].supported, "DM1 BAM should be supported"
+        assert results["DM19"].supported, "DM19 RTS should be supported"
+    cleanup_testsockets()
+
+test_scan_dm_tp_combined()
+
+= dm_pgn_probe: TP.CM announcing different PGN is ignored
+sock = TestSocket(CAN)
+bam_id = _j1939_can_id(7, J1939_TP_CM_PF, J1939_GLOBAL_ADDRESS, 0x10)
+bam_data = bytes([TP_CM_BAM, 14, 0, 2, 0xFF]) + struct.pack("<I", J1939_DM_PGNS["DM2"])[:3]
+sock.ins.send(bytes(CAN(identifier=bam_id, flags="extended", data=bam_data)))
+res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=J1939_DM_PGNS["DM1"],
+                        dm_name="DM1", sniff_time=0.05)
+assert res.supported is False
+assert res.error == "Timeout"
+cleanup_testsockets()
+
+= dm_pgn_probe: TP.CM from different SA is ignored
+sock = TestSocket(CAN)
+bam_id = _j1939_can_id(7, J1939_TP_CM_PF, J1939_GLOBAL_ADDRESS, 0x30)
+bam_data = bytes([TP_CM_BAM, 10, 0, 2, 0xFF]) + struct.pack("<I", J1939_DM_PGNS["DM1"])[:3]
+sock.ins.send(bytes(CAN(identifier=bam_id, flags="extended", data=bam_data)))
+res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=J1939_DM_PGNS["DM1"],
+                        dm_name="DM1", sniff_time=0.05)
+assert res.supported is False
+assert res.error == "Timeout"
+cleanup_testsockets()
+
+= dm_pgn_probe: RTS directed to different DA is ignored
+sock = TestSocket(CAN)
+rts_id = _j1939_can_id(7, J1939_TP_CM_PF, 0x55, 0x10)
+rts_data = bytes([TP_CM_RTS, 10, 0, 2, 0xFF]) + struct.pack("<I", J1939_DM_PGNS["DM1"])[:3]
+sock.ins.send(bytes(CAN(identifier=rts_id, flags="extended", data=rts_data)))
+res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=J1939_DM_PGNS["DM1"],
+                        dm_name="DM1", src_addr=0xF9, sniff_time=0.05)
+assert res.supported is False
+assert res.error == "Timeout"
+cleanup_testsockets()
+
+= dm_pgn_probe: BAM with non-global destination address is ignored
+sock = TestSocket(CAN)
+bad_bam_id = _j1939_can_id(7, J1939_TP_CM_PF, 0xF9, 0x10)
+bam_data = bytes([TP_CM_BAM, 10, 0, 2, 0xFF]) + struct.pack("<I", J1939_DM_PGNS["DM1"])[:3]
+sock.ins.send(bytes(CAN(identifier=bad_bam_id, flags="extended", data=bam_data)))
+res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=J1939_DM_PGNS["DM1"],
+                        dm_name="DM1", sniff_time=0.05)
+assert res.supported is False
+assert res.error == "Timeout"
+cleanup_testsockets()
+
+= dm_pgn_probe: truncated TP.CM (< 8 bytes) is ignored
+sock = TestSocket(CAN)
+bam_id = _j1939_can_id(7, J1939_TP_CM_PF, J1939_GLOBAL_ADDRESS, 0x10)
+sock.ins.send(bytes(CAN(identifier=bam_id, flags="extended", data=bytes([TP_CM_BAM, 10, 0, 2]))))
+res = j1939_scan_dm_pgn(sock, target_da=0x10, pgn=J1939_DM_PGNS["DM1"],
+                        dm_name="DM1", sniff_time=0.05)
+assert res.supported is False
+assert res.error == "Timeout"
+cleanup_testsockets()
+

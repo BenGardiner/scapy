@@ -50,7 +50,12 @@ from typing import (  # noqa: F401
 from scapy.layers.can import CAN
 from scapy.supersocket import SuperSocket  # noqa: F401
 
-from scapy.contrib.j1939 import log_j1939
+from scapy.contrib.j1939 import (
+    J1939_BROADCAST_ADDR as J1939_GLOBAL_ADDRESS,
+    J1939_TP_CTRL_BAM as TP_CM_BAM,
+    J1939_TP_CTRL_RTS as TP_CM_RTS,
+    log_j1939,
+)
 from scapy.contrib.automotive.j1939.j1939_scanner import (  # noqa: F401
     _j1939_can_id,
     _j1939_decode_can_id,
@@ -60,6 +65,7 @@ from scapy.contrib.automotive.j1939.j1939_scanner import (  # noqa: F401
     _pre_probe_flush,
     _resolve_probe_sock,
     J1939_PF_REQUEST,
+    J1939_TP_CM_PF,
     SockOrFactory,
 )
 
@@ -250,6 +256,39 @@ def j1939_scan_dm_pgn(
             log_j1939.debug("dm_scan: positive response SA=0x%02X PGN=0x%04X", sa, pgn)
             result.append(DmScanResult(dm_name, pgn, True, packet=pkt))
             return
+        if pf == J1939_TP_CM_PF:
+            data = bytes(pkt.data)
+            if len(data) >= 8:
+                ctrl = data[0]
+                tp_pgn = data[5] | (data[6] << 8) | (data[7] << 16)
+                if tp_pgn == pgn:
+                    if (ctrl == TP_CM_BAM and ps == J1939_GLOBAL_ADDRESS) or \
+                       (ctrl == TP_CM_RTS and ps == src_addr):
+                        log_j1939.debug(
+                            "dm_scan: TP positive response SA=0x%02X PGN=0x%04X",
+                            sa, pgn,
+                        )
+                        if ctrl == TP_CM_RTS:
+                            try:
+                                abort_id = _j1939_can_id(
+                                    7, J1939_TP_CM_PF, target_da, src_addr
+                                )
+                                abort_pkt = CAN(
+                                    identifier=abort_id,
+                                    flags="extended",
+                                    data=bytes([0xFF, 0xFF, 0xFF, 0xFF, 0xFF]) +
+                                    struct.pack("<I", pgn)[:3],
+                                )
+                                send_sock.send(abort_pkt)
+                            except Exception as ex:
+                                log_j1939.debug(
+                                    "dm_scan: failed to send TP abort to "
+                                    "SA=0x%02X: %s",
+                                    src_addr,
+                                    ex,
+                                )
+                        result.append(DmScanResult(dm_name, pgn, True, packet=pkt))
+                        return
         if pf == J1939_PF_ACK:
             data = bytes(pkt.data)
             if data and data[0] == _ACK_CTRL_NACK:
