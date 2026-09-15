@@ -309,6 +309,16 @@ class J1939(Packet):
         clone.dst = self.dst
         return clone
 
+    def post_build(self, p, pay):
+        # type: (bytes, bytes) -> bytes
+        if self.pgn == 0xEA00 and not self.data and self.payload:
+            target_pgn = getattr(
+                self.payload, "PGN", getattr(self.payload, "pgn", None)
+            )
+            if target_pgn is not None:
+                return p + struct.pack("<I", target_pgn)[:3]
+        return p + pay
+
     def answers(self, other):
         # type: (Packet) -> int
         if not isinstance(other, J1939):
@@ -321,30 +331,63 @@ class J1939(Packet):
                 self.dst not in (socket.J1939_NO_ADDR, 0xFF) and
                 self.dst != other.src):
             return 0
-        # Request PGN (0xEA00 / 59904) matching
-        if other.pgn == 0xEA00 and len(other.data) >= 3:
-            target_pgn = other.data[0] | (other.data[1] << 8) | (other.data[2] << 16)
-            if self.pgn == target_pgn:
-                return 1
-            # Acknowledgment PGN (0xE800 / 59392; J1939-21 §5.4.4)
-            if self.pgn == 0xE800:
-                if len(self.data) >= 8:
-                    ack_pgn = self.data[5] | (self.data[6] << 8) | (self.data[7] << 16)
-                    if ack_pgn == target_pgn:
-                        return 1
-                elif len(self.data) >= 4:
-                    ack_pgn = self.data[1] | (self.data[2] << 8) | (self.data[3] << 16)
-                    if ack_pgn == target_pgn:
-                        return 1
-            return 0
+        # Extract target PGN for Request PGN (0xEA00 / 59904) matching
+        if other.pgn == 0xEA00:
+            target_pgn = None  # type: Optional[int]
+            if other.payload:
+                target_pgn = getattr(
+                    other.payload, "PGN", getattr(other.payload, "pgn", None)
+                )
+                if target_pgn is None:
+                    pay_bytes = bytes(other.payload)
+                    if len(pay_bytes) >= 3:
+                        target_pgn = (
+                            pay_bytes[0] | (pay_bytes[1] << 8) | (pay_bytes[2] << 16)
+                        )
+            if target_pgn is None:
+                other_data = other.data
+                if isinstance(other_data, (bytes, bytearray)) and len(other_data) >= 3:
+                    target_pgn = (
+                        other_data[0] | (other_data[1] << 8) | (other_data[2] << 16)
+                    )
+
+            if target_pgn is not None:
+                if self.pgn == target_pgn:
+                    return 1
+                # Acknowledgment PGN (0xE800 / 59392; J1939-21 §5.4.4)
+                if self.pgn == 0xE800:
+                    self_data = self.data if self.data else bytes(self.payload)
+                    if len(self_data) >= 8:
+                        ack_pgn = (
+                            self_data[5] | (self_data[6] << 8) | (self_data[7] << 16)
+                        )
+                        if ack_pgn == target_pgn:
+                            return 1
+                    elif len(self_data) >= 4:
+                        ack_pgn = (
+                            self_data[1] | (self_data[2] << 8) | (self_data[3] << 16)
+                        )
+                        if ack_pgn == target_pgn:
+                            return 1
+                return 0
+
+        # Paired Diagnostic Request/Response matching: DM14 (0xD900) -> DM15 (0xD800)
+        if other.pgn == 0xD900 and self.pgn == 0xD800:
+            return 1
+
         # General command acknowledgment matching (e.g. DM11 clear DTCs)
         if self.pgn == 0xE800 and other.pgn:
-            if len(self.data) >= 8:
-                ack_pgn = self.data[5] | (self.data[6] << 8) | (self.data[7] << 16)
+            self_data = self.data if self.data else bytes(self.payload)
+            if len(self_data) >= 8:
+                ack_pgn = (
+                    self_data[5] | (self_data[6] << 8) | (self_data[7] << 16)
+                )
                 if ack_pgn == other.pgn:
                     return 1
-            elif len(self.data) >= 4:
-                ack_pgn = self.data[1] | (self.data[2] << 8) | (self.data[3] << 16)
+            elif len(self_data) >= 4:
+                ack_pgn = (
+                    self_data[1] | (self_data[2] << 8) | (self_data[3] << 16)
+                )
                 if ack_pgn == other.pgn:
                     return 1
         # Generic fallback heuristic: same PGN with swapped DA and SA
@@ -368,6 +411,30 @@ class J1939(Packet):
         return "J1939 PGN=0x%05X SA=0x%02X DA=0x%02X prio=%d" % (
             self.pgn, self.src, self.dst, self.priority
         )
+
+
+class J1939Request(J1939):
+    """J1939 Request frame (PGN 0xEA00 / 59904).
+
+    Used to request a Parameter Group from a network node or broadcast.
+    Can be instantiated directly with a requested PGN, with raw bytes,
+    or stacked with a layer representing the requested PGN:
+
+        >>> J1939Request(req_pgn=0xFECA, dst=0x10)
+        >>> J1939Request(dst=0x10) / Raw(b'\\xca\\xfe\\x00')
+        >>> J1939Request(dst=0x10) / J1939_DM1()
+    """
+
+    name = 'J1939Request'
+
+    def __init__(self, *args, **kwargs):
+        # type: (*Any, **Any) -> None
+        req_pgn = kwargs.pop('req_pgn', None)
+        if 'pgn' not in kwargs:
+            kwargs['pgn'] = 0xEA00
+        super(J1939Request, self).__init__(*args, **kwargs)
+        if req_pgn is not None and not self.data:
+            self.data = struct.pack('<I', req_pgn)[:3]
 
 
 # ---------------------------------------------------------------------------
@@ -1612,6 +1679,8 @@ class J1939TPImplementation:
         # type: (Packet) -> bytes
         """The bytes *msg* puts on the bus, however it was constructed."""
         if isinstance(msg, J1939):
+            if msg.payload:
+                return bytes(msg)
             data = msg.data
             if not isinstance(data, (bytes, bytearray)):
                 data = bytes(msg)

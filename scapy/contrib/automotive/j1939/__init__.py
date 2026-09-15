@@ -12,6 +12,7 @@ from scapy.config import conf
 
 from scapy.contrib.j1939 import (
     J1939,
+    J1939Request,
     J1939_CAN,
     J1939SoftSocket,
     NativeJ1939Socket,
@@ -98,6 +99,7 @@ J1939Socket = J1939SoftSocket
 
 __all__ = [
     'J1939',
+    'J1939Request',
     'J1939_CAN',
     'J1939SoftSocket',
     'NativeJ1939Socket',
