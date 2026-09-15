@@ -148,6 +148,9 @@ dm1_p = J1939_DM1(raw)
 assert len(dm1_p.dtcs) == 1, \
     "Expected 1 DTC (not 2), got {}".format(len(dm1_p.dtcs))
 
+= DM1 does not overwrite repr
+assert "__repr__" not in J1939_DM1.__dict__
+
 
 + J1939_DM13 — Creation and PGN tests
 
