@@ -1738,46 +1738,60 @@ test_j1939_scan_xcp_multi_src_addr_recorded()
 
 = j1939_scan: mock ECU responds UDS from SA 0xF1 and XCP from SA 0xB5 on PGN 0xEF/DA 0x33
 def test_j1939_scan_uds_and_xcp_src_addr_discrimination():
-    sock = TestSocket(CAN)
-    _CUSTOM_PGN = 0xEF
-    _TARGET_DA = 0x33
-    _UDS_SRC = 0xF1
-    _XCP_SRC = 0xB5
-    # Pre-inject UDS response: ECU at DA=0x33 responds to UDS from SA=0xF1
-    uds_resp_id = _j1939_can_id(6, _CUSTOM_PGN, _UDS_SRC, _TARGET_DA)
-    sock.ins.send(bytes(CAN(identifier=uds_resp_id, flags="extended",
-                            data=b'\x02\x7e\x00')))
-    # Pre-inject XCP response: ECU at DA=0x33 responds to XCP from SA=0xB5.
-    # The UDS sniff exits early (stop_filter) after reading the UDS response,
-    # leaving the XCP response in the buffer for the XCP scan.
-    xcp_resp_id = _j1939_can_id(6, _CUSTOM_PGN, _XCP_SRC, _TARGET_DA)
-    sock.ins.send(bytes(CAN(identifier=xcp_resp_id, flags="extended",
-                            data=b'\xff\x00\x00\x00\x00\x00\x00\x00')))
-    found = j1939_scan(
-        sock,
-        methods=["uds", "xcp"],
-        scan_range=[_TARGET_DA],
-        src_addrs=[_UDS_SRC, _XCP_SRC],
-        sniff_time=0.1,
-        noise_ids=set(),
-        skip_functional=True,
-        diag_pgn=_CUSTOM_PGN,
+    import threading
+    from scapy.contrib.automotive.j1939.j1939_scanner import (
+        _UDS_TESTER_PRESENT_REQS, _XCP_CONNECT_REQ,
     )
-    assert _TARGET_DA in found, \
-        "ECU at DA=0x{:02X} not found, got: {}".format(
-            _TARGET_DA, [hex(k) for k in found])
-    assert "uds" in found[_TARGET_DA]["methods"], \
-        "UDS method missing from result"
-    assert "xcp" in found[_TARGET_DA]["methods"], \
-        "XCP method missing from result"
-    uds_idx = found[_TARGET_DA]["methods"].index("uds")
-    xcp_idx = found[_TARGET_DA]["methods"].index("xcp")
-    assert found[_TARGET_DA]["src_addrs"][uds_idx] == [_UDS_SRC], \
-        "UDS: expected scanner SA=[0x{:02X}], got: {}".format(
-            _UDS_SRC, found[_TARGET_DA]["src_addrs"][uds_idx])
-    assert found[_TARGET_DA]["src_addrs"][xcp_idx] == [_XCP_SRC], \
-        "XCP: expected scanner SA=[0x{:02X}], got: {}".format(
-            _XCP_SRC, found[_TARGET_DA]["src_addrs"][xcp_idx])
+    with TestSocket(CAN) as sock, TestSocket(CAN) as monitor:
+        sock.pair(monitor)
+        _CUSTOM_PGN = 0xEF
+        _TARGET_DA = 0x33
+        _UDS_SRC = 0xF1
+        _XCP_SRC = 0xB5
+        stop_mock = threading.Event()
+        def simulate_ecu():
+            while not stop_mock.is_set():
+                pkts = monitor.sniff(count=1, timeout=0.1)
+                if not pkts:
+                    continue
+                p = pkts[0]
+                _, pf, ps, sa = _j1939_decode_can_id(p.identifier)
+                if pf == _CUSTOM_PGN and ps == _TARGET_DA:
+                    if sa == _UDS_SRC and bytes(p.data) in _UDS_TESTER_PRESENT_REQS:
+                        uds_resp_id = _j1939_can_id(6, _CUSTOM_PGN, _UDS_SRC, _TARGET_DA)
+                        sock.ins.send(bytes(CAN(identifier=uds_resp_id, flags="extended", data=b'\x02\x7e\x00')))
+                    elif sa == _XCP_SRC and bytes(p.data) == _XCP_CONNECT_REQ:
+                        xcp_resp_id = _j1939_can_id(6, _CUSTOM_PGN, _XCP_SRC, _TARGET_DA)
+                        sock.ins.send(bytes(CAN(identifier=xcp_resp_id, flags="extended", data=b'\xff\x00\x00\x00\x00\x00\x00\x00')))
+        t = threading.Thread(target=simulate_ecu)
+        t.start()
+        found = j1939_scan(
+            sock,
+            methods=["uds", "xcp"],
+            scan_range=[_TARGET_DA],
+            src_addrs=[_UDS_SRC, _XCP_SRC],
+            sniff_time=0.1,
+            noise_ids=set(),
+            skip_functional=True,
+            diag_pgn=_CUSTOM_PGN,
+        )
+        stop_mock.set()
+        t.join(timeout=2.0)
+        assert _TARGET_DA in found, \
+            "ECU at DA=0x{:02X} not found, got: {}".format(
+                _TARGET_DA, [hex(k) for k in found])
+        assert "uds" in found[_TARGET_DA]["methods"], \
+            "UDS method missing from result"
+        assert "xcp" in found[_TARGET_DA]["methods"], \
+            "XCP method missing from result"
+        uds_idx = found[_TARGET_DA]["methods"].index("uds")
+        xcp_idx = found[_TARGET_DA]["methods"].index("xcp")
+        assert found[_TARGET_DA]["src_addrs"][uds_idx] == [_UDS_SRC], \
+            "UDS: expected scanner SA=[0x{:02X}], got: {}".format(
+                _UDS_SRC, found[_TARGET_DA]["src_addrs"][uds_idx])
+        assert found[_TARGET_DA]["src_addrs"][xcp_idx] == [_XCP_SRC], \
+            "XCP: expected scanner SA=[0x{:02X}], got: {}".format(
+                _XCP_SRC, found[_TARGET_DA]["src_addrs"][xcp_idx])
     cleanup_testsockets()
 
 test_j1939_scan_uds_and_xcp_src_addr_discrimination()
