@@ -102,6 +102,7 @@ from threading import Event  # noqa: F401
 
 # Typing imports
 from typing import (  # noqa: F401
+    Any,
     Callable,
     Dict,
     Iterable,
@@ -113,7 +114,7 @@ from typing import (  # noqa: F401
     cast,
 )
 
-from scapy.layers.can import CAN
+from scapy.layers.can import CAN, CAN_EFF_FLAG
 from scapy.supersocket import SuperSocket
 
 from scapy.contrib.j1939 import (
@@ -176,14 +177,17 @@ PGN_DIAG_B = 0xDB00
 #: PF byte for Diagnostic Message B
 J1939_PF_DIAG_B = 0xDB
 
-#: UDS TesterPresent request payloads: length=2, SID=0x3E, followed by 5
-#: padding bytes (0xFF) to fill an 8-byte CAN frame.
-#: Subfunction 0x00 asks for a response; 0x01 suppresses it (but some ECUs
-#: respond anyway, confirming UDS support).
-_UDS_TESTER_PRESENT_REQS = [
-    b"\x02\x3e\x00\xff\xff\xff\xff\xff",
-    b"\x02\x3e\x01\xff\xff\xff\xff\xff",
-]
+
+def _get_uds_tester_present_reqs():
+    # type: () -> List[bytes]
+    """Build UDS TesterPresent request CAN frame payloads using UDS & ISO-TP layers."""
+    from scapy.contrib.automotive.uds import UDS, UDS_TP
+    from scapy.contrib.isotp.isotp_packet import ISOTP_SF
+    return [
+        bytes(ISOTP_SF(data=bytes(UDS() / UDS_TP(subFunction=sf)))).ljust(8, b"\xff")
+        for sf in (0x00, 0x01)
+    ]
+
 
 #: Expected UDS responses for TesterPresent (SID=0x3E).
 #: Includes positive responses (SID=0x7E, subfunctions 0x00 and 0x01) and
@@ -202,9 +206,14 @@ J1939_XCP_SRC_ADDRS = (
     [0x3F, 0x5A] + list(range(0x01, 0x10)) + [0xAC] + list(range(0xF1, 0xFE))
 )
 
-#: XCP CONNECT command payload: command byte 0xFF, mode 0x00 (normal connection),
-#: followed by 6 padding bytes (0xFF) to fill an 8-byte CAN frame.
-_XCP_CONNECT_REQ = b"\xff\x00\xff\xff\xff\xff\xff\xff"
+
+def _get_xcp_connect_req():
+    # type: () -> bytes
+    """Build XCP CONNECT request payload using XCP definitions, padded to 8 bytes."""
+    from scapy.contrib.automotive.xcp.xcp import CTORequest
+    from scapy.contrib.automotive.xcp.cto_commands_master import Connect
+    return bytes(CTORequest() / Connect()).ljust(8, b"\xff")
+
 
 #: XCP positive response byte (status byte 0xFF = OK in XCP protocol)
 _XCP_POSITIVE_RESPONSE = 0xFF
@@ -292,12 +301,6 @@ def _pre_probe_flush(sock):
 
 # --- Socketcan filter helpers
 
-#: CAN Extended Frame Format flag for socketcan ``CAN_RAW_FILTER`` entries.
-#: Set in the ``can_id`` field of ``struct can_filter`` so the kernel matches
-#: only 29-bit extended identifiers.  Value equals ``socket.CAN_EFF_FLAG``.
-_SOCKETCAN_EFF_FLAG = 0x80000000
-
-
 def _j1939_sa_filter(target_sa):
     # type: (int) -> List[Dict[str, int]]
     """Return socketcan ``can_filters`` matching extended frames with SA=*target_sa*.
@@ -312,8 +315,8 @@ def _j1939_sa_filter(target_sa):
               :class:`~scapy.contrib.cansocket_native.NativeCANSocket`
     """
     return [{
-        "can_id": _SOCKETCAN_EFF_FLAG | (target_sa & 0xFF),
-        "can_mask": _SOCKETCAN_EFF_FLAG | 0xFF,
+        "can_id": CAN_EFF_FLAG | (target_sa & 0xFF),
+        "can_mask": CAN_EFF_FLAG | 0xFF,
     }]
 
 
@@ -973,6 +976,7 @@ def j1939_scan_uds(
     else:
         src_addrs = list(src_addrs)
     found = {}  # type: Dict[int, List[CAN]]
+    reqs = _get_uds_tester_present_reqs()
 
     if not skip_functional:
         func_sock, close_func = _resolve_broadcast_sock(sock)
@@ -1008,7 +1012,7 @@ def j1939_scan_uds(
                     can_id_f = _j1939_can_id(
                         _SCAN_PRIORITY, diag_pgn | 0x01, J1939_GLOBAL_ADDRESS, _sa
                     )
-                    for req in _UDS_TESTER_PRESENT_REQS:
+                    for req in reqs:
                         func_sock.send(CAN(identifier=can_id_f, flags="extended", data=req))
                     log_j1939.debug(
                         "uds: broadcast functional probe sent SA=0x%02X (PF=0x%02X)",
@@ -1054,7 +1058,7 @@ def j1939_scan_uds(
                             found[_da].append(pkt)
                             _sa_resps.append(pkt)
 
-                for req in _UDS_TESTER_PRESENT_REQS:
+                for req in reqs:
                     if stop_event is not None and stop_event.is_set():
                         break
                     if _sa_resps:
@@ -1079,7 +1083,7 @@ def j1939_scan_uds(
                     )
 
                 # Pace: probes per src_addr + 1 response
-                _tx_bits = len(_UDS_TESTER_PRESENT_REQS) * _can_frame_bits(8)
+                _tx_bits = len(reqs) * _can_frame_bits(8)
                 _extra = max(
                     0.0, (_tx_bits + _can_frame_bits(8)) / (bitrate * busload) - sniff_time
                 )
@@ -1143,6 +1147,7 @@ def j1939_scan_xcp(
     else:
         src_addrs = list(src_addrs)
     found = {}  # type: Dict[int, List[CAN]]
+    connect_req = _get_xcp_connect_req()
 
     for da in scan_range:
         if stop_event is not None and stop_event.is_set():
@@ -1182,7 +1187,7 @@ def j1939_scan_xcp(
                     _pre_probe_flush(rx_sock)
                     can_id = _j1939_can_id(_SCAN_PRIORITY, diag_pgn, _da, _sa)
                     send_sock.send(
-                        CAN(identifier=can_id, flags="extended", data=_XCP_CONNECT_REQ)
+                        CAN(identifier=can_id, flags="extended", data=connect_req)
                     )
                     log_j1939.debug(
                         "xcp: probing DA=0x%02X SA=0x%02X on PF=0x%02X", _da, _sa, diag_pgn
@@ -1569,6 +1574,24 @@ def _generate_json_output(results):
         }  # type: Dict[str, object]
         out.append(entry)
     return json.dumps(out)
+
+
+_xcp_connect_req_cache = None  # type: Optional[bytes]
+_uds_tester_present_reqs_cache = None  # type: Optional[List[bytes]]
+
+
+def __getattr__(name):
+    # type: (str) -> Any
+    global _xcp_connect_req_cache, _uds_tester_present_reqs_cache
+    if name == "_XCP_CONNECT_REQ":
+        if _xcp_connect_req_cache is None:
+            _xcp_connect_req_cache = _get_xcp_connect_req()
+        return _xcp_connect_req_cache
+    if name == "_UDS_TESTER_PRESENT_REQS":
+        if _uds_tester_present_reqs_cache is None:
+            _uds_tester_present_reqs_cache = _get_uds_tester_present_reqs()
+        return _uds_tester_present_reqs_cache
+    raise AttributeError("module {!r} has no attribute {!r}".format(__name__, name))
 
 
 __all__ = [
