@@ -215,8 +215,6 @@ class J1939_DM13(Packet):
     #: PGN for DM13 Stop/Start Broadcast
     PGN = PGN_DM13
 
-    _hold_signal_enum = {0xFE: "start", 0xFF: "stop"}
-
     fields_desc = [
         ByteField("hold_signal", 0xFF),
         StrFixedLenField("data", b"\xff" * 7, 7),

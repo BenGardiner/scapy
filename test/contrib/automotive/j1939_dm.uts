@@ -168,6 +168,9 @@ assert dm13.hold_signal == 0xFE
 dm13 = J1939_DM13(hold_signal=0xFF, data=b'\xfe\xff\xff\xff\xff\xff\xff')
 assert len(bytes(dm13)) == 8
 
+= DM13 _hold_signal_enum is unused and removed
+assert not hasattr(J1939_DM13, "_hold_signal_enum")
+
 
 + J1939_DM14 — Creation and PGN tests
 
