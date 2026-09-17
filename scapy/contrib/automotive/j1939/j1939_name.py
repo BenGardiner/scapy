@@ -40,6 +40,7 @@ import struct
 import time
 from typing import (
     Any,
+    Callable,
     Dict,
     Iterable,
     List,
@@ -48,6 +49,7 @@ from typing import (
     Union,
 )
 
+from scapy.supersocket import SuperSocket
 from scapy.fields import BitField
 from scapy.layers.can import CAN
 from scapy.packet import Packet
@@ -702,6 +704,7 @@ def j1939_request_name(
     sniff_time: float = 0.3,
     bitrate: Optional[int] = None,
     busload: float = _J1939_DEFAULT_BUSLOAD,
+    reconnect: Optional[Callable[[], SuperSocket]] = None,
 ) -> Union[Optional[J1939_NAME], Dict[int, J1939_NAME]]:
     """Request and decode J1939 NAME for a given destination address (or broadcast).
 
@@ -727,7 +730,7 @@ def j1939_request_name(
 
     if target_da == J1939_GLOBAL_ADDRESS:
         # Broadcast request
-        active_sock, close_sock = _resolve_broadcast_sock(sock)
+        active_sock, close_sock = _resolve_broadcast_sock(sock, reconnect=reconnect)
         found: Dict[int, J1939_NAME] = {}
         try:
             can_id = _j1939_can_id(6, J1939_PF_REQUEST, J1939_GLOBAL_ADDRESS, src_addr)
@@ -754,7 +757,9 @@ def j1939_request_name(
                 active_sock.close()
     else:
         # Unicast request to target_da
-        send_sock, rx_sock, close_rx = _resolve_probe_sock(sock, target_da)
+        send_sock, rx_sock, close_rx = _resolve_probe_sock(
+            sock, target_da, reconnect=reconnect
+        )
         resp_name: List[J1939_NAME] = []
         try:
             can_id = _j1939_can_id(6, J1939_PF_REQUEST, target_da, src_addr)
@@ -806,6 +811,7 @@ def j1939_request_names(
     sniff_time: float = 0.3,
     bitrate: Optional[int] = None,
     busload: float = _J1939_DEFAULT_BUSLOAD,
+    reconnect: Optional[Callable[[], SuperSocket]] = None,
 ) -> Dict[int, Optional[J1939_NAME]]:
     """Request and decode J1939 NAMEs for multiple target Destination Addresses.
 
@@ -816,6 +822,7 @@ def j1939_request_names(
     :param sniff_time: timeout per probe
     :param bitrate: bus bitrate in bit/s (optional, auto-detected from socket)
     :param busload: max busload fraction
+    :param reconnect: optional socket factory called per probe
     :returns: mapping ``{da: J1939_NAME or None}``
     """
     if target_das is None:
@@ -826,6 +833,7 @@ def j1939_request_names(
             sniff_time=sniff_time,
             bitrate=bitrate,
             busload=busload,
+            reconnect=reconnect,
         )
         return broadcast_res if isinstance(broadcast_res, dict) else {}
 
@@ -838,6 +846,7 @@ def j1939_request_names(
             sniff_time=sniff_time,
             bitrate=bitrate,
             busload=busload,
+            reconnect=reconnect,
         )
         results[da] = res if isinstance(res, J1939_NAME) else None
     return results
