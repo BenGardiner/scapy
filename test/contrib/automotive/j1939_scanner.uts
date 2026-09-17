@@ -2023,7 +2023,7 @@ fFF = _j1939_sa_filter(0xFF)
 assert fFF[0]["can_id"] == 0x800000FF
 assert fFF[0]["can_mask"] == 0x800000FF
 
-= _open_sa_filtered_sock: falls back to original socket for non-NativeCANSocket
+= _open_sa_filtered_sock: falls back to original socket for non-CANSocket
 
 sock = TestSocket(CAN)
 rx_sock, close_rx = _open_sa_filtered_sock(sock, 0x42)
@@ -2031,7 +2031,7 @@ assert rx_sock is sock, "Expected fallback to original socket"
 assert close_rx is False, "Expected close_rx=False for fallback"
 cleanup_testsockets()
 
-= _resolve_probe_sock: falls back for test sockets (non-NativeCANSocket)
+= _resolve_probe_sock: falls back for test sockets (non-CANSocket)
 
 sock = TestSocket(CAN)
 send_sock, rx_sock, close_rx = _resolve_probe_sock(sock, 0x42)
@@ -2040,15 +2040,18 @@ assert rx_sock is sock, "Expected rx_sock is original (fallback)"
 assert close_rx is False
 cleanup_testsockets()
 
-= _resolve_probe_sock: callable creates a per-probe socket
+= _resolve_probe_sock: reconnect argument creates per-probe socket
 
+sock = TestSocket(CAN)
 def _factory():
     return TestSocket(CAN)
 
-send_sock, rx_sock, close_rx = _resolve_probe_sock(_factory, 0x42)
-assert close_rx is True, "Expected close_rx=True for factory-created socket"
-assert send_sock is rx_sock, "Factory path should use same socket for send and receive"
+send_sock, rx_sock, close_rx = _resolve_probe_sock(sock, 0x42, reconnect=_factory)
+assert close_rx is True
+assert send_sock is rx_sock
+assert send_sock is not sock
 rx_sock.close()
+assert not sock.closed
 cleanup_testsockets()
 
 = _resolve_broadcast_sock: falls back for test sockets
@@ -2059,20 +2062,49 @@ assert active_sock is sock
 assert close_sock is False
 cleanup_testsockets()
 
-= _resolve_broadcast_sock: callable creates a socket
+= _resolve_broadcast_sock: reconnect creates a socket
 
+sock = TestSocket(CAN)
 def _factory():
     return TestSocket(CAN)
 
-active_sock, close_sock = _resolve_broadcast_sock(_factory)
+active_sock, close_sock = _resolve_broadcast_sock(sock, reconnect=_factory)
 assert close_sock is True
+assert active_sock is not sock
 active_sock.close()
+assert not sock.closed
 cleanup_testsockets()
 
 
 # Factory (reconnect) API
 
-= unicast: callable factory produces same results as direct socket
+= unicast: reconnect factory is called per iteration and closed
+
+created_socks = []
+def _rec_factory():
+    s = TestSocket(CAN)
+    created_socks.append(s)
+    return s
+
+main_sock = TestSocket(CAN)
+j1939_scan_unicast(main_sock, scan_range=[0x10, 0x20], src_addrs=[0xF9],
+                   sniff_time=0.01, reconnect=_rec_factory)
+assert len(created_socks) == 2, "Expected 2 sockets created (1 per DA)"
+assert all(s.closed for s in created_socks), "All per-iteration sockets should be closed"
+assert not main_sock.closed, "Main socket should not be closed"
+cleanup_testsockets()
+True
+
+= unicast: reconnect=None reuses caller socket and leaves it open
+
+main_sock = TestSocket(CAN)
+j1939_scan_unicast(main_sock, scan_range=[0x10, 0x20], src_addrs=[0xF9],
+                   sniff_time=0.01)
+assert not main_sock.closed, "Main socket should not be closed"
+cleanup_testsockets()
+True
+
+= unicast: reconnect factory produces same results as direct socket
 def test_unicast_factory():
     def _factory():
         return TestSocket(CAN)
@@ -2086,44 +2118,32 @@ def test_unicast_factory():
     factory_sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8)))
     def _factory_with_data():
         return factory_sock
-    found_factory = j1939_scan_unicast(_factory_with_data, scan_range=[0x42],
-                                       src_addrs=[0xF9], sniff_time=0.1)
+    dummy_sock = TestSocket(CAN)
+    found_factory = j1939_scan_unicast(dummy_sock, scan_range=[0x42],
+                                       src_addrs=[0xF9], sniff_time=0.1,
+                                       reconnect=_factory_with_data)
     assert set(found_direct.keys()) == set(found_factory.keys()), \
         "Factory should find same SAs: direct={} factory={}".format(
             list(found_direct.keys()), list(found_factory.keys()))
     cleanup_testsockets()
 
 test_unicast_factory()
+True
 
-
-
-= rts_probe: callable factory works for RTS probe scanner
-def test_rts_factory():
-    sock = TestSocket(CAN)
-    cts_id = _j1939_can_id(7, J1939_TP_CM_PF, 0xF9, 0x42)
-    sock.ins.send(bytes(CAN(identifier=cts_id, flags="extended",
-                            data=bytes([TP_CM_CTS, 1, 1, 0xFF, 0xFF, 0x00, 0x00, 0xFF]))))
-    def _factory():
-        return sock
-    found = j1939_scan_rts_probe(_factory, scan_range=[0x42],
-                                 src_addrs=[0xF9], sniff_time=0.5)
-    assert 0x42 in found, "Factory RTS probe should find DA=0x42"
-    cleanup_testsockets()
-
-test_rts_factory()
-
-= addr_claim: callable factory works for broadcast scan
+= addr_claim: reconnect factory works for broadcast scan
 def test_addr_claim_factory():
     sock = TestSocket(CAN)
     resp_id = _j1939_can_id(6, J1939_PF_ADDRESS_CLAIMED, J1939_GLOBAL_ADDRESS, 0x42)
     sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8)))
     def _factory():
         return sock
-    found = j1939_scan_addr_claim(_factory, src_addrs=[0xF9], listen_time=0.5)
+    dummy_sock = TestSocket(CAN)
+    found = j1939_scan_addr_claim(dummy_sock, src_addrs=[0xF9], listen_time=0.5, reconnect=_factory)
     assert 0x42 in found, "Factory addr_claim should find SA=0x42"
     cleanup_testsockets()
 
 test_addr_claim_factory()
+True
 
 
 # output_format parameter

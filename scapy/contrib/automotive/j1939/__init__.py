@@ -45,6 +45,7 @@ TP_CM_BAM = J1939_TP_CTRL_BAM
 TP_Conn_Abort = J1939_TP_CTRL_ABORT
 
 from scapy.contrib.automotive.j1939.j1939_scanner import (
+    SockOrFactory,
     _j1939_can_id,
     _j1939_decode_can_id,
     J1939_TP_CM_PF,
@@ -80,6 +81,7 @@ __all__ = [
     'J1939_GLOBAL_ADDRESS',
     'J1939_NULL_ADDRESS',
     'log_j1939',
+    'SockOrFactory',
     'j1939_scan',
     'j1939_scan_passive',
     'j1939_scan_addr_claim',
