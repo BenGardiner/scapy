@@ -105,6 +105,10 @@ r = repr(res)
 assert "DM1" in r, "repr should contain dm_name"
 assert "FECA" in r.upper(), "repr should contain pgn"
 
+= DmScanResult: is a dataclass
+from dataclasses import is_dataclass
+assert is_dataclass(DmScanResult)
+
 
 + j1939_scan_dm_pgn - probe frame format
 

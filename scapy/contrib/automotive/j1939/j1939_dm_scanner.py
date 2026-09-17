@@ -34,6 +34,7 @@ Usage::
     ...         name, res.supported, res.error))
 """
 
+from dataclasses import dataclass
 import struct
 import time
 from threading import Event  # noqa: F401
@@ -148,7 +149,8 @@ J1939_DM_PGNS = {
 # --- Result container
 
 
-class DmScanResult(object):
+@dataclass
+class DmScanResult:
     """Result record for a single DM PGN probe sent by :func:`j1939_scan_dm_pgn`.
 
     :param dm_name: human-readable DM name (e.g. ``"DM1"``)
@@ -159,25 +161,13 @@ class DmScanResult(object):
                   ``"Timeout"`` when no reply
     """
 
-    __slots__ = ("dm_name", "pgn", "supported", "packet", "error")
+    dm_name: str
+    pgn: int
+    supported: bool
+    packet: Optional[CAN] = None
+    error: Optional[str] = None
 
-    def __init__(
-        self,
-        dm_name,  # type: str
-        pgn,  # type: int
-        supported,  # type: bool
-        packet=None,  # type: Optional[CAN]
-        error=None,  # type: Optional[str]
-    ):
-        # type: (...) -> None
-        self.dm_name = dm_name
-        self.pgn = pgn
-        self.supported = supported
-        self.packet = packet
-        self.error = error
-
-    def __repr__(self):
-        # type: () -> str
+    def __repr__(self) -> str:
         return "<DmScanResult dm={} pgn=0x{:04X} supported={} error={}>".format(
             self.dm_name, self.pgn, self.supported, self.error
         )
