@@ -1282,11 +1282,14 @@ class J1939TPImplementation:
 
     def can_recv(self):
         # type: () -> None
-        if self.closed or self.closing or self._can_socket_gone():
+        # Keep receiving while close() is draining an in-flight TX session.
+        # For RTS/CTS, CTS/ACK frames must still be processed after
+        # self.closing is set, otherwise TX can time out spuriously.
+        if self.closed or self._can_socket_gone():
             return
         try:
             while self.can_socket.select([self.can_socket], 0):
-                if self.closed or self.closing:
+                if self.closed:
                     break
                 pkt = self.can_socket.recv()
                 if pkt:
@@ -1299,7 +1302,7 @@ class J1939TPImplementation:
                     "J1939TPImplementation.can_recv error: %s",
                     traceback.format_exc())
 
-        if self.closed or self.closing or self._can_socket_gone():
+        if self.closed or self._can_socket_gone():
             return
         # Zero-delay polling while segmented RX or directed TX is active so
         # slow serial/slcan multiplexers do not add backlog latency between
