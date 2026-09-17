@@ -122,30 +122,11 @@ class J1939_DTC(Packet):
     name = "J1939_DTC"
 
     fields_desc = [
-        # Declared in big-endian (MSB-first) order for BitField processing.
-        # do_dissect / do_build reverse the 4 bytes to convert between
-        # J1939 little-endian wire format and Scapy's big-endian BitField.
-        BitField("OC", 0, 7),  # bits 31-25 (MSB side)
+        BitField("OC", 0, 7, tot_size=-4),  # bits 31-25 (MSB side)
         BitField("CM", 0, 1),  # bit  24
         BitField("FMI", 0, 5),  # bits 23-19
-        BitField("SPN", 0, 19),  # bits 18-0  (LSB side)
+        BitField("SPN", 0, 19, end_tot_size=-4),  # bits 18-0  (LSB side)
     ]
-
-    def do_dissect(self, s):
-        # type: (bytes) -> bytes
-        """Dissect a 4-byte LE DTC from *s*; return remaining bytes."""
-        if len(s) >= 4:
-            # J1939 DTC is a LE 32-bit word; reverse bytes so that
-            # Scapy's BE BitField machinery sees the MSB first.
-            super(J1939_DTC, self).do_dissect(s[:4][::-1])
-            return s[4:]
-        return b""
-
-    def do_build(self):
-        # type: () -> bytes
-        """Build 4 LE bytes from the current field values."""
-        # BitField builds in BE order; reverse to produce J1939 LE wire bytes.
-        return super(J1939_DTC, self).do_build()[::-1]
 
     def extract_padding(self, s):
         # type: (bytes) -> Tuple[bytes, bytes]
