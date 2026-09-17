@@ -534,11 +534,7 @@ class J1939_NAME(Packet):
     name = "J1939_NAME"
 
     fields_desc = [
-        # Declared in big-endian (MSB-first) order for BitField processing.
-        # do_dissect / do_build reverse the 8 bytes to convert between
-        # J1939 little-endian wire format (LSB transmitted first) and
-        # Scapy's big-endian BitField machinery.
-        BitField("arbitrary_address_capable", 0, 1),
+        BitField("arbitrary_address_capable", 0, 1, tot_size=-8),
         BitField("industry_group", 0, 3),
         BitField("vehicle_system_instance", 0, 4),
         BitField("vehicle_system", 0, 7),
@@ -547,19 +543,8 @@ class J1939_NAME(Packet):
         BitField("function_instance", 0, 5),
         BitField("ecu_instance", 0, 3),
         BitField("manufacturer_code", 0, 11),
-        BitField("identity_number", 0, 21),
+        BitField("identity_number", 0, 21, end_tot_size=-8),
     ]
-
-    def do_dissect(self, s: bytes) -> bytes:
-        """Dissect 8 LE bytes into J1939_NAME bitfields (reading LSB first)."""
-        if len(s) >= 8:
-            super(J1939_NAME, self).do_dissect(s[:8][::-1])
-            return s[8:]
-        return b""
-
-    def do_build(self) -> bytes:
-        """Build 8 LE bytes from current field values (emitting LSB first)."""
-        return super(J1939_NAME, self).do_build()[::-1]
 
     def extract_padding(self, s: bytes) -> Tuple[bytes, bytes]:
         return b"", s
