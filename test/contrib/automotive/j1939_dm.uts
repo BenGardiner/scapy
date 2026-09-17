@@ -264,3 +264,68 @@ try:
     assert False, "Expected Scapy_Exception for dst_addr=0xFF"
 except Scapy_Exception:
     pass  # expected
+
+
++ sniff_dm1 socket tests
+
+= sniff_dm1 sniffs DM1 from an opened socket without closing it
+from scapy.contrib.automotive.j1939 import _j1939_can_id
+dtc = J1939_DTC(SPN=100, FMI=2, CM=0, OC=5)
+dm1_pkt = J1939_DM1(mil_status=1, dtcs=[dtc])
+can_id = _j1939_can_id(6, 0xFE, 0xCA, 0x80)
+sock = TestSocket(CAN)
+sock.ins.send(bytes(CAN(identifier=can_id, flags="extended", data=bytes(dm1_pkt))))
+results = sniff_dm1(sock, timeout=0.1)
+assert len(results) == 1
+assert results[0].mil_status == 1
+assert results[0].dtcs[0].SPN == 100
+assert not sock.closed
+cleanup_testsockets()
+
+= sniff_dm1 with reconnect factory creates and closes socket
+from scapy.contrib.automotive.j1939 import _j1939_can_id
+dtc = J1939_DTC(SPN=200, FMI=3, CM=0, OC=1)
+dm1_pkt = J1939_DM1(mil_status=0, dtcs=[dtc])
+can_id = _j1939_can_id(6, 0xFE, 0xCA, 0x80)
+created = []
+def factory():
+    s = TestSocket(CAN)
+    s.ins.send(bytes(CAN(identifier=can_id, flags="extended", data=bytes(dm1_pkt))))
+    created.append(s)
+    return s
+
+dummy_sock = TestSocket(CAN)
+results = sniff_dm1(dummy_sock, timeout=0.1, reconnect=factory)
+assert len(results) == 1
+assert results[0].dtcs[0].SPN == 200
+assert len(created) == 1
+assert created[0].closed
+assert not dummy_sock.closed
+cleanup_testsockets()
+
+= sniff_dm1 ignores non-DM1 packets
+from scapy.contrib.automotive.j1939 import _j1939_can_id
+can_id = _j1939_can_id(6, 0xEA, 0x00, 0x80)
+sock = TestSocket(CAN)
+sock.ins.send(bytes(CAN(identifier=can_id, flags="extended", data=b"\x00\xee\x00")))
+results = sniff_dm1(sock, timeout=0.1)
+assert len(results) == 0
+assert not sock.closed
+cleanup_testsockets()
+
+= send_dm14_request sends request on provided socket
+with TestSocket(CAN) as cans1, TestSocket(CAN) as cans2:
+    cans1.pair(cans2)
+    with J1939SoftSocket(cans1, src_addr=0xFA) as tx_sock, \
+         J1939SoftSocket(cans2, src_addr=0x20) as rx_sock:
+        send_dm14_request(tx_sock, dest_addr=0x20, memory_address=0x12345678, length=4)
+        pkts = rx_sock.sniff(count=1, timeout=2)
+
+assert len(pkts) == 1
+recvd = pkts[0]
+assert recvd.pgn == PGN_DM14
+dm14_payload = J1939_DM14(bytes(recvd.data))
+assert dm14_payload.address == 0x12345678
+assert dm14_payload.length == 4
+cleanup_testsockets()
+

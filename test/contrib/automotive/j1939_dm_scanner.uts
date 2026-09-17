@@ -547,7 +547,8 @@ def test_dm_factory():
     sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8)))
     def _factory():
         return sock
-    results = j1939_scan_dm(_factory, target_da=0x42, dms=["DM1"], sniff_time=0.5)
+    dummy_sock = TestSocket(CAN)
+    results = j1939_scan_dm(dummy_sock, target_da=0x42, dms=["DM1"], sniff_time=0.5, reconnect=_factory)
     assert "DM1" in results
     assert results["DM1"].supported, "Factory DM scan should find DM1 supported"
     cleanup_testsockets()
@@ -564,8 +565,9 @@ def test_dm_pgn_factory():
     sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8)))
     def _factory():
         return sock
-    result = j1939_scan_dm_pgn(_factory, target_da=0x10, pgn=pgn,
-                               dm_name="DM5", sniff_time=0.5)
+    dummy_sock = TestSocket(CAN)
+    result = j1939_scan_dm_pgn(dummy_sock, target_da=0x10, pgn=pgn,
+                               dm_name="DM5", sniff_time=0.5, reconnect=_factory)
     assert result.supported, "Factory DM PGN probe should find DM5"
     assert result.dm_name == "DM5"
     cleanup_testsockets()

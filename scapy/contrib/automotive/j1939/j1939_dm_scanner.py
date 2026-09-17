@@ -196,7 +196,7 @@ def _pgn_matches(pf, ps, pgn):
 
 
 def j1939_scan_dm_pgn(
-    sock,  # type: SockOrFactory
+    sock,  # type: SuperSocket
     target_da,  # type: int
     pgn,  # type: int
     dm_name="Unknown",  # type: str
@@ -206,6 +206,7 @@ def j1939_scan_dm_pgn(
     stop_event=None,  # type: Optional[Event]
     bitrate=_J1939_DEFAULT_BITRATE,  # type: int
     busload=_J1939_DEFAULT_BUSLOAD,  # type: float
+    reconnect=None,  # type: Optional[Callable[[], SuperSocket]]
 ):
     # type: (...) -> DmScanResult
     """Probe *target_da* for support of a single Diagnostic Message PGN.
@@ -220,7 +221,7 @@ def j1939_scan_dm_pgn(
     the outgoing probe frame (3-byte payload) and the expected response frame
     (8-byte payload).
 
-    :param sock: raw CAN socket **or** zero-argument callable returning one
+    :param sock: raw CAN socket
     :param target_da: destination address of the ECU to probe (0x00–0xFD)
     :param pgn: the Diagnostic Message PGN to request
     :param dm_name: human-readable DM name included in the returned result
@@ -230,6 +231,8 @@ def j1939_scan_dm_pgn(
     :param bitrate: CAN bus bitrate in bit/s (default 250000 for J1939)
     :param busload: maximum fraction of bus capacity the scanner may consume
                     (default 0.05 = 5 %)
+    :param reconnect: optional zero-argument callable returning a newly
+                      created CAN socket
     :returns: :class:`DmScanResult` describing the outcome for this PGN
     """
     if stop_event is not None and stop_event.is_set():
@@ -238,8 +241,11 @@ def j1939_scan_dm_pgn(
     can_id = _j1939_can_id(_DM_SCAN_PRIORITY, J1939_PF_REQUEST, target_da, src_addr)
     payload = struct.pack("<I", pgn)[:3]
 
+    send_sock, rx_sock, close_rx = _resolve_probe_sock(
+        sock, target_da, reconnect=reconnect
+    )
+
     result = []  # type: List[DmScanResult]
-    send_sock, rx_sock, close_rx = _resolve_probe_sock(sock, target_da)
 
     def _rx(pkt):
         # type: (CAN) -> None
@@ -329,7 +335,7 @@ def j1939_scan_dm_pgn(
 
 
 def j1939_scan_dm(
-    sock,  # type: SockOrFactory
+    sock,  # type: SuperSocket
     target_da,  # type: int
     dms=None,  # type: Optional[List[str]]
     src_addr=0xF9,  # type: int
@@ -341,6 +347,7 @@ def j1939_scan_dm(
     reset_handler=None,  # type: Optional[Callable[[], None]]
     reconnect_handler=None,  # type: Optional[Callable[[], SuperSocket]]
     reconnect_retries=5,  # type: int
+    reconnect=None,  # type: Optional[Callable[[], SuperSocket]]
 ):
     # type: (...) -> Dict[str, DmScanResult]
     """Probe *target_da* for all (or a selected subset of) Diagnostic Message PGNs.
@@ -361,7 +368,7 @@ def j1939_scan_dm(
     raises an exception.  This mirrors the retry logic in
     :class:`~scapy.contrib.automotive.scanner.executor.AutomotiveTestCaseExecutor`.
 
-    :param sock: raw CAN socket **or** zero-argument callable returning one
+    :param sock: raw CAN socket
     :param target_da: destination address of the ECU to probe (0x00–0xFD)
     :param dms: list of DM names to scan; must be keys of
                  :data:`J1939_DM_PGNS`.  Default is all entries.
@@ -382,6 +389,8 @@ def j1939_scan_dm(
     :param reconnect_retries: maximum number of attempts when calling
                               *reconnect_handler* (default 5).  A 1-second
                               pause is inserted between retries.
+    :param reconnect: optional zero-argument callable returning a newly
+                      created CAN socket
     :returns: dict mapping each DM name (str) to its :class:`DmScanResult`
 
     Example::
@@ -414,6 +423,9 @@ def j1939_scan_dm(
                 )
             )
 
+    if reconnect_handler is None and reconnect is not None:
+        reconnect_handler = reconnect
+
     results = {}  # type: Dict[str, DmScanResult]
     active_sock = sock  # may be replaced if reconnect_handler is used
     num_pgns = len(dms)
@@ -431,6 +443,7 @@ def j1939_scan_dm(
             stop_event=stop_event,
             bitrate=bitrate,
             busload=busload,
+            reconnect=reconnect,
         )
         # Between probes: reset target and/or reconnect if handlers provided
         if i < num_pgns - 1:

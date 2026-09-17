@@ -19,9 +19,9 @@ Messages:
 - ``J1939_DM14`` -- Memory Access Request, PGN 0xD900 (55552)
 
 All J1939 payload bytes are in little-endian (LE) byte order.  The
-``J1939_DTC`` class performs a 4-byte reversal in ``do_dissect`` /
-``do_build`` so that Scapy's big-endian ``BitField`` machinery can parse
-the LE wire format transparently.
+``J1939_DTC`` class uses Scapy's little-endian ``BitField`` support
+(``tot_size=-4`` / ``end_tot_size=-4``) to parse and build the LE wire format
+transparently.
 
 Usage example::
 
@@ -38,8 +38,11 @@ Usage example::
 # Typing imports
 from typing import (  # noqa: F401
     Any,
+    Callable,
     List,
+    Optional,
     Tuple,
+    Union,
 )
 
 from scapy.error import Scapy_Exception
@@ -267,30 +270,78 @@ class J1939_DM14(Packet):
 
 
 def sniff_dm1(
-    interface="can0",  # type: str
+    sock,  # type: Any
     timeout=10,  # type: float
+    reconnect=None,  # type: Optional[Callable[[], Any]]
 ):
     # type: (...) -> List[J1939_DM1]
     """Sniff DM1 Active DTC messages from the J1939 bus.
 
-    Opens a :class:`J1939Socket` filtered to PGN 0xFECA (65226) and sniffs
-    for ``timeout`` seconds.  Each received payload is dissected into a
-    :class:`J1939_DM1` packet.
+    Sniffs for ``timeout`` seconds on *sock* (which may be an already opened
+    socket or a per-iteration socket when *reconnect* is provided).
+    Each received DM1 payload is dissected into a :class:`J1939_DM1` packet.
 
-    :param interface: CAN interface name (e.g. ``"can0"``)
+    When *reconnect* is provided, a fresh socket is obtained from the factory
+    and closed upon exit.  When *reconnect* is ``None``, the provided *sock* is
+    reused and left open to save creation and destruction overhead.
+
+    :param sock: CAN or J1939 socket
     :param timeout: sniff duration in seconds
+    :param reconnect: optional zero-argument callable returning a newly
+                      created CAN/J1939 socket
     :returns: list of :class:`J1939_DM1` packets received
     """
     from scapy.sendrecv import sniff
-    from scapy.contrib.automotive.j1939 import J1939Socket  # type: ignore[attr-defined]
+    from scapy.layers.can import CAN
+    from scapy.contrib.automotive.j1939 import (
+        J1939SoftSocket,
+        _j1939_decode_can_id,
+    )
+    try:
+        from scapy.contrib.cansocket import CANSocket
+    except ImportError:
+        CANSocket = None  # type: ignore[assignment, misc]
 
-    with J1939Socket(interface, rx_pgn=PGN_DM1) as sock:
-        pkts = sniff(opened_socket=sock, timeout=timeout)
-    return [J1939_DM1(p.data) for p in pkts if hasattr(p, "data")]
+    if reconnect is not None:
+        raw_sock = reconnect()
+        close_needed = True
+    else:
+        raw_sock = sock
+        close_needed = False
+
+    close_wrapper = False
+    if CANSocket is not None and isinstance(raw_sock, CANSocket):
+        sniff_sock = J1939SoftSocket(raw_sock, pgn=PGN_DM1, listen_only=True)
+        close_wrapper = True
+    else:
+        sniff_sock = raw_sock
+
+    try:
+        pkts = sniff(opened_socket=sniff_sock, timeout=timeout)
+    finally:
+        if close_wrapper:
+            sniff_sock.close()
+        if close_needed:
+            raw_sock.close()
+
+    results = []  # type: List[J1939_DM1]
+    for p in pkts:
+        if isinstance(p, J1939_DM1):
+            results.append(p)
+        elif isinstance(p, CAN):
+            if p.flags & 0x4:  # extended
+                _, pf, ps, _ = _j1939_decode_can_id(p.identifier)
+                pgn = (pf << 8) if pf < 0xF0 else ((pf << 8) | ps)
+                if pgn == PGN_DM1:
+                    results.append(J1939_DM1(bytes(p.data)))
+        elif hasattr(p, "data"):
+            if getattr(p, "pgn", PGN_DM1) == PGN_DM1:
+                results.append(J1939_DM1(p.data))
+    return results
 
 
 def send_dm14_request(
-    interface,  # type: str
+    sock_or_interface,  # type: Any
     dest_addr,  # type: int
     memory_address,  # type: int
     length=1,  # type: int
@@ -298,7 +349,8 @@ def send_dm14_request(
     # type: (...) -> None
     """Send a DM14 Memory Access Request to a specific ECU.
 
-    :param interface: CAN interface name (e.g. ``"can0"``)
+    :param sock_or_interface: CAN/J1939 socket or CAN interface name string
+                              (e.g. ``"can0"``)
     :param dest_addr: destination ECU address (must not be
                       :data:`J1939_GLOBAL_ADDRESS`)
     :param memory_address: 32-bit memory address to access
@@ -311,14 +363,18 @@ def send_dm14_request(
             "DM14 is a peer-to-peer message; "
             "dst_addr must not be the broadcast address (0xFF)"
         )
-    from scapy.contrib.automotive.j1939 import J1939Socket  # type: ignore[attr-defined]
 
     dm14 = J1939_DM14(address=memory_address, length=length)
-    pkt = J1939(data=bytes(dm14), pgn=PGN_DM14)
-    with J1939Socket(
-        interface, src_addr=0xFA, dst_addr=dest_addr, pgn=PGN_DM14
-    ) as sock:
-        sock.send(pkt)
+    pkt = J1939(data=bytes(dm14), pgn=PGN_DM14, dst=dest_addr)
+
+    if isinstance(sock_or_interface, str):
+        from scapy.contrib.automotive.j1939 import (  # type: ignore[attr-defined]
+            J1939Socket,
+        )
+        with J1939Socket(sock_or_interface, src_addr=0xFA, pgn=PGN_DM14) as s:
+            s.send(pkt)
+    else:
+        sock_or_interface.send(pkt)
 
 
 __all__ = [
