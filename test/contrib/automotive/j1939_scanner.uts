@@ -2235,17 +2235,17 @@ assert parsed[0]["src_addrs"] == [[0xF1]]
 
 # verbose log level control
 
-= j1939_scan: verbose=True sets log_j1939 to DEBUG
+= j1939_scan: verbose=True sets j1939_log to DEBUG
 def test_verbose_debug():
     import logging
-    from scapy.contrib.automotive.j1939 import log_j1939
-    old_level = log_j1939.level
+    from scapy.contrib.automotive.j1939 import j1939_log
+    old_level = j1939_log.level
     sock = TestSocket(CAN)
     j1939_scan(sock, methods=["addr_claim"], src_addrs=[0xF9],
                broadcast_listen_time=0.02, noise_ids=set(),
                verbose=True)
-    assert log_j1939.level == logging.DEBUG, "Expected DEBUG(10), got {}".format(log_j1939.level)
-    log_j1939.setLevel(old_level)
+    assert j1939_log.level == logging.DEBUG, "Expected DEBUG(10), got {}".format(j1939_log.level)
+    j1939_log.setLevel(old_level)
     cleanup_testsockets()
 
 test_verbose_debug()
@@ -2253,15 +2253,15 @@ test_verbose_debug()
 = j1939_scan: verbose=False does not change log level
 def test_verbose_false():
     import logging
-    from scapy.contrib.automotive.j1939 import log_j1939
-    old_level = log_j1939.level
-    log_j1939.setLevel(logging.WARNING)
+    from scapy.contrib.automotive.j1939 import j1939_log
+    old_level = j1939_log.level
+    j1939_log.setLevel(logging.WARNING)
     sock = TestSocket(CAN)
     j1939_scan(sock, methods=["addr_claim"], src_addrs=[0xF9],
                broadcast_listen_time=0.02, noise_ids=set(),
                verbose=False)
-    assert log_j1939.level == logging.WARNING, "Expected WARNING(30), got {}".format(log_j1939.level)
-    log_j1939.setLevel(old_level)
+    assert j1939_log.level == logging.WARNING, "Expected WARNING(30), got {}".format(j1939_log.level)
+    j1939_log.setLevel(old_level)
     cleanup_testsockets()
 
 test_verbose_false()

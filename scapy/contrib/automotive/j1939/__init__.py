@@ -32,6 +32,11 @@ from scapy.contrib.j1939 import (
     log_j1939,
 )
 
+j1939_log = log_j1939
+j1939_pgn_from_fields = pgn_from_fields
+j1939_dst_from_fields = dst_from_fields
+j1939_pgn_is_pdu1 = pgn_is_pdu1
+
 J1939_GLOBAL_ADDRESS = J1939_BROADCAST_ADDR
 J1939_NULL_ADDRESS = 0xFE
 PGN_ADDRESS_CLAIMED = 0xEE00
@@ -80,7 +85,13 @@ __all__ = [
     'J1939_BROADCAST_ADDR',
     'J1939_GLOBAL_ADDRESS',
     'J1939_NULL_ADDRESS',
-    'log_j1939',
+    'j1939_log',
+    'pgn_from_fields',
+    'j1939_pgn_from_fields',
+    'dst_from_fields',
+    'j1939_dst_from_fields',
+    'pgn_is_pdu1',
+    'j1939_pgn_is_pdu1',
     'SockOrFactory',
     'j1939_scan',
     'j1939_scan_passive',
