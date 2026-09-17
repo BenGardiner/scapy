@@ -18,9 +18,9 @@ the Most Significant Byte (MSB, Arbitrary Address Capable, Industry Group, etc.)
 
 Key Architecture Rules:
 
-- Function values 0 to 127 are lower 128 pre-assigned functions defined by SAE J1939 (SPN 2841).
-  These values are strictly INDEPENDENT of Vehicle System and Industry Group,
-  and apply universally across all 8 Industry Groups (0-7).
+- Function values 0 to 127 are lower 128 pre-assigned functions defined by
+  SAE J1939 (SPN 2841). These values are strictly INDEPENDENT of Vehicle System
+  and Industry Group, and apply universally across all 8 Industry Groups (0-7).
 - Function values 128 to 253 are Industry Group / Vehicle System dependent.
 
 It maps the extracted bit fields to standard registries such as Industry Groups,
@@ -30,10 +30,12 @@ It provides:
 
 - Scapy packet class ``J1939_NAME``
 - Functional decoder ``J1939NameDecoder``
+- Decoded result dataclass ``J1939NameResult``
 - Address arbitration simulator ``simulate_arbitration``
 - Active scanning helpers ``j1939_request_name`` and ``j1939_request_names``
 """
 
+from dataclasses import dataclass
 import struct
 import time
 from typing import (
@@ -49,10 +51,7 @@ from typing import (
 from scapy.fields import BitField
 from scapy.layers.can import CAN
 from scapy.packet import Packet
-from scapy.contrib.j1939 import (
-    J1939_BROADCAST_ADDR,
-    log_j1939,
-)
+from scapy.contrib.j1939 import log_j1939
 from scapy.contrib.automotive.j1939.j1939_scanner import (
     _CAN_EXTENDED_FLAG,
     _J1939_DEFAULT_BITRATE,
@@ -93,7 +92,7 @@ INDUSTRY_GROUPS = {
 # OPEN-SOURCE & PUBLIC DATABASE REFERENCES FOR J1939 NAME FUNCTIONS (SPN 2841: 0-127)
 # ================================================================================
 # Public Standards & Specifications:
-#   - ISO 11783-7: Tractors and machinery for agriculture and forestry - 
+#   - ISO 11783-7: Tractors and machinery for agriculture and forestry -
 #     Implement messages application layer (Public ISOBUS Data Dictionary)
 #
 # Permissive / Open-Source Implementations & Registries:
@@ -291,6 +290,58 @@ MANUFACTURERS = {
 
 
 # ---------------------------------------------------------------------------
+# Decoded result container
+# ---------------------------------------------------------------------------
+
+@dataclass
+class J1939NameResult:
+    """Decoded fields and registry descriptions for a 64-bit SAE J1939 NAME."""
+
+    raw_value: int
+    arbitrary_address_capable: int
+    industry_group: int
+    industry_group_description: str
+    vehicle_system_instance: int
+    vehicle_system: int
+    vehicle_system_description: str
+    reserved: int
+    function: int
+    function_description: str
+    function_instance: int
+    ecu_instance: int
+    manufacturer_code: int
+    manufacturer_name: str
+    identity_number: int
+
+    def __getitem__(self, key: str) -> Any:
+        try:
+            return getattr(self, key)
+        except AttributeError:
+            raise KeyError(key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+    def __contains__(self, key: str) -> bool:
+        return key in self.__dataclass_fields__
+
+    def __iter__(self):
+        return iter(self.__dataclass_fields__)
+
+    def __len__(self) -> int:
+        return len(self.__dataclass_fields__)
+
+    def keys(self):
+        return self.__dataclass_fields__.keys()
+
+    def items(self):
+        return [(f, getattr(self, f)) for f in self.__dataclass_fields__]
+
+    def values(self):
+        return [getattr(self, f) for f in self.__dataclass_fields__]
+
+
+# ---------------------------------------------------------------------------
 # Decoder class & helpers
 # ---------------------------------------------------------------------------
 
@@ -298,7 +349,9 @@ class J1939NameDecoder:
     """Decoder and report formatter for the 64-bit SAE J1939 NAME."""
 
     @staticmethod
-    def decode(payload: Union[bytes, bytearray, int, str, Packet]) -> Dict[str, Any]:
+    def decode(
+        payload: Union[bytes, bytearray, int, str, Packet]
+    ) -> J1939NameResult:
         """Extract bitfields and map registries from a 64-bit J1939 NAME.
 
         The payload bytes are read Least Significant Byte (LSB) first as
@@ -307,7 +360,8 @@ class J1939NameDecoder:
 
         :param payload: 8-byte LE bytes/bytearray, 64-bit int, hex string,
                         or CAN/J1939/J1939_NAME packet.
-        :returns: dictionary containing all raw bitfields and mapped descriptions.
+        :returns: :class:`J1939NameResult` containing all raw bitfields and
+                  mapped descriptions.
         """
         if isinstance(payload, str):
             clean_hex = payload.strip().lower().replace(" ", "")
@@ -330,7 +384,9 @@ class J1939NameDecoder:
             payload_bytes = bytes(payload)
 
         if len(payload_bytes) != 8:
-            raise ValueError(f"Payload must be exactly 8 bytes, got {len(payload_bytes)} bytes")
+            raise ValueError(
+                f"Payload must be exactly 8 bytes, got {len(payload_bytes)} bytes"
+            )
 
         # Unpack as an unsigned 64-bit integer in little-endian format (LSB first)
         name_val = struct.unpack("<Q", payload_bytes)[0]
@@ -349,9 +405,12 @@ class J1939NameDecoder:
 
         # Lookups
         ig_desc = INDUSTRY_GROUPS.get(
-            industry_group, f"Unknown / Proprietary Industry Group ({industry_group})"
+            industry_group,
+            f"Unknown / Proprietary Industry Group ({industry_group})",
         )
-        mfg_desc = MANUFACTURERS.get(mfg_code, f"Unknown Manufacturer (Code: {mfg_code})")
+        mfg_desc = MANUFACTURERS.get(
+            mfg_code, f"Unknown Manufacturer (Code: {mfg_code})"
+        )
 
         vs_table = INDUSTRY_SPECIFIC_VEHICLE_SYSTEMS.get(industry_group, {})
         vehicle_sys_desc = vs_table.get(
@@ -362,20 +421,26 @@ class J1939NameDecoder:
         )
 
         # Function description lookup
-        # RULE: Lower 128 function values (0 to 127) are PRE-ASSIGNED and strictly
-        # INDEPENDENT of Industry Group or Vehicle System. They apply to all 8 Industry Groups.
+        # RULE: Lower 128 function values (0 to 127) are PRE-ASSIGNED and
+        # strictly INDEPENDENT of Industry Group or Vehicle System.
+        # They apply to all 8 Industry Groups.
         if func <= 127:
             # Function values 0 to 127 are pre-assigned and strictly
-            # independent of Vehicle System or Industry Group across all 8 Industry Groups
-            func_desc = PRE_ASSIGNED_FUNCTIONS.get(func, f"Pre-Assigned / Reserved Function ({func})")
+            # independent of Vehicle System or Industry Group across all 8
+            # Industry Groups
+            func_desc = PRE_ASSIGNED_FUNCTIONS.get(
+                func, f"Pre-Assigned / Reserved Function ({func})"
+            )
         elif 128 <= func <= 253:
             # Values 128-253 are dependent on Industry Group and Vehicle System
             func_table = INDUSTRY_SPECIFIC_FUNCTIONS.get(industry_group, {})
             func_desc = func_table.get(
                 func,
-                f"Industry Group Specific Function {func} (No table entry for Industry Group {industry_group})"
+                f"Industry Group Specific Function {func} "
+                f"(No table entry for Industry Group {industry_group})"
                 if not func_table
-                else f"Industry Group Specific Function {func} (Not mapped in Industry Group {industry_group} table)",
+                else f"Industry Group Specific Function {func} "
+                f"(Not mapped in Industry Group {industry_group} table)",
             )
         elif func == 254:
             func_desc = "Error State"
@@ -384,50 +449,58 @@ class J1939NameDecoder:
         else:
             func_desc = f"Reserved State ({func})"
 
-        return {
-            "raw_value": name_val,
-            "arbitrary_address_capable": arbitrary_addr_capable,
-            "industry_group": industry_group,
-            "industry_group_description": ig_desc,
-            "vehicle_system_instance": vehicle_sys_inst,
-            "vehicle_system": vehicle_sys,
-            "vehicle_system_description": vehicle_sys_desc,
-            "reserved": reserved,
-            "function": func,
-            "function_description": func_desc,
-            "function_instance": func_inst,
-            "ecu_instance": ecu_inst,
-            "manufacturer_code": mfg_code,
-            "manufacturer_name": mfg_desc,
-            "identity_number": identity_num,
-        }
+        return J1939NameResult(
+            raw_value=name_val,
+            arbitrary_address_capable=arbitrary_addr_capable,
+            industry_group=industry_group,
+            industry_group_description=ig_desc,
+            vehicle_system_instance=vehicle_sys_inst,
+            vehicle_system=vehicle_sys,
+            vehicle_system_description=vehicle_sys_desc,
+            reserved=reserved,
+            function=func,
+            function_description=func_desc,
+            function_instance=func_inst,
+            ecu_instance=ecu_inst,
+            manufacturer_code=mfg_code,
+            manufacturer_name=mfg_desc,
+            identity_number=identity_num,
+        )
 
     @staticmethod
-    def format_report(info: Dict[str, Any]) -> str:
+    def format_report(info: Union[J1939NameResult, Dict[str, Any]]) -> str:
         """Format decoded fields as a structured console report."""
-        hex_raw = "%016X" % info['raw_value']
+        if isinstance(info, dict):
+            info = J1939NameResult(**info)
+        hex_raw = "%016X" % info.raw_value
         lines = [
             "=" * 60,
             "                SAE J1939 NAME DECODER REPORT",
             "=" * 60,
-            f"Raw 64-bit Integer  : 0x{hex_raw} ({info['raw_value']})",
+            f"Raw 64-bit Integer  : 0x{hex_raw} ({info.raw_value})",
             "-" * 60,
-            f"Arbitrary Addr Cap  : {info['arbitrary_address_capable']} ({'Yes' if info['arbitrary_address_capable'] else 'No'})",
-            f"Industry Group      : {info['industry_group']} - {info['industry_group_description']}",
-            f"Vehicle Sys Inst    : {info['vehicle_system_instance']}",
-            f"Vehicle System      : {info['vehicle_system']} - {info['vehicle_system_description']}",
-            f"Reserved Bit        : {info['reserved']} (Should be 0)",
-            f"Function            : {info['function']} - {info['function_description']}",
-            f"Function Instance   : {info['function_instance']}",
-            f"ECU Instance        : {info['ecu_instance']}",
-            f"Manufacturer Code   : {info['manufacturer_code']} - {info['manufacturer_name']}",
-            f"Identity Number     : {info['identity_number']}",
+            f"Arbitrary Addr Cap  : {info.arbitrary_address_capable} "
+            f"({'Yes' if info.arbitrary_address_capable else 'No'})",
+            f"Industry Group      : {info.industry_group} - "
+            f"{info.industry_group_description}",
+            f"Vehicle Sys Inst    : {info.vehicle_system_instance}",
+            f"Vehicle System      : {info.vehicle_system} - "
+            f"{info.vehicle_system_description}",
+            f"Reserved Bit        : {info.reserved} (Should be 0)",
+            f"Function            : {info.function} - {info.function_description}",
+            f"Function Instance   : {info.function_instance}",
+            f"ECU Instance        : {info.ecu_instance}",
+            f"Manufacturer Code   : {info.manufacturer_code} - "
+            f"{info.manufacturer_name}",
+            f"Identity Number     : {info.identity_number}",
             "=" * 60,
         ]
         return "\n".join(lines)
 
 
-def decode_j1939_name(payload: Union[bytes, bytearray, int, str, Packet]) -> Dict[str, Any]:
+def decode_j1939_name(
+    payload: Union[bytes, bytearray, int, str, Packet]
+) -> J1939NameResult:
     """Convenience function to decode a 64-bit J1939 NAME payload."""
     return J1939NameDecoder.decode(payload)
 
@@ -444,16 +517,22 @@ def simulate_arbitration(name1: Any, name2: Any) -> Dict[str, Any]:
     """
     dec1 = J1939NameDecoder.decode(name1)
     dec2 = J1939NameDecoder.decode(name2)
-    val1 = dec1["raw_value"]
-    val2 = dec2["raw_value"]
+    val1 = dec1.raw_value
+    val2 = dec2.raw_value
     hex_val1 = "%016X" % val1
     hex_val2 = "%016X" % val2
 
     print("\n" + "#" * 60)
     print("           SAE J1939 ADDRESS ARBITRATION SIMULATOR")
     print("#" * 60)
-    print(f"ECU A: NAME = 0x{hex_val1} (Function: {dec1['function_description']}, Identity: {dec1['identity_number']})")
-    print(f"ECU B: NAME = 0x{hex_val2} (Function: {dec2['function_description']}, Identity: {dec2['identity_number']})")
+    print(
+        f"ECU A: NAME = 0x{hex_val1} "
+        f"(Function: {dec1.function_description}, Identity: {dec1.identity_number})"
+    )
+    print(
+        f"ECU B: NAME = 0x{hex_val2} "
+        f"(Function: {dec2.function_description}, Identity: {dec2.identity_number})"
+    )
     print("-" * 60)
 
     if val1 == val2:
@@ -473,18 +552,33 @@ def simulate_arbitration(name1: Any, name2: Any) -> Dict[str, Any]:
 
     hex_win = "%016X" % win_val
     hex_lose = "%016X" % lose_val
-    print(f"Winner: {winner} (Lower numerical value: 0x{hex_win} < 0x{hex_lose})")
+    print(
+        f"Winner: {winner} "
+        f"(Lower numerical value: 0x{hex_win} < 0x{hex_lose})"
+    )
     print("Outcome:")
-    print("  - %s retains its claimed address and can start network communications." % winner)
+    print(
+        "  - %s retains its claimed address and can start network "
+        "communications." % winner
+    )
 
-    if lose_dec["arbitrary_address_capable"]:
+    if lose_dec.arbitrary_address_capable:
         print("  - %s is Arbitrary Address Capable (Bit 63 = 1)." % loser)
-        print("    Action: %s must select a different address (normally between 128 and 247)" % loser)
+        print(
+            "    Action: %s must select a different address (normally "
+            "between 128 and 247)" % loser
+        )
         print("            and transmit a new Address Claim message.")
     else:
         print("  - %s is Single Address / Non-Arbitrary Capable (Bit 63 = 0)." % loser)
-        print("    Action: %s MUST send a 'Cannot Claim Address' message (Source Address = 254/0xFE)" % loser)
-        print("            and cease transmitting regular message frames on the network.")
+        print(
+            "    Action: %s MUST send a 'Cannot Claim Address' message "
+            "(Source Address = 254/0xFE)" % loser
+        )
+        print(
+            "            and cease transmitting regular message frames on the "
+            "network."
+        )
     print("#" * 60 + "\n")
 
     return {
@@ -514,8 +608,8 @@ class J1939_NAME(Packet):
     - Byte 5 (CAN data[4]): ECU Instance bits 32-34, Function Instance bits 35-39
     - Byte 6 (CAN data[5]): Function bits 40-47
     - Byte 7 (CAN data[6]): Reserved bit 48, Vehicle System bits 49-55
-    - Byte 8 (CAN data[7]): Vehicle System Instance bits 56-59, Industry Group bits 60-62,
-      Arbitrary Address Capable bit 63 (MSB)
+    - Byte 8 (CAN data[7]): Vehicle System Instance bits 56-59, Industry Group
+      bits 60-62, Arbitrary Address Capable bit 63 (MSB)
 
     Fields (MSB to LSB):
 
@@ -549,8 +643,8 @@ class J1939_NAME(Packet):
     def extract_padding(self, s: bytes) -> Tuple[bytes, bytes]:
         return b"", s
 
-    def decode(self) -> Dict[str, Any]:
-        """Return the dictionary of decoded fields and registry descriptions."""
+    def decode(self) -> J1939NameResult:
+        """Return the decoded fields and registry descriptions."""
         return J1939NameDecoder.decode(bytes(self))
 
     def format_report(self) -> str:
@@ -565,27 +659,35 @@ class J1939_NAME(Packet):
     @property
     def manufacturer_name(self) -> str:
         """Return the human-readable manufacturer name."""
-        return MANUFACTURERS.get(self.manufacturer_code, f"Unknown Manufacturer ({self.manufacturer_code})")
+        return MANUFACTURERS.get(
+            self.manufacturer_code,
+            f"Unknown Manufacturer ({self.manufacturer_code})",
+        )
 
     @property
     def function_description(self) -> str:
         """Return the human-readable function description."""
-        return self.decode()["function_description"]
+        return self.decode().function_description
 
     @property
     def vehicle_system_description(self) -> str:
         """Return the human-readable vehicle system description."""
-        return self.decode()["vehicle_system_description"]
+        return self.decode().vehicle_system_description
 
     @property
     def industry_group_description(self) -> str:
         """Return the human-readable industry group description."""
-        return INDUSTRY_GROUPS.get(self.industry_group, f"Unknown Industry Group ({self.industry_group})")
+        return INDUSTRY_GROUPS.get(
+            self.industry_group,
+            f"Unknown Industry Group ({self.industry_group})",
+        )
 
     def mysummary(self) -> str:
         return (
-            f"J1939_NAME: mfg='{self.manufacturer_name}' func='{self.function_description}' "
-            f"identity={self.identity_number} arb_addr={bool(self.arbitrary_address_capable)}"
+            f"J1939_NAME: mfg='{self.manufacturer_name}' "
+            f"func='{self.function_description}' "
+            f"identity={self.identity_number} "
+            f"arb_addr={bool(self.arbitrary_address_capable)}"
         )
 
 
@@ -631,7 +733,10 @@ def j1939_request_name(
             can_id = _j1939_can_id(6, J1939_PF_REQUEST, J1939_GLOBAL_ADDRESS, src_addr)
             _pre_probe_flush(active_sock)
             active_sock.send(CAN(identifier=can_id, flags="extended", data=payload))
-            log_j1939.debug("j1939_request_name: broadcast request sent (CAN-ID=0x%08X)", can_id)
+            log_j1939.debug(
+                "j1939_request_name: broadcast request sent (CAN-ID=0x%08X)",
+                can_id,
+            )
 
             def _rx_broadcast(pkt: CAN) -> None:
                 if not (pkt.flags & _CAN_EXTENDED_FLAG):
@@ -658,7 +763,8 @@ def j1939_request_name(
             def _send_probe() -> None:
                 send_sock.send(CAN(identifier=can_id, flags="extended", data=payload))
                 log_j1939.debug(
-                    "j1939_request_name: unicast request sent to DA=0x%02X (CAN-ID=0x%08X)",
+                    "j1939_request_name: unicast request sent to DA=0x%02X "
+                    "(CAN-ID=0x%08X)",
                     target_da,
                     can_id,
                 )
@@ -667,7 +773,11 @@ def j1939_request_name(
                 if not (pkt.flags & _CAN_EXTENDED_FLAG):
                     return
                 _, pf, ps, sa = _j1939_decode_can_id(pkt.identifier)
-                if sa == target_da and pf == J1939_PF_ADDRESS_CLAIMED and len(pkt.data) == 8:
+                if (
+                    sa == target_da
+                    and pf == J1939_PF_ADDRESS_CLAIMED
+                    and len(pkt.data) == 8
+                ):
                     # CAN payload bytes are received LSB first (Byte 1 = LSB)
                     resp_name.append(J1939_NAME(pkt.data))
 
