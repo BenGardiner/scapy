@@ -2140,7 +2140,7 @@ def test_dm_pgn_factory():
     dm1_ps = pgn & 0xFF
     sock = TestSocket(CAN)
     resp_id = _j1939_can_id(6, dm1_pf, dm1_ps, 0x42)
-    sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=b' ' * 8)))
+    sock.ins.send(bytes(CAN(identifier=resp_id, flags="extended", data=b'\x00' * 8)))
     def _factory():
         return sock
     dummy_sock = TestSocket(CAN)

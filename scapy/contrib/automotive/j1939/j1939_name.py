@@ -500,7 +500,7 @@ class J1939NameDecoder:
         return "\n".join(lines)
 
 
-def decode_j1939_name(
+def j1939_decode_name(
     payload: Union[bytes, bytearray, int, str, Packet]
 ) -> J1939NameResult:
     """Convenience function to decode a 64-bit J1939 NAME payload."""
@@ -850,3 +850,19 @@ def j1939_request_names(
         )
         results[da] = res if isinstance(res, J1939_NAME) else None
     return results
+
+
+__all__ = [
+    "INDUSTRY_GROUPS",
+    "PRE_ASSIGNED_FUNCTIONS",
+    "INDUSTRY_SPECIFIC_FUNCTIONS",
+    "INDUSTRY_SPECIFIC_VEHICLE_SYSTEMS",
+    "MANUFACTURERS",
+    "J1939NameDecoder",
+    "J1939NameResult",
+    "J1939_NAME",
+    "j1939_decode_name",
+    "simulate_arbitration",
+    "j1939_request_name",
+    "j1939_request_names",
+]

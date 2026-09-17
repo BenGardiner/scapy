@@ -11,7 +11,7 @@ from scapy.contrib.automotive.j1939 import (
     J1939_NAME,
     J1939NameDecoder,
     J1939NameResult,
-    decode_j1939_name,
+    j1939_decode_name,
     simulate_arbitration,
 )
 
@@ -93,8 +93,8 @@ def _test_invalid_len():
 
 assert _test_invalid_len()
 
-= decode_j1939_name: convenience function
-res = decode_j1939_name(b"\x01\x00\x00\x00\x00\x00\x00\x90")
+= j1939_decode_name: convenience function
+res = j1939_decode_name(b"\x01\x00\x00\x00\x00\x00\x00\x90")
 assert isinstance(res, J1939NameResult)
 assert res.identity_number == 1
 
