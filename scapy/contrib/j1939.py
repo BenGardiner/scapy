@@ -1136,6 +1136,7 @@ class J1939TPImplementation:
         self.tx_seq = 1  # next TP.DT sequence number to send
         self.tx_peer_sa = socket.J1939_NO_ADDR  # peer SA for RTS/CTS sessions
         self.tx_timeout_handle = None  # type: Optional[Any]
+        self.tx_dispatching = False  # type: bool
 
         # Enqueued outgoing messages: each item is a J1939 packet
         self.tx_queue = ObjectPipe()  # type: ignore
@@ -1222,10 +1223,13 @@ class J1939TPImplementation:
             timeout = self.drain_timeout()
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if (self.tx_state == _J1939_TX_IDLE
-                    and not select_objects([self.tx_queue], 0)):
+            tx_pending = bool(select_objects([self.tx_queue], 0))
+            if (self.tx_state == _J1939_TX_IDLE and
+                    not tx_pending and
+                    not self.tx_dispatching):
                 break
-            if derived and self.tx_state != _J1939_TX_IDLE:
+            if derived and (self.tx_state != _J1939_TX_IDLE or
+                            tx_pending or self.tx_dispatching):
                 # A message that was still queued when close() was called
                 # gets its own budget once it starts.
                 deadline = max(deadline,
@@ -1278,11 +1282,11 @@ class J1939TPImplementation:
 
     def can_recv(self):
         # type: () -> None
-        if self.closed or self._can_socket_gone():
+        if self.closed or self.closing or self._can_socket_gone():
             return
         try:
             while self.can_socket.select([self.can_socket], 0):
-                if self.closed:
+                if self.closed or self.closing:
                     break
                 pkt = self.can_socket.recv()
                 if pkt:
@@ -1295,7 +1299,7 @@ class J1939TPImplementation:
                     "J1939TPImplementation.can_recv error: %s",
                     traceback.format_exc())
 
-        if self.closed or self._can_socket_gone():
+        if self.closed or self.closing or self._can_socket_gone():
             return
         # Zero-delay polling while segmented RX or directed TX is active so
         # slow serial/slcan multiplexers do not add backlog latency between
@@ -1658,6 +1662,7 @@ class J1939TPImplementation:
                 if select_objects([self.tx_queue], 0):
                     msg = self.tx_queue.recv()
                     if msg is not None:
+                        self.tx_dispatching = True
                         try:
                             self._begin_send(msg)
                         except Exception:
@@ -1666,6 +1671,8 @@ class J1939TPImplementation:
                             # discard every later send on this socket.
                             self._tx_reset()
                             raise
+                        finally:
+                            self.tx_dispatching = False
         except Exception:
             if not self.closed:
                 log_j1939.warning(
@@ -1826,6 +1833,9 @@ class J1939TPImplementation:
 
         sent = 0
         while sent < count:
+            if self.closed:
+                self._tx_reset()
+                return
             seq = self.tx_seq
             if seq > self.tx_npkts:
                 break
@@ -1859,6 +1869,10 @@ class J1939TPImplementation:
         # type: () -> None
         self.tx_state = _J1939_TX_IDLE
         self.tx_buf = None
+        self.tx_npkts = 0
+        self.tx_seq = 1
+        self.tx_dst = socket.J1939_NO_ADDR
+        self.tx_priority = 6
         # Forget the peer: an address left behind here would let a node that
         # took part in an earlier session abort an unrelated one.
         self.tx_peer_sa = socket.J1939_NO_ADDR
